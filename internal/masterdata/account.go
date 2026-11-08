@@ -21,9 +21,10 @@ type AccountType string
 const (
 	AccountTypeAsset     AccountType = "asset"
 	AccountTypeLiability AccountType = "liability"
-	AccountTypeEquity     AccountType = "equity"
+	AccountTypeEquity    AccountType = "equity"
 	AccountTypeIncome    AccountType = "income"
 	AccountTypeExpense   AccountType = "expense"
+	AccountTypeRevenue   AccountType = "income"
 )
 
 type NormalBalance string
@@ -69,7 +70,10 @@ func (a Account) Validate() error {
 		return ErrInvalidAccountType
 	}
 	if a.NormalBalance == "" {
-		return DefaultNormalBalance(a.AccountType)
+		a.NormalBalance = DefaultNormalBalance(a.AccountType)
+		if a.NormalBalance == "" {
+			return ErrInvalidAccountType
+		}
 	}
 	if a.NormalBalance != DefaultNormalBalance(a.AccountType) {
 		return ErrInvalidAccountType

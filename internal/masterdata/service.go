@@ -19,6 +19,9 @@ func NewService(repo Repository) *Service {
 }
 
 func (s *Service) RegisterAccount(account Account) error {
+	if account.NormalBalance == "" {
+		account.NormalBalance = DefaultNormalBalance(account.AccountType)
+	}
 	if err := account.Validate(); err != nil {
 		return err
 	}

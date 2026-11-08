@@ -19,11 +19,11 @@ const (
 )
 
 type Journal struct {
-	ID          uuid.UUID
-	Code        string
-	Name        string
-	Type        JournalType
-	LastNumber  int64
+	ID         uuid.UUID
+	Code       string
+	Name       string
+	Type       JournalType
+	LastNumber int64
 }
 
 func (j Journal) Validate() error {
@@ -43,10 +43,10 @@ const (
 )
 
 type Ledger struct {
-	ID       uuid.UUID
-	Code     string
-	Name     string
-	Type     LedgerType
+	ID        uuid.UUID
+	Code      string
+	Name      string
+	Type      LedgerType
 	IsPrimary bool
-	Currency string
+	Currency  string
 }

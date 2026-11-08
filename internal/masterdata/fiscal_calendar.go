@@ -12,9 +12,12 @@ var ErrPeriodOutsideFiscalYear = errors.New("period dates must be within the fis
 type PeriodState string
 
 const (
-	PeriodOpen       PeriodState = "open"
-	PeriodSoftClosed PeriodState = "soft_closed"
-	PeriodHardClosed PeriodState = "hard_closed"
+	PeriodOpen             PeriodState = "open"
+	PeriodSoftClosed       PeriodState = "soft_closed"
+	PeriodHardClosed       PeriodState = "hard_closed"
+	FiscalPeriodOpen                   = PeriodOpen
+	FiscalPeriodSoftClosed             = PeriodSoftClosed
+	FiscalPeriodHardClosed             = PeriodHardClosed
 )
 
 type FiscalYear struct {
@@ -26,13 +29,13 @@ type FiscalYear struct {
 }
 
 type FiscalPeriod struct {
-	ID          uuid.UUID
+	ID           uuid.UUID
 	FiscalYearID uuid.UUID
-	Number      int
-	Name        string
-	StartDate   time.Time
-	EndDate     time.Time
-	State       PeriodState
+	Number       int
+	Name         string
+	StartDate    time.Time
+	EndDate      time.Time
+	State        PeriodState
 }
 
 func (p FiscalPeriod) Contains(date time.Time) bool {
@@ -46,10 +49,10 @@ func GenerateFiscalYear(start time.Time) FiscalYear {
 	start = start.UTC()
 	id := uuid.New()
 	year := FiscalYear{
-		ID: id,
-		Name: start.Format("2006"),
+		ID:        id,
+		Name:      start.Format("2006"),
 		StartDate: start,
-		EndDate: start.AddDate(1, 0, 0).Add(-time.Nanosecond),
+		EndDate:   start.AddDate(1, 0, 0).Add(-time.Nanosecond),
 	}
 	for i := 1; i <= 12; i++ {
 		periodStart := start.AddDate(0, i-1, 0)
