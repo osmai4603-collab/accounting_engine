@@ -3,9 +3,13 @@ package subledgers
 import (
 	"sort"
 	"strings"
+	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
+	"accounting_engine/internal/valuation"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type MatchingEngine struct {
@@ -17,26 +21,31 @@ func NewMatchingEngine(repo Repository) *MatchingEngine {
 }
 
 func (m *MatchingEngine) Match(lineID, counterpartID uuid.UUID, amount financialtypes.Money) (string, error) {
+	matchingNumber, _, err := m.MatchWithFX(lineID, counterpartID, amount, FXMatchingParams{})
+	return matchingNumber, err
+}
+
+func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount financialtypes.Money, params FXMatchingParams) (string, *posting.JournalEntry, error) {
 	if lineID == counterpartID {
-		return "", ErrUnmatchedLine
+		return "", nil, ErrUnmatchedLine
 	}
 	line, err := m.repo.GetOpenLine(lineID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	counterpart, err := m.repo.GetOpenLine(counterpartID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if line.CompanyID == uuid.Nil || counterpart.CompanyID == uuid.Nil ||
 		line.ID == uuid.Nil || counterpart.ID == uuid.Nil {
-		return "", ErrInvalidOpenLine
+		return "", nil, ErrInvalidOpenLine
 	}
 	if !validLineKind(line.Kind) || !validLineKind(counterpart.Kind) || line.Kind == counterpart.Kind {
-		return "", ErrUnmatchedLine
+		return "", nil, ErrUnmatchedLine
 	}
 	if line.CompanyID != counterpart.CompanyID {
-		return "", ErrCompanyMismatch
+		return "", nil, ErrCompanyMismatch
 	}
 	expectedLine := cloneOpenLine(line)
 	expectedCounterpart := cloneOpenLine(counterpart)
@@ -51,17 +60,17 @@ func (m *MatchingEngine) Match(lineID, counterpartID uuid.UUID, amount financial
 		line.ResidualAmount.GreaterThan(line.OriginalAmount) ||
 		counterpart.ResidualAmount.GreaterThan(counterpart.OriginalAmount) ||
 		amount.GreaterThan(line.ResidualAmount) || amount.GreaterThan(counterpart.ResidualAmount) {
-		return "", ErrInvalidAmount
+		return "", nil, ErrInvalidAmount
 	}
 
 	matchingNumber := strings.ToUpper(uuid.New().String())
 	lineMatches, err := openLineMatches(line)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	counterpartMatches, err := openLineMatches(counterpart)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	line.Matches = append(lineMatches, OpenLineMatch{
 		MatchingNumber: matchingNumber, CounterpartID: counterpart.ID, Amount: amount,
@@ -70,22 +79,104 @@ func (m *MatchingEngine) Match(lineID, counterpartID uuid.UUID, amount financial
 		MatchingNumber: matchingNumber, CounterpartID: line.ID, Amount: amount,
 	})
 	if err := applyMatch(&line, &counterpart, amount); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	syncLegacyMatches(&line)
 	syncLegacyMatches(&counterpart)
 
+	// Check if realized FX entry is required
+	if !params.OriginalRate.IsZero() && !params.SettlementRate.IsZero() &&
+		!params.OriginalRate.Equal(params.SettlementRate) && params.FunctionalCurrency != "" {
+		if params.JournalID == uuid.Nil || params.ARAPAccountID == uuid.Nil ||
+			params.FXGainAccountID == uuid.Nil || params.FXLossAccountID == uuid.Nil {
+			return "", nil, ErrInvalidOpenLine
+		}
+		fxDiff, err := valuation.RealizedFXDifference(amount.Amount(), params.OriginalRate, params.SettlementRate, params.FunctionalCurrency)
+		if err != nil {
+			return "", nil, err
+		}
+		if !fxDiff.Amount().IsZero() {
+			entryDate := params.Date
+			if entryDate.IsZero() {
+				entryDate = time.Now().UTC()
+			}
+			isGain := false
+			if line.Kind == LineReceivable {
+				isGain = fxDiff.GreaterThan(mustZero(params.FunctionalCurrency))
+			} else {
+				isGain = fxDiff.LessThan(mustZero(params.FunctionalCurrency))
+			}
+			absDiff := fxDiff
+			if absDiff.IsNegative() {
+				absDiff, _ = absDiff.Multiply(decimal.NewFromInt(-1))
+			}
+			zero, _ := financialtypes.Zero(params.FunctionalCurrency)
+
+			var lines []posting.JournalEntryLine
+			if isGain {
+				lines = []posting.JournalEntryLine{
+					{CompanyID: line.CompanyID, ID: uuid.New(), AccountID: params.ARAPAccountID, PartnerID: line.PartnerID, Debit: absDiff, Credit: zero},
+					{CompanyID: line.CompanyID, ID: uuid.New(), AccountID: params.FXGainAccountID, Credit: absDiff, Debit: zero},
+				}
+			} else {
+				lines = []posting.JournalEntryLine{
+					{CompanyID: line.CompanyID, ID: uuid.New(), AccountID: params.FXLossAccountID, Debit: absDiff, Credit: zero},
+					{CompanyID: line.CompanyID, ID: uuid.New(), AccountID: params.ARAPAccountID, PartnerID: line.PartnerID, Credit: absDiff, Debit: zero},
+				}
+			}
+
+			docRef := matchingNumber
+			if params.Description != "" {
+				docRef = params.Description
+			}
+			fxEntry := posting.JournalEntry{
+				CompanyID:         line.CompanyID,
+				ID:                uuid.New(),
+				JournalID:         params.JournalID,
+				EntryDate:         entryDate,
+				Date:              entryDate,
+				Status:            posting.EntryDraft,
+				DocumentReference: docRef,
+				Reference:         docRef,
+				CreatedAt:         time.Now().UTC(),
+				UpdatedAt:         time.Now().UTC(),
+				Lines:             lines,
+			}
+			if err := fxEntry.Validate(); err != nil {
+				return "", nil, err
+			}
+
+			repository, ok := m.repo.(ConditionalOpenLinesAndDraftRepository)
+			if !ok {
+				return "", nil, ErrAtomicMatchRequired
+			}
+			if err := repository.CompareAndSaveOpenLinesAndDraft(
+				[]OpenLine{expectedLine, expectedCounterpart},
+				[]OpenLine{line, counterpart},
+				fxEntry,
+			); err != nil {
+				return "", nil, err
+			}
+			return matchingNumber, &fxEntry, nil
+		}
+	}
+
 	repository, ok := m.repo.(ConditionalOpenLineRepository)
 	if !ok {
-		return "", ErrAtomicMatchRequired
+		return "", nil, ErrAtomicMatchRequired
 	}
 	if err := repository.CompareAndSaveOpenLines(
 		[]OpenLine{expectedLine, expectedCounterpart},
 		[]OpenLine{line, counterpart},
 	); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return matchingNumber, nil
+	return matchingNumber, nil, nil
+}
+
+func mustZero(currency string) financialtypes.Money {
+	z, _ := financialtypes.Zero(currency)
+	return z
 }
 
 func validLineKind(kind LineKind) bool {

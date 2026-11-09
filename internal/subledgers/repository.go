@@ -97,6 +97,14 @@ type ConditionalOpenLineRepository interface {
 	CompareAndSaveOpenLines(expected, updated []OpenLine) error
 }
 
+type ConditionalOpenLinesAndDraftRepository interface {
+	CompareAndSaveOpenLinesAndDraft(expected, updated []OpenLine, draft posting.JournalEntry) error
+}
+
+type ConditionalBankItemsAndDraftRepository interface {
+	CompareAndSaveBankItemsAndDraft(expected, updated []BankItem, draft posting.JournalEntry) error
+}
+
 type AtomicEconomicEventRepository interface {
 	SaveEventAndDraft(EconomicEvent, posting.JournalEntry) error
 }
@@ -215,6 +223,43 @@ func (r *MemoryRepository) CompareAndSaveOpenLines(expected, updated []OpenLine)
 	for _, line := range updated {
 		r.lines[line.ID] = cloneOpenLine(line)
 	}
+	return nil
+}
+
+func (r *MemoryRepository) CompareAndSaveOpenLinesAndDraft(expected, updated []OpenLine, draft posting.JournalEntry) error {
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(expected) != len(updated) {
+		return ErrInvalidOpenLine
+	}
+	for i, oldLine := range expected {
+		current, ok := r.lines[oldLine.ID]
+		if !ok {
+			return ErrNotFound
+		}
+		if current.CompanyID != oldLine.CompanyID || updated[i].ID != oldLine.ID ||
+			updated[i].CompanyID != oldLine.CompanyID || draft.CompanyID != oldLine.CompanyID {
+			return ErrCompanyMismatch
+		}
+		if !reflect.DeepEqual(current, oldLine) {
+			return ErrConcurrentMatch
+		}
+	}
+	if _, exists := r.drafts[draft.ID]; exists {
+		return ErrAlreadyExists
+	}
+	for _, line := range updated {
+		r.lines[line.ID] = cloneOpenLine(line)
+	}
+	draftCopy := draft
+	draftCopy.Lines = append([]posting.JournalEntryLine(nil), draft.Lines...)
+	r.drafts[draft.ID] = draftCopy
 	return nil
 }
 
@@ -381,6 +426,58 @@ func (r *MemoryRepository) CompareAndSaveBankItems(expected, updated []BankItem)
 		}
 		r.bank[updatedItem.AccountID.String()] = items
 	}
+	return nil
+}
+
+func (r *MemoryRepository) CompareAndSaveBankItemsAndDraft(expected, updated []BankItem, draft posting.JournalEntry) error {
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(expected) != len(updated) {
+		return ErrInvalidOpenLine
+	}
+	for i, oldItem := range expected {
+		if updated[i].ID != oldItem.ID || updated[i].CompanyID != oldItem.CompanyID ||
+			updated[i].AccountID != oldItem.AccountID || draft.CompanyID != oldItem.CompanyID {
+			return ErrCompanyMismatch
+		}
+		items := r.bank[oldItem.AccountID.String()]
+		found := false
+		for _, current := range items {
+			if current.ID != oldItem.ID {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(current, oldItem) {
+				return ErrConcurrentBankItem
+			}
+			break
+		}
+		if !found {
+			return ErrNotFound
+		}
+	}
+	if _, exists := r.drafts[draft.ID]; exists {
+		return ErrAlreadyExists
+	}
+	for _, updatedItem := range updated {
+		items := r.bank[updatedItem.AccountID.String()]
+		for i := range items {
+			if items[i].ID == updatedItem.ID {
+				items[i] = updatedItem
+				break
+			}
+		}
+		r.bank[updatedItem.AccountID.String()] = items
+	}
+	draftCopy := draft
+	draftCopy.Lines = append([]posting.JournalEntryLine(nil), draft.Lines...)
+	r.drafts[draft.ID] = draftCopy
 	return nil
 }
 

@@ -135,3 +135,35 @@ func TestComparisonsAndNegative(t *testing.T) {
 		t.Fatal("comparison mismatch")
 	}
 }
+
+func TestISO4217NumericRegistry(t *testing.T) {
+	cases := []struct {
+		code        string
+		numericCode string
+		minorUnits  int32
+	}{
+		{"USD", "840", 2},
+		{"EUR", "978", 2},
+		{"SAR", "682", 2},
+		{"KWD", "414", 3},
+		{"BHD", "048", 3},
+		{"JPY", "392", 0},
+		{"GBP", "826", 2},
+	}
+	for _, tc := range cases {
+		curr, ok := LookupCurrency(tc.code)
+		if !ok {
+			t.Fatalf("LookupCurrency(%q) failed", tc.code)
+		}
+		if curr.NumericCode != tc.numericCode {
+			t.Errorf("currency %s numeric code = %s, want %s", tc.code, curr.NumericCode, tc.numericCode)
+		}
+		if curr.MinorUnit != tc.minorUnits {
+			t.Errorf("currency %s minor units = %d, want %d", tc.code, curr.MinorUnit, tc.minorUnits)
+		}
+		byNum, ok := LookupCurrencyByNumericCode(tc.numericCode)
+		if !ok || string(byNum.Code) != tc.code {
+			t.Errorf("LookupCurrencyByNumericCode(%q) = %v, want %s", tc.numericCode, byNum, tc.code)
+		}
+	}
+}

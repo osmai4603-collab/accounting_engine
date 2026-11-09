@@ -2,7 +2,6 @@ package posting
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"time"
 
@@ -292,6 +291,39 @@ func (e *JournalEntry) EnsureImmutable() error {
 	return nil
 }
 
+func equalUUIDPtr(a, b *uuid.UUID) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func (l JournalEntryLine) Equal(other JournalEntryLine) bool {
+	return (l.CompanyID == other.CompanyID || l.CompanyID == uuid.Nil || other.CompanyID == uuid.Nil) &&
+		l.ID == other.ID &&
+		l.AccountID == other.AccountID &&
+		equalUUIDPtr(l.PartnerID, other.PartnerID) &&
+		equalUUIDPtr(l.CostCenterID, other.CostCenterID) &&
+		equalUUIDPtr(l.ProjectID, other.ProjectID) &&
+		equalUUIDPtr(l.SegmentID, other.SegmentID) &&
+		equalUUIDPtr(l.BusinessUnitID, other.BusinessUnitID) &&
+		l.MatchingNumber == other.MatchingNumber &&
+		l.ReconciledAmount.Equal(other.ReconciledAmount) &&
+		l.Debit.Equal(other.Debit) &&
+		l.Credit.Equal(other.Credit) &&
+		l.TransactionAmount.Equal(other.TransactionAmount) &&
+		l.TransactionCurrency == other.TransactionCurrency &&
+		(l.ExchangeRate.Equal(other.ExchangeRate) || (l.ExchangeRate.IsZero() && other.ExchangeRate.IsZero())) &&
+		l.FunctionalDebit.Equal(other.FunctionalDebit) &&
+		l.FunctionalCredit.Equal(other.FunctionalCredit) &&
+		l.AmountCurrency.Equal(other.AmountCurrency) &&
+		l.Currency == other.Currency &&
+		l.ForeignAmount.Equal(other.ForeignAmount)
+}
+
 func DraftContentMatches(saved, candidate JournalEntry) bool {
 	savedDate := saved.EntryDate
 	if savedDate.IsZero() {
@@ -301,12 +333,20 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 	if candidateDate.IsZero() {
 		candidateDate = candidate.Date
 	}
-	return saved.ID == candidate.ID &&
-		saved.CompanyID == candidate.CompanyID &&
-		saved.JournalID == candidate.JournalID &&
-		savedDate.Equal(candidateDate) &&
-		saved.CreatedBy == candidate.CreatedBy &&
-		saved.DocumentReference == candidate.DocumentReference &&
-		saved.Reference == candidate.Reference &&
-		reflect.DeepEqual(saved.Lines, candidate.Lines)
+	if saved.ID != candidate.ID ||
+		saved.CompanyID != candidate.CompanyID ||
+		saved.JournalID != candidate.JournalID ||
+		!savedDate.Equal(candidateDate) ||
+		saved.CreatedBy != candidate.CreatedBy ||
+		saved.DocumentReference != candidate.DocumentReference ||
+		saved.Reference != candidate.Reference ||
+		len(saved.Lines) != len(candidate.Lines) {
+		return false
+	}
+	for i := range saved.Lines {
+		if !saved.Lines[i].Equal(candidate.Lines[i]) {
+			return false
+		}
+	}
+	return true
 }

@@ -3,6 +3,7 @@ package subledgers
 import (
 	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 )
@@ -134,4 +135,58 @@ func withinValueDateTolerance(a, b time.Time, days int) bool {
 		delta = -delta
 	}
 	return delta <= time.Duration(days)*24*time.Hour
+}
+
+func (l *TreasuryLedger) ProcessBankFeeAtomic(item BankItem, params BankFeeParams) (BankItem, posting.JournalEntry, error) {
+	if item.ID == uuid.Nil || item.CompanyID == uuid.Nil || item.Amount.Currency() == "" ||
+		item.Amount.IsNegative() || item.Amount.Amount().IsZero() {
+		return BankItem{}, posting.JournalEntry{}, ErrInvalidAmount
+	}
+	if params.JournalID == uuid.Nil || params.FeeAccountID == uuid.Nil || params.BankAccountID == uuid.Nil {
+		return BankItem{}, posting.JournalEntry{}, ErrInvalidOpenLine
+	}
+	if l.companyID != uuid.Nil && item.CompanyID != l.companyID {
+		return BankItem{}, posting.JournalEntry{}, ErrCompanyMismatch
+	}
+	expected := item
+	updated := item
+	updated.Status = BankItemMatched
+
+	date := params.Date
+	if date.IsZero() {
+		date = item.Date
+	}
+	zero, _ := financialtypes.Zero(item.Amount.Currency())
+	lines := []posting.JournalEntryLine{
+		{CompanyID: item.CompanyID, ID: uuid.New(), AccountID: params.FeeAccountID, Debit: item.Amount, Credit: zero},
+		{CompanyID: item.CompanyID, ID: uuid.New(), AccountID: params.BankAccountID, Credit: item.Amount, Debit: zero},
+	}
+	ref := item.Reference
+	if ref == "" {
+		ref = params.Description
+	}
+	draft := posting.JournalEntry{
+		CompanyID:         item.CompanyID,
+		ID:                uuid.New(),
+		JournalID:         params.JournalID,
+		EntryDate:         date,
+		Date:              date,
+		Status:            posting.EntryDraft,
+		DocumentReference: ref,
+		Reference:         ref,
+		CreatedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
+		Lines:             lines,
+	}
+	if err := draft.Validate(); err != nil {
+		return BankItem{}, posting.JournalEntry{}, err
+	}
+	repository, ok := l.repo.(ConditionalBankItemsAndDraftRepository)
+	if !ok {
+		return BankItem{}, posting.JournalEntry{}, ErrAtomicBankReconciliationRequired
+	}
+	if err := repository.CompareAndSaveBankItemsAndDraft([]BankItem{expected}, []BankItem{updated}, draft); err != nil {
+		return BankItem{}, posting.JournalEntry{}, err
+	}
+	return updated, draft, nil
 }

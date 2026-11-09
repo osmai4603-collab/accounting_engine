@@ -3,6 +3,7 @@ package accounting_engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,11 +12,13 @@ import (
 	"accounting_engine/internal/governance"
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/subledgers"
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/storage/memory"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 func TestConcurrentPostingSequenceIntegrity(t *testing.T) {
@@ -240,4 +243,227 @@ func mustEntry(t *testing.T, journalID uuid.UUID, date time.Time, debitAccount, 
 		t.Fatal(err)
 	}
 	return entry
+}
+
+func TestFiveYearFiscalCycleSimulation(t *testing.T) {
+	driver := memory.New()
+	companyID := uuid.New()
+	company := masterdata.Company{
+		ID:                   companyID,
+		Code:                 "SAR-CORP",
+		LegalName:            "Saudi Pure Financial Corp",
+		FunctionalCurrency:   "SAR",
+		PresentationCurrency: "SAR",
+		Active:               true,
+	}
+	if err := driver.CreateCompany(company); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := map[string]uuid.UUID{}
+	definitions := []masterdata.Account{
+		{Code: "1000", Name: "Cash and Cash Equivalents", AccountType: masterdata.AccountTypeAsset, CashFlowActivity: masterdata.CashFlowCashEquivalent, SubClassification: masterdata.SubClassCashAndEquivalents},
+		{Code: "1200", Name: "Trade Receivables", AccountType: masterdata.AccountTypeAsset, CashFlowActivity: masterdata.CashFlowOperating, SubClassification: masterdata.SubClassAccountsReceivable},
+		{Code: "1500", Name: "Property Plant & Equipment", AccountType: masterdata.AccountTypeAsset, CashFlowActivity: masterdata.CashFlowInvesting, SubClassification: masterdata.SubClassPropertyPlantEquipment},
+		{Code: "1590", Name: "Accumulated Depreciation", AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceCredit, IsContraAccount: true, CashFlowActivity: masterdata.CashFlowNonCashAdjustment, SubClassification: masterdata.SubClassPropertyPlantEquipment},
+		{Code: "2000", Name: "Trade Payables", AccountType: masterdata.AccountTypeLiability, CashFlowActivity: masterdata.CashFlowOperating, SubClassification: masterdata.SubClassAccountsPayable},
+		{Code: "3000", Name: "Share Capital", AccountType: masterdata.AccountTypeEquity, CashFlowActivity: masterdata.CashFlowFinancing, SubClassification: "capital"},
+		{Code: "3200", Name: "Retained Earnings", AccountType: masterdata.AccountTypeEquity, CashFlowActivity: masterdata.CashFlowFinancing, SubClassification: masterdata.SubClassRetainedEarnings},
+		{Code: "4000", Name: "Operating Revenue", AccountType: masterdata.AccountTypeIncome, IFRSCategory: masterdata.IFRSCategoryOperating, CashFlowActivity: masterdata.CashFlowOperating},
+		{Code: "5000", Name: "Operating Expenses", AccountType: masterdata.AccountTypeExpense, IFRSCategory: masterdata.IFRSCategoryOperating, CashFlowActivity: masterdata.CashFlowOperating},
+		{Code: "5500", Name: "Depreciation Expense", AccountType: masterdata.AccountTypeExpense, IFRSCategory: masterdata.IFRSCategoryOperating, CashFlowActivity: masterdata.CashFlowNonCashAdjustment, SubClassification: masterdata.SubClassDepreciationAmortExpense},
+		{Code: "5800", Name: "Audit Adjustment Expense", AccountType: masterdata.AccountTypeExpense, IFRSCategory: masterdata.IFRSCategoryOperating, CashFlowActivity: masterdata.CashFlowOperating},
+	}
+	for _, acc := range definitions {
+		acc.ID = uuid.New()
+		acc.CompanyID = companyID
+		if acc.NormalBalance == "" {
+			acc.NormalBalance = masterdata.DefaultNormalBalance(acc.AccountType)
+		}
+		if err := driver.CreateAccount(acc); err != nil {
+			t.Fatal(err)
+		}
+		accounts[acc.Code] = acc.ID
+	}
+
+	journalID := uuid.New()
+	postEntry := func(date time.Time, lines []posting.JournalEntryLine, ref string) posting.JournalEntry {
+		entry, err := posting.NewJournalEntry(journalID, date, "maker", lines)
+		if err != nil {
+			t.Fatalf("NewJournalEntry(%s): %v", ref, err)
+		}
+		entry.CompanyID = companyID
+		entry.Reference = ref
+		if err := driver.SaveDraft(entry); err != nil {
+			t.Fatalf("SaveDraft(%s): %v", ref, err)
+		}
+		entry.Status = posting.EntryPosted
+		posted, err := driver.PostAndSequence(entry)
+		if err != nil {
+			t.Fatalf("PostAndSequence(%s): %v", ref, err)
+		}
+		return posted
+	}
+
+	// Initial Capital Contribution in Year 1: 500,000 SAR
+	initDate := time.Date(2022, 1, 1, 10, 0, 0, 0, time.UTC)
+	capMoney, _ := financialtypes.NewMoneyFromString("500000", "SAR")
+	zero, _ := financialtypes.Zero("SAR")
+	postEntry(initDate, []posting.JournalEntryLine{
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Debit: capMoney, Credit: zero},
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["3000"], Credit: capMoney, Debit: zero},
+	}, "INIT-CAPITAL")
+
+	// Fixed Asset Purchase in Year 1: 100,000 SAR
+	assetMoney, _ := financialtypes.NewMoneyFromString("100000", "SAR")
+	postEntry(initDate.Add(time.Hour), []posting.JournalEntryLine{
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1500"], Debit: assetMoney, Credit: zero},
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Credit: assetMoney, Debit: zero},
+	}, "ASSET-PURCHASE")
+
+	// 5-Year Simulation Loop (2022 to 2026)
+	salesPerMonth, _ := financialtypes.NewMoneyFromString("20000", "SAR")
+	collPerMonth, _ := financialtypes.NewMoneyFromString("15000", "SAR")
+	opexPerMonth, _ := financialtypes.NewMoneyFromString("10000", "SAR")
+	deprPeriod13, _ := financialtypes.NewMoneyFromString("5000", "SAR")
+	auditPeriod14, _ := financialtypes.NewMoneyFromString("1000", "SAR")
+
+	for yearIndex := 0; yearIndex < 5; yearIndex++ {
+		yearNum := 2022 + yearIndex
+		yearStart := time.Date(yearNum, 1, 1, 0, 0, 0, 0, time.UTC)
+		yearEnd := time.Date(yearNum, 12, 31, 23, 59, 59, 0, time.UTC)
+		fiscalYear := masterdata.FiscalYear{
+			ID:        uuid.New(),
+			CompanyID: companyID,
+			Name:      fmt.Sprintf("FY%d", yearNum),
+			StartDate: yearStart,
+			EndDate:   yearEnd,
+		}
+		// 12 regular monthly periods + Period 13 (Year-end) + Period 14 (Audit)
+		for m := 1; m <= 12; m++ {
+			pStart := time.Date(yearNum, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
+			pEnd := pStart.AddDate(0, 1, 0).Add(-time.Nanosecond)
+			fiscalYear.Periods = append(fiscalYear.Periods, masterdata.FiscalPeriod{
+				ID: uuid.New(), CompanyID: companyID, FiscalYearID: fiscalYear.ID,
+				Number: m, Name: fmt.Sprintf("%d-%02d", yearNum, m),
+				StartDate: pStart, EndDate: pEnd, State: masterdata.PeriodOpen,
+				Type: masterdata.FiscalPeriodTypeNormal,
+			})
+		}
+		fiscalYear.Periods = append(fiscalYear.Periods,
+			masterdata.FiscalPeriod{
+				ID: uuid.New(), CompanyID: companyID, FiscalYearID: fiscalYear.ID,
+				Number: 13, Name: fmt.Sprintf("%d-Adj13", yearNum),
+				StartDate: yearEnd.Add(-2 * time.Hour), EndDate: yearEnd, State: masterdata.PeriodOpen,
+				Type: masterdata.FiscalPeriodTypeYearEndAdjustment,
+			},
+			masterdata.FiscalPeriod{
+				ID: uuid.New(), CompanyID: companyID, FiscalYearID: fiscalYear.ID,
+				Number: 14, Name: fmt.Sprintf("%d-Audit14", yearNum),
+				StartDate: yearEnd.Add(-time.Hour), EndDate: yearEnd, State: masterdata.PeriodOpen,
+				Type: masterdata.FiscalPeriodTypeAuditAdjustment,
+			},
+		)
+		if err := driver.CreateFiscalYear(fiscalYear); err != nil {
+			t.Fatalf("CreateFiscalYear(FY%d): %v", yearNum, err)
+		}
+
+		// Monthly postings (Months 1-12)
+		for m := 1; m <= 12; m++ {
+			entryDate := time.Date(yearNum, time.Month(m), 15, 12, 0, 0, 0, time.UTC)
+			// Sales
+			postEntry(entryDate, []posting.JournalEntryLine{
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1200"], Debit: salesPerMonth, Credit: zero},
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["4000"], Credit: salesPerMonth, Debit: zero},
+			}, fmt.Sprintf("SALE-%d-%02d", yearNum, m))
+
+			// Collection
+			postEntry(entryDate.Add(time.Hour), []posting.JournalEntryLine{
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Debit: collPerMonth, Credit: zero},
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1200"], Credit: collPerMonth, Debit: zero},
+			}, fmt.Sprintf("COLL-%d-%02d", yearNum, m))
+
+			// OpEx
+			postEntry(entryDate.Add(2*time.Hour), []posting.JournalEntryLine{
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["5000"], Debit: opexPerMonth, Credit: zero},
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Credit: opexPerMonth, Debit: zero},
+			}, fmt.Sprintf("OPEX-%d-%02d", yearNum, m))
+		}
+
+		// Period 13 Adjustment (Year-end Depreciation: 5,000 SAR)
+		p13Date := yearEnd.Add(-90 * time.Minute)
+		postEntry(p13Date, []posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["5500"], Debit: deprPeriod13, Credit: zero},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1590"], Credit: deprPeriod13, Debit: zero},
+		}, fmt.Sprintf("DEPR-ADJ-%d-P13", yearNum))
+
+		// Period 14 Audit Adjustment (Accrued Audit Expense: 1,000 SAR)
+		p14Date := yearEnd.Add(-30 * time.Minute)
+		postEntry(p14Date, []posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["5800"], Debit: auditPeriod14, Credit: zero},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["2000"], Credit: auditPeriod14, Debit: zero},
+		}, fmt.Sprintf("AUDIT-ADJ-%d-P14", yearNum))
+
+		// Verify Trial Balance before closing
+		tbEngine := reporting.NewTrialBalanceEngine(driver)
+		tb, err := tbEngine.GenerateForCompany(companyID, yearStart, yearEnd, "SAR")
+		if err != nil {
+			t.Fatalf("TrialBalance FY%d: %v", yearNum, err)
+		}
+		if !tb.Balanced || !tb.DebitTotal.Equal(tb.CreditTotal) {
+			t.Fatalf("Unbalanced TB FY%d: debits=%s credits=%s", yearNum, tb.DebitTotal, tb.CreditTotal)
+		}
+
+		// Verify Income Statement for the year
+		incEngine := reporting.NewIncomeStatementEngine(driver)
+		inc, err := incEngine.GenerateForCompany(companyID, yearStart, yearEnd, "SAR")
+		if err != nil {
+			t.Fatalf("IncomeStatement FY%d: %v", yearNum, err)
+		}
+		expectedRevenue := decimal.NewFromInt(20000 * 12)                                     // 240,000
+		expectedOpEx := decimal.NewFromInt(10000 * 12)                                        // 120,000
+		expectedDepr := decimal.NewFromInt(5000)                                              // 5,000
+		expectedAudit := decimal.NewFromInt(1000)                                             // 1,000
+		expectedNet := expectedRevenue.Sub(expectedOpEx).Sub(expectedDepr).Sub(expectedAudit) // 114,000
+		if !inc.NetProfit.Equal(expectedNet) {
+			t.Fatalf("NetProfit FY%d = %s, want %s", yearNum, inc.NetProfit, expectedNet)
+		}
+
+		// Close monthly periods 1-12 to prepare for closing move
+		for _, p := range fiscalYear.Periods {
+			if p.Number >= 1 && p.Number <= 12 {
+				_ = driver.UpdatePeriodState(p.ID, masterdata.PeriodSoftClosed)
+				_ = driver.UpdatePeriodState(p.ID, masterdata.PeriodHardClosed)
+			}
+		}
+		currentYear, err := driver.GetFiscalYearForCompany(companyID, fiscalYear.ID)
+		if err != nil {
+			t.Fatalf("GetFiscalYearForCompany FY%d: %v", yearNum, err)
+		}
+
+		// Generate and Post Closing Move
+		closingEngine := reporting.NewClosingEngine(driver)
+		closeEntry, _, err := closingEngine.GenerateClosingMove(currentYear, journalID, accounts["3200"], "SAR")
+		if err != nil {
+			t.Fatalf("GenerateClosingMove FY%d: %v", yearNum, err)
+		}
+		if err := driver.SaveDraft(closeEntry); err != nil {
+			t.Fatalf("SaveDraft(CloseEntry FY%d): %v", yearNum, err)
+		}
+		closeEntry.Status = posting.EntryPosted
+		if _, err := driver.PostAndSequence(closeEntry); err != nil {
+			t.Fatalf("Post ClosingMove FY%d: %v", yearNum, err)
+		}
+
+		// Verify Balance Sheet after closing
+		bsEngine := reporting.NewBalanceSheetEngine(driver)
+		bs, err := bsEngine.GenerateForCompany(companyID, yearEnd, "SAR")
+		if err != nil {
+			t.Fatalf("BalanceSheet FY%d: %v", yearNum, err)
+		}
+		if !bs.Balanced {
+			t.Fatalf("BalanceSheet FY%d is unbalanced: assets=%s liabilities=%s equity=%s total_l_and_e=%s",
+				yearNum, bs.TotalAssets, bs.TotalLiabilities, bs.Equity, bs.TotalLiabilitiesAndEquity)
+		}
+	}
 }

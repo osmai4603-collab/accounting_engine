@@ -52,10 +52,10 @@ func seedCurrencyRegistry(ctx context.Context, pool *pgxpool.Pool) error {
 	batch := &pgx.Batch{}
 	currencies := financialtypes.AllCurrencies()
 	for _, currency := range currencies {
-		batch.Queue(`INSERT INTO currencies(code,name,minor_units)
-			VALUES($1,$2,$3)
-			ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,minor_units=EXCLUDED.minor_units`,
-			string(currency.Code), currency.Name, currency.MinorUnit)
+		batch.Queue(`INSERT INTO currencies(code,numeric_code,name,minor_units)
+			VALUES($1,$2,$3,$4)
+			ON CONFLICT(code) DO UPDATE SET numeric_code=EXCLUDED.numeric_code,name=EXCLUDED.name,minor_units=EXCLUDED.minor_units`,
+			string(currency.Code), currency.NumericCode, currency.Name, currency.MinorUnit)
 	}
 	results := pool.SendBatch(ctx, batch)
 	defer results.Close()
@@ -975,6 +975,105 @@ func (d *Driver) CompareAndSaveOpenLines(expected, updated []subledgers.OpenLine
 	return tx.Commit(ctx)
 }
 
+func (d *Driver) CompareAndSaveOpenLinesAndDraft(expected, updated []subledgers.OpenLine, draft posting.JournalEntry) error {
+	if len(expected) != len(updated) {
+		return subledgers.ErrInvalidOpenLine
+	}
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	expectedByID := make(map[uuid.UUID]subledgers.OpenLine, len(expected))
+	ids := make([]uuid.UUID, 0, len(expected))
+	for i, line := range expected {
+		if line.ID == uuid.Nil || line.CompanyID == uuid.Nil || updated[i].ID != line.ID ||
+			updated[i].CompanyID != line.CompanyID || draft.CompanyID != line.CompanyID {
+			return subledgers.ErrInvalidOpenLine
+		}
+		if _, exists := expectedByID[line.ID]; exists {
+			return subledgers.ErrInvalidOpenLine
+		}
+		expectedByID[line.ID] = line
+		ids = append(ids, line.ID)
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT id, company_id, line_data FROM subledger_open_lines
+		 WHERE id = ANY($1) ORDER BY id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	found := 0
+	for rows.Next() {
+		var id, companyID uuid.UUID
+		var data []byte
+		if err := rows.Scan(&id, &companyID, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		var current subledgers.OpenLine
+		if err := json.Unmarshal(data, &current); err != nil {
+			rows.Close()
+			return err
+		}
+		oldLine, ok := expectedByID[id]
+		if !ok {
+			rows.Close()
+			return subledgers.ErrInvalidOpenLine
+		}
+		if companyID != oldLine.CompanyID || current.CompanyID != oldLine.CompanyID {
+			rows.Close()
+			return subledgers.ErrCompanyMismatch
+		}
+		if !reflect.DeepEqual(current, oldLine) {
+			rows.Close()
+			return subledgers.ErrConcurrentMatch
+		}
+		found++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found != len(expected) {
+		return subledgers.ErrNotFound
+	}
+	if err := d.saveEntryTx(ctx, tx, draft); err != nil {
+		return err
+	}
+	for _, line := range updated {
+		data, err := json.Marshal(line)
+		if err != nil {
+			return err
+		}
+		var partner any
+		if line.PartnerID != nil {
+			partner = *line.PartnerID
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE subledger_open_lines
+			 SET partner_id=$3, kind=$4, line_data=$5
+			 WHERE id=$1 AND company_id=$2`,
+			line.ID, line.CompanyID, partner, line.Kind, data)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return subledgers.ErrConcurrentMatch
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
 	var data []byte
 	err := d.pool.QueryRow(context.Background(), `SELECT line_data FROM subledger_open_lines WHERE id=$1`, id).Scan(&data)
@@ -1287,6 +1386,102 @@ func (d *Driver) CompareAndSaveBankItems(expected, updated []subledgers.BankItem
 	rows.Close()
 	if found != len(expected) {
 		return subledgers.ErrNotFound
+	}
+	for _, item := range updated {
+		data, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE bank_items SET item_data=$4
+			 WHERE item_id=$1 AND company_id=$2 AND account_id=$3`,
+			item.ID, item.CompanyID, item.AccountID, data)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return subledgers.ErrConcurrentBankItem
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (d *Driver) CompareAndSaveBankItemsAndDraft(expected, updated []subledgers.BankItem, draft posting.JournalEntry) error {
+	if len(expected) != len(updated) {
+		return subledgers.ErrInvalidOpenLine
+	}
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	expectedByID := make(map[uuid.UUID]subledgers.BankItem, len(expected))
+	ids := make([]uuid.UUID, 0, len(expected))
+	for i, item := range expected {
+		if item.ID == uuid.Nil || item.CompanyID == uuid.Nil || item.AccountID == uuid.Nil ||
+			updated[i].ID != item.ID || updated[i].CompanyID != item.CompanyID ||
+			updated[i].AccountID != item.AccountID || draft.CompanyID != item.CompanyID {
+			return subledgers.ErrInvalidOpenLine
+		}
+		if _, exists := expectedByID[item.ID]; exists {
+			return subledgers.ErrInvalidOpenLine
+		}
+		expectedByID[item.ID] = item
+		ids = append(ids, item.ID)
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT item_id, company_id, account_id, item_data FROM bank_items
+		 WHERE item_id = ANY($1) ORDER BY item_id FOR UPDATE`, ids)
+	if err != nil {
+		return err
+	}
+	found := 0
+	for rows.Next() {
+		var id, companyID, accountID uuid.UUID
+		var data []byte
+		if err := rows.Scan(&id, &companyID, &accountID, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		var current subledgers.BankItem
+		if err := json.Unmarshal(data, &current); err != nil {
+			rows.Close()
+			return err
+		}
+		oldItem, ok := expectedByID[id]
+		if !ok {
+			rows.Close()
+			return subledgers.ErrInvalidOpenLine
+		}
+		if companyID != oldItem.CompanyID || accountID != oldItem.AccountID ||
+			current.CompanyID != oldItem.CompanyID || current.AccountID != oldItem.AccountID {
+			rows.Close()
+			return subledgers.ErrCompanyMismatch
+		}
+		if !reflect.DeepEqual(current, oldItem) {
+			rows.Close()
+			return subledgers.ErrConcurrentBankItem
+		}
+		found++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found != len(expected) {
+		return subledgers.ErrNotFound
+	}
+	if err := d.saveEntryTx(ctx, tx, draft); err != nil {
+		return err
 	}
 	for _, item := range updated {
 		data, err := json.Marshal(item)

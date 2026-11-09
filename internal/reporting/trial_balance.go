@@ -150,10 +150,10 @@ func endingSides(openDebit, openCredit, periodDebit, periodCredit decimal.Decima
 
 func balancedSides(debit, credit decimal.Decimal, normal masterdata.NormalBalance) (decimal.Decimal, decimal.Decimal) {
 	net := debit.Sub(credit)
-	if net.GreaterThanOrEqual(decimal.Zero) {
-		if normal == masterdata.NormalBalanceCredit && net.IsZero() {
-			return decimal.Zero, credit
-		}
+	if net.IsZero() {
+		return decimal.Zero, decimal.Zero
+	}
+	if net.GreaterThan(decimal.Zero) {
 		return net, decimal.Zero
 	}
 	return decimal.Zero, net.Abs()

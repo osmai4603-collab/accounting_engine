@@ -65,6 +65,26 @@ const (
 	LinePayable    LineKind = "payable"
 )
 
+type FXMatchingParams struct {
+	JournalID          uuid.UUID
+	Date               time.Time
+	OriginalRate       decimal.Decimal
+	SettlementRate     decimal.Decimal
+	FunctionalCurrency string
+	ARAPAccountID      uuid.UUID
+	FXGainAccountID    uuid.UUID
+	FXLossAccountID    uuid.UUID
+	Description        string
+}
+
+type BankFeeParams struct {
+	JournalID     uuid.UUID
+	Date          time.Time
+	FeeAccountID  uuid.UUID
+	BankAccountID uuid.UUID
+	Description   string
+}
+
 type AgingBucket string
 
 const (

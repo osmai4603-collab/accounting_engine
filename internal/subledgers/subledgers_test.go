@@ -459,3 +459,165 @@ func TestFixedAssetImpairmentIAS36(t *testing.T) {
 		t.Fatalf("expected current book value %s, got %s", expectedBookValue, updated.CurrentBookValue.Amount())
 	}
 }
+
+func TestMatchWithRealizedFXGainAndLoss(t *testing.T) {
+	repo := NewMemoryRepository()
+	engine := NewMatchingEngine(repo)
+	companyID := uuid.New()
+	journalID := uuid.New()
+	arAccountID := uuid.New()
+	apAccountID := uuid.New()
+	fxGainAccountID := uuid.New()
+	fxLossAccountID := uuid.New()
+
+	// 1. Test Receivable FX Gain: Invoice @ 3.75, Payment @ 4.00
+	invLine := OpenLine{
+		CompanyID:      companyID,
+		ID:             uuid.New(),
+		Kind:           LineReceivable,
+		OriginalAmount: money(t, "100.00"),
+		ResidualAmount: money(t, "100.00"),
+	}
+	payLine := OpenLine{
+		CompanyID:      companyID,
+		ID:             uuid.New(),
+		Kind:           LinePayable,
+		OriginalAmount: money(t, "100.00"),
+		ResidualAmount: money(t, "100.00"),
+	}
+	if err := repo.SaveOpenLine(invLine); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveOpenLine(payLine); err != nil {
+		t.Fatal(err)
+	}
+
+	matchNum, fxEntry, err := engine.MatchWithFX(invLine.ID, payLine.ID, money(t, "100.00"), FXMatchingParams{
+		JournalID:          journalID,
+		Date:               time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		OriginalRate:       decimal.RequireFromString("3.7500"),
+		SettlementRate:     decimal.RequireFromString("4.0000"),
+		FunctionalCurrency: "SAR",
+		ARAPAccountID:      arAccountID,
+		FXGainAccountID:    fxGainAccountID,
+		FXLossAccountID:    fxLossAccountID,
+		Description:        "FX Gain on Invoice Match",
+	})
+	if err != nil {
+		t.Fatalf("MatchWithFX failed: %v", err)
+	}
+	if matchNum == "" || fxEntry == nil {
+		t.Fatal("expected non-nil match and fx entry")
+	}
+	if len(fxEntry.Lines) != 2 {
+		t.Fatalf("expected 2 lines in fx entry, got %d", len(fxEntry.Lines))
+	}
+	// Check debit AR 25.0000 SAR, credit FX Gain 25.0000 SAR
+	expectedGain := decimal.RequireFromString("25.0000")
+	if fxEntry.Lines[0].AccountID != arAccountID || !fxEntry.Lines[0].Debit.Amount().Equal(expectedGain) {
+		t.Errorf("line 0 mismatch: got account %v debit %s", fxEntry.Lines[0].AccountID, fxEntry.Lines[0].Debit.Amount())
+	}
+	if fxEntry.Lines[1].AccountID != fxGainAccountID || !fxEntry.Lines[1].Credit.Amount().Equal(expectedGain) {
+		t.Errorf("line 1 mismatch: got account %v credit %s", fxEntry.Lines[1].AccountID, fxEntry.Lines[1].Credit.Amount())
+	}
+
+	// Verify atomic draft save
+	repo.mu.Lock()
+	savedDraft, draftExists := repo.drafts[fxEntry.ID]
+	repo.mu.Unlock()
+	if !draftExists || savedDraft.ID != fxEntry.ID {
+		t.Fatalf("fx entry draft was not saved atomically in repository")
+	}
+
+	// 2. Test Payable FX Loss: Invoice @ 3.75, Payment @ 4.00 (paying more than invoice)
+	billLine := OpenLine{
+		CompanyID:      companyID,
+		ID:             uuid.New(),
+		Kind:           LinePayable,
+		OriginalAmount: money(t, "100.00"),
+		ResidualAmount: money(t, "100.00"),
+	}
+	billPayLine := OpenLine{
+		CompanyID:      companyID,
+		ID:             uuid.New(),
+		Kind:           LineReceivable,
+		OriginalAmount: money(t, "100.00"),
+		ResidualAmount: money(t, "100.00"),
+	}
+	if err := repo.SaveOpenLine(billLine); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveOpenLine(billPayLine); err != nil {
+		t.Fatal(err)
+	}
+
+	_, lossEntry, err := engine.MatchWithFX(billLine.ID, billPayLine.ID, money(t, "100.00"), FXMatchingParams{
+		JournalID:          journalID,
+		Date:               time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+		OriginalRate:       decimal.RequireFromString("3.7500"),
+		SettlementRate:     decimal.RequireFromString("4.0000"),
+		FunctionalCurrency: "SAR",
+		ARAPAccountID:      apAccountID,
+		FXGainAccountID:    fxGainAccountID,
+		FXLossAccountID:    fxLossAccountID,
+		Description:        "FX Loss on Bill Match",
+	})
+	if err != nil {
+		t.Fatalf("MatchWithFX for payable failed: %v", err)
+	}
+	if lossEntry == nil {
+		t.Fatal("expected non-nil loss entry")
+	}
+	// Check debit FX Loss 25.0000 SAR, credit AP 25.0000 SAR
+	if lossEntry.Lines[0].AccountID != fxLossAccountID || !lossEntry.Lines[0].Debit.Amount().Equal(expectedGain) {
+		t.Errorf("loss line 0 mismatch: got account %v debit %s", lossEntry.Lines[0].AccountID, lossEntry.Lines[0].Debit.Amount())
+	}
+	if lossEntry.Lines[1].AccountID != apAccountID || !lossEntry.Lines[1].Credit.Amount().Equal(expectedGain) {
+		t.Errorf("loss line 1 mismatch: got account %v credit %s", lossEntry.Lines[1].AccountID, lossEntry.Lines[1].Credit.Amount())
+	}
+}
+
+func TestProcessBankFeeAtomic(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID := uuid.New()
+	ledger := NewTreasuryLedgerForCompany(repo, companyID)
+	journalID := uuid.New()
+	bankAccountID := uuid.New()
+	feeExpenseAccountID := uuid.New()
+
+	item, err := ledger.RecordItem(bankAccountID, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), money(t, "25.00"), "BANK-FEE-01", BankItemUnrecorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updatedItem, draft, err := ledger.ProcessBankFeeAtomic(item, BankFeeParams{
+		JournalID:     journalID,
+		Date:          time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		FeeAccountID:  feeExpenseAccountID,
+		BankAccountID: bankAccountID,
+		Description:   "Monthly Service Fee",
+	})
+	if err != nil {
+		t.Fatalf("ProcessBankFeeAtomic failed: %v", err)
+	}
+	if updatedItem.Status != BankItemMatched {
+		t.Errorf("item status = %s, want %s", updatedItem.Status, BankItemMatched)
+	}
+	if len(draft.Lines) != 2 {
+		t.Fatalf("expected 2 lines in bank fee draft, got %d", len(draft.Lines))
+	}
+	feeAmount := decimal.RequireFromString("25.0000")
+	if draft.Lines[0].AccountID != feeExpenseAccountID || !draft.Lines[0].Debit.Amount().Equal(feeAmount) {
+		t.Errorf("fee line debit mismatch: got %s", draft.Lines[0].Debit.Amount())
+	}
+	if draft.Lines[1].AccountID != bankAccountID || !draft.Lines[1].Credit.Amount().Equal(feeAmount) {
+		t.Errorf("bank line credit mismatch: got %s", draft.Lines[1].Credit.Amount())
+	}
+
+	repo.mu.Lock()
+	savedDraft, exists := repo.drafts[draft.ID]
+	repo.mu.Unlock()
+	if !exists || savedDraft.ID != draft.ID {
+		t.Fatal("bank fee draft was not saved atomically in repository")
+	}
+}

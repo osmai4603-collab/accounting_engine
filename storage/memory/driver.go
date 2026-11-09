@@ -576,6 +576,53 @@ func (d *Driver) CompareAndSaveOpenLines(expected, updated []subledgers.OpenLine
 	return nil
 }
 
+func (d *Driver) CompareAndSaveOpenLinesAndDraft(expected, updated []subledgers.OpenLine, draft posting.JournalEntry) error {
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(expected) != len(updated) {
+		return subledgers.ErrInvalidOpenLine
+	}
+	for i, oldLine := range expected {
+		current, ok := d.lines[oldLine.ID]
+		if !ok {
+			return subledgers.ErrNotFound
+		}
+		if current.CompanyID != oldLine.CompanyID || updated[i].ID != oldLine.ID ||
+			updated[i].CompanyID != oldLine.CompanyID || draft.CompanyID != oldLine.CompanyID {
+			return subledgers.ErrCompanyMismatch
+		}
+		if !reflect.DeepEqual(current, oldLine) {
+			return subledgers.ErrConcurrentMatch
+		}
+	}
+	if current, exists := d.entries[draft.ID]; exists && current.Status != posting.EntryDraft {
+		return posting.ErrEntryNotDraft
+	}
+	for i := range draft.Lines {
+		if draft.Lines[i].CompanyID != uuid.Nil && draft.Lines[i].CompanyID != draft.CompanyID {
+			return posting.ErrInvalidEntry
+		}
+		account, ok := d.accounts[draft.Lines[i].AccountID]
+		if !ok || account.CompanyID != draft.CompanyID {
+			return masterdata.ErrAccountNotFound
+		}
+		draft.Lines[i].CompanyID = draft.CompanyID
+	}
+	for _, line := range updated {
+		line.MatchIDs = append([]uuid.UUID(nil), line.MatchIDs...)
+		line.Matches = append([]subledgers.OpenLineMatch(nil), line.Matches...)
+		d.lines[line.ID] = line
+	}
+	d.entries[draft.ID] = cloneEntry(draft)
+	return nil
+}
+
 func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -769,6 +816,66 @@ func (d *Driver) CompareAndSaveBankItems(expected, updated []subledgers.BankItem
 		}
 		d.bank[updatedItem.AccountID.String()] = items
 	}
+	return nil
+}
+
+func (d *Driver) CompareAndSaveBankItemsAndDraft(expected, updated []subledgers.BankItem, draft posting.JournalEntry) error {
+	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
+	if err := draft.Validate(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(expected) != len(updated) {
+		return subledgers.ErrInvalidOpenLine
+	}
+	for i, oldItem := range expected {
+		if updated[i].ID != oldItem.ID || updated[i].CompanyID != oldItem.CompanyID ||
+			updated[i].AccountID != oldItem.AccountID || draft.CompanyID != oldItem.CompanyID {
+			return subledgers.ErrCompanyMismatch
+		}
+		items := d.bank[oldItem.AccountID.String()]
+		found := false
+		for _, current := range items {
+			if current.ID != oldItem.ID {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(current, oldItem) {
+				return subledgers.ErrConcurrentBankItem
+			}
+			break
+		}
+		if !found {
+			return subledgers.ErrNotFound
+		}
+	}
+	if current, exists := d.entries[draft.ID]; exists && current.Status != posting.EntryDraft {
+		return posting.ErrEntryNotDraft
+	}
+	for i := range draft.Lines {
+		if draft.Lines[i].CompanyID != uuid.Nil && draft.Lines[i].CompanyID != draft.CompanyID {
+			return posting.ErrInvalidEntry
+		}
+		account, ok := d.accounts[draft.Lines[i].AccountID]
+		if !ok || account.CompanyID != draft.CompanyID {
+			return masterdata.ErrAccountNotFound
+		}
+		draft.Lines[i].CompanyID = draft.CompanyID
+	}
+	for _, updatedItem := range updated {
+		items := d.bank[updatedItem.AccountID.String()]
+		for i := range items {
+			if items[i].ID == updatedItem.ID {
+				items[i] = updatedItem
+				break
+			}
+		}
+		d.bank[updatedItem.AccountID.String()] = items
+	}
+	d.entries[draft.ID] = cloneEntry(draft)
 	return nil
 }
 
