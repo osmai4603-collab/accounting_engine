@@ -109,6 +109,16 @@ func (r *MemoryRepository) GetFixedAsset(id uuid.UUID) (FixedAsset, error) {
 	return asset, nil
 }
 
+func (r *MemoryRepository) ListFixedAssets() ([]FixedAsset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	assets := make([]FixedAsset, 0, len(r.assets))
+	for _, asset := range r.assets {
+		assets = append(assets, asset)
+	}
+	return assets, nil
+}
+
 func (r *MemoryRepository) SaveBankItem(item BankItem) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

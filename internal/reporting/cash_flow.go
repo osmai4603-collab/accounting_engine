@@ -74,7 +74,7 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 				open := signedBalance(openBalances[account.ID], account)
 				close := signedBalance(closeBalances[account.ID], account)
 				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(close.Sub(open))
-			} else if strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") || strings.Contains(classification, "investment") {
+			} else if strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") || strings.Contains(classification, "equipment") || strings.Contains(classification, "property") || strings.Contains(classification, "investment") {
 				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
 			}
 		case masterdata.AccountTypeLiability:

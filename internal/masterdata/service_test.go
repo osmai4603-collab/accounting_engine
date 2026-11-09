@@ -68,6 +68,37 @@ func TestFiscalPeriodStates(t *testing.T) {
 	}
 }
 
+func TestSubClassificationValidation(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo)
+
+	// Valid matching classifications
+	validAsset := Account{
+		ID: uuid.New(), Code: "1001", Name: "Cash Account", AccountType: AccountTypeAsset,
+		SubClassification: SubClassCashAndEquivalents,
+	}
+	if err := service.RegisterAccount(validAsset); err != nil {
+		t.Fatalf("expected valid asset subclassification to succeed, got %v", err)
+	}
+
+	validExpense := Account{
+		ID: uuid.New(), Code: "5001", Name: "COGS Account", AccountType: AccountTypeExpense,
+		SubClassification: SubClassCostOfSales,
+	}
+	if err := service.RegisterAccount(validExpense); err != nil {
+		t.Fatalf("expected valid expense subclassification to succeed, got %v", err)
+	}
+
+	// Incompatible classification: assigning revenue classification to an asset account
+	invalidAccount := Account{
+		ID: uuid.New(), Code: "1002", Name: "Mismatched Account", AccountType: AccountTypeAsset,
+		SubClassification: SubClassOperatingRevenue,
+	}
+	if err := service.RegisterAccount(invalidAccount); err != ErrInvalidSubClassificationForType {
+		t.Fatalf("expected ErrInvalidSubClassificationForType, got %v", err)
+	}
+}
+
 func TestGaplessConcurrentSequences(t *testing.T) {
 	repo := NewMockRepository()
 	journalID := uuid.New()

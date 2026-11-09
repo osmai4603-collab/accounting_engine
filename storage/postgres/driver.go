@@ -324,6 +324,27 @@ func (d *Driver) GetFixedAsset(id uuid.UUID) (subledgers.FixedAsset, error) {
 	var asset subledgers.FixedAsset
 	return asset, json.Unmarshal(data, &asset)
 }
+
+func (d *Driver) ListFixedAssets() ([]subledgers.FixedAsset, error) {
+	rows, err := d.pool.Query(context.Background(), `SELECT asset_data FROM fixed_assets`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	assets := make([]subledgers.FixedAsset, 0)
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var asset subledgers.FixedAsset
+		if err := json.Unmarshal(data, &asset); err != nil {
+			return nil, err
+		}
+		assets = append(assets, asset)
+	}
+	return assets, rows.Err()
+}
 func (d *Driver) SaveBankItem(item subledgers.BankItem) error {
 	data, err := json.Marshal(item)
 	if err != nil {

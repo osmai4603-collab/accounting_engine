@@ -2,6 +2,7 @@ package accounting_engine
 
 import (
 	"errors"
+	"time"
 
 	"accounting_engine/internal/governance"
 	"accounting_engine/internal/masterdata"
@@ -9,6 +10,7 @@ import (
 	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/subledgers"
 	"accounting_engine/internal/valuation"
+	"github.com/google/uuid"
 )
 
 var ErrUnsupportedStorageDriver = errors.New("unsupported storage driver")
@@ -62,6 +64,18 @@ type AccountingEngine struct {
 	Reporting  *reporting.Engine
 	Governance *governance.Engine
 	Config     Config
+}
+
+func (e *AccountingEngine) GeneralLedger(accountID uuid.UUID, start, end time.Time, currency string) (reporting.GeneralLedgerAccountReport, error) {
+	return e.Reporting.GeneralLedger.Generate(accountID, start, end, currency)
+}
+
+func (e *AccountingEngine) FinancialRatios(start, end time.Time, currency string) (reporting.FinancialRatios, error) {
+	return e.Reporting.Ratios.Generate(start, end, currency)
+}
+
+func (e *AccountingEngine) StatementBundle(start, end time.Time, currency string) (reporting.StatementBundle, error) {
+	return e.Reporting.Bundle.Generate(start, end, currency)
 }
 
 func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {

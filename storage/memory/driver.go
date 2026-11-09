@@ -290,6 +290,16 @@ func (d *Driver) GetFixedAsset(id uuid.UUID) (subledgers.FixedAsset, error) {
 	}
 	return asset, nil
 }
+
+func (d *Driver) ListFixedAssets() ([]subledgers.FixedAsset, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	assets := make([]subledgers.FixedAsset, 0, len(d.assets))
+	for _, asset := range d.assets {
+		assets = append(assets, asset)
+	}
+	return assets, nil
+}
 func (d *Driver) SaveBankItem(item subledgers.BankItem) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
