@@ -19,6 +19,7 @@ const (
 )
 
 type Journal struct {
+	CompanyID  uuid.UUID
 	ID         uuid.UUID
 	Code       string
 	Name       string

@@ -34,10 +34,13 @@ const (
 )
 
 type JournalEntryLine struct {
+	CompanyID        uuid.UUID
 	ID               uuid.UUID
 	AccountID        uuid.UUID
 	PartnerID        *uuid.UUID
 	CostCenterID     *uuid.UUID
+	ProjectID        *uuid.UUID
+	BusinessUnitID   *uuid.UUID
 	MatchingNumber   string
 	ReconciledAmount decimal.Decimal
 	Debit            financialtypes.Money
@@ -72,6 +75,7 @@ func (l JournalEntryLine) Validate() error {
 }
 
 type JournalEntry struct {
+	CompanyID         uuid.UUID
 	ID                uuid.UUID
 	SequenceNumber    int64
 	LegalNumber       string
@@ -139,9 +143,6 @@ func (e *JournalEntry) Validate() error {
 	}
 	if !hasDebit || !hasCredit {
 		return ErrMinimumLines
-	}
-	if len(currencies) != 1 {
-		return financialtypes.ErrCurrencyMismatch
 	}
 	for _, total := range totals {
 		if !total.IsZero() {

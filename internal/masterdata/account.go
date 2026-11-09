@@ -89,6 +89,7 @@ const (
 )
 
 type Account struct {
+	CompanyID           uuid.UUID
 	ID                  uuid.UUID
 	Code                string
 	Name                string
@@ -104,6 +105,7 @@ type Account struct {
 	IFRSCategory        string
 	SubClassification   string
 	IsHeader            bool
+	IsContraAccount     bool
 	HasPostedEntries    bool
 	DisplayOrder        int
 	CreatedAt           time.Time
@@ -138,7 +140,7 @@ func (a Account) Validate() error {
 			return ErrInvalidAccountType
 		}
 	}
-	if a.NormalBalance != DefaultNormalBalance(a.AccountType) {
+	if !a.IsContraAccount && a.NormalBalance != DefaultNormalBalance(a.AccountType) {
 		return ErrInvalidAccountType
 	}
 	if a.SubClassification != "" {

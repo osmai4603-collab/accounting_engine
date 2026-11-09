@@ -8,6 +8,10 @@ import (
 )
 
 func (e *Engine) Reverse(entryID uuid.UUID, posterID string) (JournalEntry, error) {
+	return e.ReverseAt(entryID, posterID, time.Now().UTC())
+}
+
+func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate time.Time) (JournalEntry, error) {
 	original, err := e.repo.GetEntryByID(entryID)
 	if err != nil {
 		return JournalEntry{}, err
@@ -22,12 +26,12 @@ func (e *Engine) Reverse(entryID uuid.UUID, posterID string) (JournalEntry, erro
 	reversal := JournalEntry{
 		ID:                uuid.New(),
 		JournalID:         original.JournalID,
-		EntryDate:         time.Now().UTC(),
-		Date:              time.Now().UTC(),
+		EntryDate:         reversalDate.UTC(),
+		Date:              reversalDate.UTC(),
 		Status:            EntryDraft,
 		DocumentReference: original.DocumentReference,
 		Reference:         original.Reference,
-		CreatedBy:         posterID,
+		CreatedBy:         creatorID,
 		CreatedAt:         time.Now().UTC(),
 		OriginalEntryID:   &original.ID,
 		Lines:             make([]JournalEntryLine, len(original.Lines)),
@@ -49,7 +53,7 @@ func (e *Engine) Reverse(entryID uuid.UUID, posterID string) (JournalEntry, erro
 	if err := e.repo.SaveDraft(reversal); err != nil {
 		return JournalEntry{}, err
 	}
-	if err := e.PostEntry(&reversal, posterID); err != nil {
+	if err := e.PostEntry(&reversal, creatorID); err != nil {
 		return JournalEntry{}, err
 	}
 

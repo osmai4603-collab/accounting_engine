@@ -42,6 +42,10 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 	if err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
+	if !asset.LastDepreciationDate.IsZero() &&
+		asset.LastDepreciationDate.UTC().Format("2006-01") == asOf.UTC().Format("2006-01") {
+		return posting.JournalEntry{}, financialtypes.Money{}, ErrAlreadyExists
+	}
 	expense, err := l.calculateDepreciation(asset, asOf)
 	if err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
@@ -67,6 +71,7 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 	}
 	asset.AccumulatedDepreciation = assetAccumulated
 	asset.CurrentBookValue = bookValue
+	asset.LastDepreciationDate = asOf.UTC()
 	if err := l.repo.SaveFixedAsset(asset); err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
@@ -123,4 +128,47 @@ func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) 
 	}
 	asset.CurrentBookValue, err = asset.CurrentBookValue.Subtract(loss)
 	return l.repo.SaveFixedAsset(asset)
+}
+
+func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money, journalID uuid.UUID) (posting.JournalEntry, error) {
+	asset, err := l.repo.GetFixedAsset(assetID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	netBookValue, err := asset.HistoricalCost.Subtract(asset.AccumulatedDepreciation)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	zeroCost, _ := financialtypes.Zero(asset.HistoricalCost.Currency())
+	zeroProceeds, _ := financialtypes.Zero(asset.HistoricalCost.Currency())
+	lines := []posting.JournalEntryLine{
+		{ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Debit: asset.AccumulatedDepreciation, Credit: zeroCost},
+		{ID: uuid.New(), AccountID: asset.AssetAccountID, Credit: asset.HistoricalCost, Debit: zeroCost},
+	}
+	if proceeds.GreaterThan(zeroProceeds) {
+		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalCashAccountID, Debit: proceeds, Credit: zeroProceeds})
+	}
+	gainLoss, err := proceeds.Subtract(netBookValue)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if gainLoss.GreaterThan(zeroProceeds) {
+		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalGainAccountID, Credit: gainLoss, Debit: zeroProceeds})
+	} else if gainLoss.IsNegative() {
+		loss, err := gainLoss.Multiply(decimal.NewFromInt(-1))
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalLossAccountID, Debit: loss, Credit: zeroProceeds})
+	}
+	entry := posting.JournalEntry{ID: uuid.New(), CompanyID: asset.CompanyID, JournalID: journalID, EntryDate: disposalDate, Date: disposalDate, Status: posting.EntryDraft, CreatedAt: time.Now().UTC(), Lines: lines}
+	if err := entry.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if l.creator != nil {
+		if err := l.creator.CreateDraft(entry); err != nil {
+			return posting.JournalEntry{}, err
+		}
+	}
+	return entry, nil
 }

@@ -15,6 +15,7 @@ const GenesisHash = "00000000000000000000000000000000000000000000000000000000000
 var ErrAuditChainBroken = errors.New("audit chain integrity violation")
 
 type FinancialAuditLog struct {
+	CompanyID       uuid.UUID
 	ID              int64
 	EntityType      string
 	EntityID        uuid.UUID
@@ -38,10 +39,12 @@ func NewAuditChain(repository Repository) *AuditChain {
 func CalculateHash(log FinancialAuditLog) string {
 	timestamp := log.Timestamp.UTC().Format(time.RFC3339Nano)
 	input := log.PreviousLogHash +
+		log.CompanyID.String() +
 		log.EntityType +
 		log.EntityID.String() +
 		log.Action +
 		log.ActorID.String() +
+		string(log.PayloadBefore) +
 		string(log.PayloadAfter) +
 		timestamp
 	sum := sha256.Sum256([]byte(input))

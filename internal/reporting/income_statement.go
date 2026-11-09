@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"strings"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -49,25 +50,28 @@ func (e *IncomeStatementEngine) Generate(start, end time.Time, currency string) 
 		switch account.AccountType {
 		case masterdata.AccountTypeIncome:
 			if contains(classification, "tax") {
-				report.TaxExpense = report.TaxExpense.Add(amount.Abs())
+				report.TaxExpense = report.TaxExpense.Add(amount)
 			} else if contains(classification, "finance") || contains(classification, "interest") {
-				report.FinanceIncome = report.FinanceIncome.Add(amount.Abs())
+				report.FinanceIncome = report.FinanceIncome.Add(amount)
+			} else if strings.Contains(strings.ToLower(account.IFRSCategory), "other_comprehensive") ||
+				strings.Contains(strings.ToLower(classification), "oci") {
+				report.OCI = report.OCI.Add(amount)
 			} else {
-				report.Revenue = report.Revenue.Add(amount.Abs())
+				report.Revenue = report.Revenue.Add(amount)
 			}
 		case masterdata.AccountTypeExpense:
 			if contains(classification, "cost", "sales") {
-				report.CostOfSales = report.CostOfSales.Add(amount.Abs())
+				report.CostOfSales = report.CostOfSales.Add(amount)
 			} else if contains(classification, "selling", "distribution") {
-				report.SellingExpenses = report.SellingExpenses.Add(amount.Abs())
+				report.SellingExpenses = report.SellingExpenses.Add(amount)
 			} else if contains(classification, "administrative", "general") {
-				report.AdministrativeExpenses = report.AdministrativeExpenses.Add(amount.Abs())
+				report.AdministrativeExpenses = report.AdministrativeExpenses.Add(amount)
 			} else if contains(classification, "depreciation", "provision") {
-				report.DepreciationAndProvisionExpenses = report.DepreciationAndProvisionExpenses.Add(amount.Abs())
+				report.DepreciationAndProvisionExpenses = report.DepreciationAndProvisionExpenses.Add(amount)
 			} else if contains(classification, "finance", "interest") {
-				report.FinanceCosts = report.FinanceCosts.Add(amount.Abs())
+				report.FinanceCosts = report.FinanceCosts.Add(amount)
 			} else if contains(classification, "tax", "zakat") {
-				report.TaxExpense = report.TaxExpense.Add(amount.Abs())
+				report.TaxExpense = report.TaxExpense.Add(amount)
 			}
 		}
 	}

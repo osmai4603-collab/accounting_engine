@@ -66,3 +66,17 @@ func (l *TreasuryLedger) Reconcile(accountID uuid.UUID, statement []BankItem) (m
 func sameDay(a, b time.Time) bool {
 	return a.UTC().Format("2006-01-02") == b.UTC().Format("2006-01-02")
 }
+
+func withinValueDateTolerance(a, b time.Time, days int) bool {
+	if days < 1 {
+		days = 1
+	}
+	if days > 5 {
+		days = 5
+	}
+	delta := a.UTC().Sub(b.UTC()) / (24 * time.Hour)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= time.Duration(days)
+}

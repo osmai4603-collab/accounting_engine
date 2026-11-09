@@ -84,5 +84,10 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 func isCurrent(classification string) bool {
 	return classification == "" || classification == "current" ||
 		classification == "current_asset" || classification == "current_assets" ||
-		classification == "current_liability" || classification == "current_liabilities"
+		classification == "current_liability" || classification == "current_liabilities" ||
+		classification == "trade_receivable" || classification == "accounts_receivable" ||
+		classification == "inventory" || classification == "inventories" ||
+		classification == "prepaid_expense" || classification == "prepayments" ||
+		classification == "trade_payable" || classification == "accounts_payable" ||
+		classification == "accrued_expense" || classification == "short_term_borrowing"
 }

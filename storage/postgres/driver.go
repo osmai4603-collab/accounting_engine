@@ -180,10 +180,22 @@ func (d *Driver) UpdatePeriodState(id uuid.UUID, state masterdata.PeriodState) e
 	return err
 }
 func (d *Driver) GetNextSequenceWithLock(journalID uuid.UUID) (int64, error) {
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
 	var sequence int64
-	err := d.pool.QueryRow(context.Background(),
-		`INSERT INTO journals(id,next_sequence) VALUES($1,1) ON CONFLICT(id) DO UPDATE SET next_sequence=journals.next_sequence+1 RETURNING next_sequence`,
-		journalID).Scan(&sequence)
+	err = tx.QueryRow(ctx,
+		`INSERT INTO journals(id, company_id, code, next_sequence)
+		 VALUES($1, $2, $3, 1)
+		 ON CONFLICT(id) DO UPDATE SET next_sequence=journals.next_sequence+1
+		 RETURNING next_sequence`,
+		journalID, uuid.Nil, "GEN-"+journalID.String()).Scan(&sequence)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	return sequence, err
 }
 
@@ -231,6 +243,15 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 		return err
 	}
 	defer tx.Rollback(context.Background())
+	var sequence int64
+	if err := tx.QueryRow(context.Background(),
+		`SELECT next_sequence FROM journals WHERE id=$1 FOR UPDATE`, entry.JournalID).Scan(&sequence); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(context.Background(),
+		`UPDATE journals SET next_sequence=next_sequence+1 WHERE id=$1`, entry.JournalID); err != nil {
+		return err
+	}
 	if err := d.saveEntryTx(context.Background(), tx, entry); err != nil {
 		return err
 	}
@@ -245,13 +266,10 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if date.IsZero() {
 		date = entry.Date
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO account_moves(id,journal_id,period_id,entry_date,status,entry) VALUES($1,$2,$3,$4,$5,$6)
+	_, err = tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,status,entry) VALUES($1,$2,$3,$4,$5,$6,$7)
 	 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,entry_date=EXCLUDED.entry_date,status=EXCLUDED.status,entry=EXCLUDED.entry`,
-		entry.ID, entry.JournalID, entry.PeriodID, date, entry.Status, data)
+		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.Status, data)
 	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM account_move_lines WHERE move_id=$1`, entry.ID); err != nil {
 		return err
 	}
 	for _, line := range entry.Lines {
@@ -260,10 +278,12 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO account_move_lines (
-			move_id,line_id,account_id,partner_id,cost_center_id,matching_number,reconciled_amount,
+			move_id,company_id,line_id,account_id,partner_id,cost_center_id,project_id,business_unit_id,matching_number,reconciled_amount,
 			debit,credit,amount_currency,currency_id,line_data
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-			entry.ID, line.ID, line.AccountID, line.PartnerID, line.CostCenterID, line.MatchingNumber,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT(move_id,line_id) DO UPDATE SET
+			account_id=EXCLUDED.account_id, debit=EXCLUDED.debit, credit=EXCLUDED.credit, line_data=EXCLUDED.line_data`,
+			entry.ID, entry.CompanyID, line.ID, line.AccountID, line.PartnerID, line.CostCenterID, line.ProjectID, line.BusinessUnitID, line.MatchingNumber,
 			line.ReconciledAmount, line.Debit.Amount(), line.Credit.Amount(), line.AmountCurrency.Amount(),
 			line.Currency, lineData); err != nil {
 			return err

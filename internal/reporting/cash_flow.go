@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"accounting_engine/internal/masterdata"
+
 	"github.com/shopspring/decimal"
 )
 
@@ -60,33 +61,71 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 	}
 	for _, account := range accounts {
 		change := signedBalance(periodBalances[account.ID], account)
-		classification := normalizeClassification(account.SubClassification)
 		if isCashAccount(account) {
 			continue
 		}
-		switch account.AccountType {
-		case masterdata.AccountTypeExpense:
-			if strings.Contains(classification, "depreciation") || strings.Contains(classification, "provision") {
-				report.NonCashAdjustments = report.NonCashAdjustments.Add(change.Abs())
+		if account.IsNonCashAdjustment {
+			report.NonCashAdjustments = report.NonCashAdjustments.Add(change.Abs())
+			continue
+		}
+		if account.AccountType == masterdata.AccountTypeEquity {
+			report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
+			continue
+		}
+		classification := normalizeClassification(account.SubClassification)
+		if account.CashFlowActivity == "" || account.CashFlowActivity == "unclassified" {
+			if account.AccountType == masterdata.AccountTypeAsset &&
+				(strings.Contains(classification, "receiv") || strings.Contains(classification, "inventory") ||
+					strings.Contains(classification, "prepaid")) {
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(change)
+				continue
 			}
-		case masterdata.AccountTypeAsset:
-			if strings.Contains(classification, "receivable") || strings.Contains(classification, "inventory") || strings.Contains(classification, "prepaid") {
+			if account.AccountType == masterdata.AccountTypeLiability &&
+				(strings.Contains(classification, "payable") || strings.Contains(classification, "accrued")) {
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(change)
+				continue
+			}
+		}
+		if account.AccountType == masterdata.AccountTypeAsset &&
+			(strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") ||
+				strings.Contains(classification, "plant") || strings.Contains(classification, "equipment")) {
+			report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
+			continue
+		}
+		switch account.CashFlowActivity {
+		case "operating":
+			switch account.AccountType {
+			case masterdata.AccountTypeAsset:
 				open := signedBalance(openBalances[account.ID], account)
 				close := signedBalance(closeBalances[account.ID], account)
 				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(close.Sub(open))
-			} else if strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") || strings.Contains(classification, "equipment") || strings.Contains(classification, "property") || strings.Contains(classification, "investment") {
-				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
-			}
-		case masterdata.AccountTypeLiability:
-			if strings.Contains(classification, "payable") || strings.Contains(classification, "accrued") {
+			case masterdata.AccountTypeLiability:
 				open := signedBalance(openBalances[account.ID], account)
 				close := signedBalance(closeBalances[account.ID], account)
 				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(close.Sub(open))
+			}
+		case "investing":
+			if account.AccountType == masterdata.AccountTypeAsset {
+				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
+			} else {
+				report.InvestingCashFlow = report.InvestingCashFlow.Add(change)
+			}
+		case "financing":
+			report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
+		case "none", "unclassified":
+			if strings.Contains(classification, "receiv") || strings.Contains(classification, "inventory") || strings.Contains(classification, "prepaid") {
+				open := signedBalance(openBalances[account.ID], account)
+				close := signedBalance(closeBalances[account.ID], account)
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(close.Sub(open))
+			} else if strings.Contains(classification, "payable") || strings.Contains(classification, "accrued") {
+				open := signedBalance(openBalances[account.ID], account)
+				close := signedBalance(closeBalances[account.ID], account)
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(close.Sub(open))
+			} else if strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") || strings.Contains(classification, "equipment") || strings.Contains(classification, "plant") || strings.Contains(classification, "property") || strings.Contains(classification, "investment") {
+				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
 			} else if strings.Contains(classification, "loan") || strings.Contains(classification, "lease") {
 				report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
 			}
-		case masterdata.AccountTypeEquity:
-			report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
 		}
 	}
 	report.OperatingCashFlow = report.NetProfitBeforeTax.Add(report.NonCashAdjustments).Add(report.WorkingCapitalChange)

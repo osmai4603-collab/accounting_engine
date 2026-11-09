@@ -10,6 +10,7 @@ import (
 )
 
 type EconomicEvent struct {
+	CompanyID      uuid.UUID
 	IdempotencyKey string
 	EventType      string
 	Date           time.Time
@@ -29,6 +30,7 @@ func (e EconomicEvent) Validate() error {
 }
 
 type OpenLine struct {
+	CompanyID      uuid.UUID
 	ID             uuid.UUID
 	PartnerID      *uuid.UUID
 	Kind           LineKind
@@ -69,6 +71,7 @@ const (
 type AgingSchedule map[AgingBucket]financialtypes.Money
 
 type BankItem struct {
+	CompanyID uuid.UUID
 	ID        uuid.UUID
 	AccountID uuid.UUID
 	Date      time.Time
@@ -93,6 +96,7 @@ const (
 )
 
 type FixedAsset struct {
+	CompanyID               uuid.UUID
 	ID                      uuid.UUID
 	HistoricalCost          financialtypes.Money
 	SalvageValue            financialtypes.Money
@@ -104,4 +108,10 @@ type FixedAsset struct {
 	DecliningRate           decimal.Decimal
 	ExpenseAccountID        uuid.UUID
 	AccumulatedAccountID    uuid.UUID
+	AssetAccountID          uuid.UUID
+	LastDepreciationDate    time.Time
+	ImpairmentAccountID     uuid.UUID
+	DisposalGainAccountID   uuid.UUID
+	DisposalLossAccountID   uuid.UUID
+	DisposalCashAccountID   uuid.UUID
 }
