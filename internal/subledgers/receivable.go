@@ -10,18 +10,38 @@ import (
 )
 
 type ReceivableLedger struct {
-	repo Repository
+	repo      Repository
+	companyID uuid.UUID
 }
 
 func NewReceivableLedger(repo Repository) *ReceivableLedger {
 	return &ReceivableLedger{repo: repo}
 }
 
+func NewReceivableLedgerForCompany(repo Repository, companyID uuid.UUID) *ReceivableLedger {
+	return &ReceivableLedger{repo: repo, companyID: companyID}
+}
+
 func (l *ReceivableLedger) AddInvoice(partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return l.addInvoice(uuid.Nil, partnerID, amount, documentDate, dueDate, reference)
+	}
+	return l.AddInvoiceForCompany(l.companyID, partnerID, amount, documentDate, dueDate, reference)
+}
+
+func (l *ReceivableLedger) AddInvoiceForCompany(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if companyID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	return l.addInvoice(companyID, partnerID, amount, documentDate, dueDate, reference)
+}
+
+func (l *ReceivableLedger) addInvoice(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if partnerID == uuid.Nil || amount.Currency() == "" || amount.IsNegative() {
 		return OpenLine{}, ErrInvalidAmount
 	}
 	line := OpenLine{
+		CompanyID:      companyID,
 		ID:             l.newLineID(),
 		PartnerID:      &partnerID,
 		Kind:           LineReceivable,
@@ -44,7 +64,7 @@ func (l *ReceivableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSch
 	if partnerID != nil {
 		partnerKey = partnerID.String()
 	}
-	lines, err := l.repo.ListOpenLines(partnerKey)
+	lines, err := l.listOpenLines(partnerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +89,17 @@ func (l *ReceivableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSch
 		result[bucket] = total
 	}
 	return result, nil
+}
+
+func (l *ReceivableLedger) listOpenLines(partnerID string) ([]OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return l.repo.ListOpenLines(partnerID)
+	}
+	repository, ok := l.repo.(CompanyOpenLineRepository)
+	if !ok {
+		return nil, ErrCompanyScopedOpenLinesRequired
+	}
+	return repository.ListOpenLinesForCompany(l.companyID, partnerID)
 }
 
 func agingBucket(asOf, dueDate time.Time) AgingBucket {

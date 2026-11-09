@@ -32,10 +32,5 @@ func (e *Engine) PostBulk(entries []JournalEntry, posterID string) error {
 			return &BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
 		}
 	}
-	if bulkRepo, ok := e.repo.(BulkRepository); ok {
-		if err := bulkRepo.PostBulk(entries); err != nil {
-			return err
-		}
-	}
 	return nil
 }

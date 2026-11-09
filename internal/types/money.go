@@ -25,6 +25,10 @@ func NewMoney(amount decimal.Decimal, currency string) (Money, error) {
 	return newMoney(amount, normalized)
 }
 
+func NewMoneyFromDecimal(amount decimal.Decimal, currency string) (Money, error) {
+	return NewMoney(amount, currency)
+}
+
 func NewMoneyFromString(value, currency string) (Money, error) {
 	normalized, err := normalizeCurrency(currency)
 	if err != nil {
@@ -80,6 +84,19 @@ func (m Money) Amount() decimal.Decimal {
 
 func (m Money) Currency() string {
 	return m.currency
+}
+
+func (m Money) MinorUnits() (int64, error) {
+	currency, ok := LookupCurrency(m.currency)
+	if !ok {
+		return 0, ErrInvalidCurrency
+	}
+	rounded := m.amount.RoundBank(currency.MinorUnit)
+	minorUnits := rounded.Shift(currency.MinorUnit)
+	if !minorUnits.Equal(minorUnits.Truncate(0)) || !minorUnits.BigInt().IsInt64() {
+		return 0, ErrAmountExceedsPrecision
+	}
+	return minorUnits.IntPart(), nil
 }
 
 func (m Money) Add(other Money) (Money, error) {
@@ -143,7 +160,7 @@ func CurrencyMinorUnit(currency string) int32 {
 
 func (m Money) MarshalJSON() ([]byte, error) {
 	if m.currency == "" {
-		return nil, ErrInvalidCurrency
+		return []byte("null"), nil
 	}
 	return json.Marshal(struct {
 		Amount   string `json:"amount"`
@@ -156,7 +173,8 @@ func (m Money) MarshalJSON() ([]byte, error) {
 
 func (m *Money) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return ErrInvalidAmount
+		*m = Money{}
+		return nil
 	}
 
 	var encoded struct {

@@ -113,6 +113,14 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 	return report, nil
 }
 
+func (e *GeneralLedgerEngine) GenerateForCompany(companyID, accountID uuid.UUID, start, end time.Time, currency string) (GeneralLedgerAccountReport, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return GeneralLedgerAccountReport{}, err
+	}
+	return NewGeneralLedgerEngine(repository).Generate(accountID, start, end, currency)
+}
+
 func signedAccountBalance(net decimal.Decimal, normal masterdata.NormalBalance) decimal.Decimal {
 	if normal == masterdata.NormalBalanceCredit {
 		return net.Neg()

@@ -122,6 +122,33 @@ func TestAuditChainDetectsPayloadTampering(t *testing.T) {
 	}
 }
 
+func TestAuditChainIsolatedPerCompany(t *testing.T) {
+	repository := &memoryAuditRepository{}
+	chain := NewAuditChain(repository)
+	companyA, companyB := uuid.New(), uuid.New()
+	first := newAuditLog("POST", []byte(`{"amount":"10"}`))
+	first.CompanyID = companyA
+	second := newAuditLog("POST", []byte(`{"amount":"20"}`))
+	second.CompanyID = companyB
+	third := newAuditLog("REVERSE", []byte(`{"amount":"10"}`))
+	third.CompanyID = companyA
+	for _, log := range []FinancialAuditLog{first, second, third} {
+		if err := chain.Append(context.Background(), log); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if repository.logs[0].PreviousLogHash != GenesisHash || repository.logs[1].PreviousLogHash != GenesisHash {
+		t.Fatal("each company audit chain must start with the genesis hash")
+	}
+	if repository.logs[2].PreviousLogHash != repository.logs[0].CurrentLogHash {
+		t.Fatal("audit record did not continue its company's chain")
+	}
+	valid, err := chain.VerifyIntegrity(context.Background())
+	if err != nil || !valid {
+		t.Fatalf("VerifyIntegrity() = (%v, %v), want (true, nil)", valid, err)
+	}
+}
+
 func TestSelfApprovalIsProhibitedAboveThreshold(t *testing.T) {
 	threshold, err := financialtypes.NewMoneyFromString("1000", "USD")
 	if err != nil {

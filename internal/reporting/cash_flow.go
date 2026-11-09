@@ -1,28 +1,33 @@
 package reporting
 
 import (
-	"strings"
+	"errors"
 	"time"
 
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/posting"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
+var ErrCashFlowClassificationRequired = errors.New("explicit cash-flow activity is required")
+
 type CashFlow struct {
-	StartDate            time.Time
-	EndDate              time.Time
-	Currency             string
-	NetProfitBeforeTax   decimal.Decimal
-	NonCashAdjustments   decimal.Decimal
-	WorkingCapitalChange decimal.Decimal
-	OperatingCashFlow    decimal.Decimal
-	InvestingCashFlow    decimal.Decimal
-	FinancingCashFlow    decimal.Decimal
-	NetChangeInCash      decimal.Decimal
-	OpeningCash          decimal.Decimal
-	ClosingCash          decimal.Decimal
-	Reconciled           bool
+	StartDate                        time.Time
+	EndDate                          time.Time
+	Currency                         string
+	NetProfitBeforeTax               decimal.Decimal
+	InvestingAndFinancingAdjustments decimal.Decimal
+	NonCashAdjustments               decimal.Decimal
+	WorkingCapitalChange             decimal.Decimal
+	OperatingCashFlow                decimal.Decimal
+	InvestingCashFlow                decimal.Decimal
+	FinancingCashFlow                decimal.Decimal
+	NetChangeInCash                  decimal.Decimal
+	OpeningCash                      decimal.Decimal
+	ClosingCash                      decimal.Decimal
+	Reconciled                       bool
 }
 
 type CashFlowEngine struct{ repository Repository }
@@ -59,76 +64,47 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 		Currency:           currency,
 		NetProfitBeforeTax: income.ProfitBeforeTax,
 	}
+	report.InvestingAndFinancingAdjustments = income.InvestingIncome.Add(income.FinancingIncome).
+		Sub(income.FinanceCosts).Neg()
+	report.InvestingCashFlow = income.InvestingIncome
+	report.FinancingCashFlow = income.FinancingIncome.Sub(income.FinanceCosts)
 	for _, account := range accounts {
 		change := signedBalance(periodBalances[account.ID], account)
 		if isCashAccount(account) {
 			continue
 		}
-		if account.IsNonCashAdjustment {
-			report.NonCashAdjustments = report.NonCashAdjustments.Add(change.Abs())
+		activity, err := cashFlowActivity(account)
+		if err != nil {
+			return CashFlow{}, err
+		}
+		if account.IsNonCashAdjustment || activity == masterdata.CashFlowNonCashAdjustment {
+			report.NonCashAdjustments = report.NonCashAdjustments.Add(change)
 			continue
 		}
-		if account.AccountType == masterdata.AccountTypeEquity {
-			report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
-			continue
-		}
-		classification := normalizeClassification(account.SubClassification)
-		if account.CashFlowActivity == "" || account.CashFlowActivity == "unclassified" {
-			if account.AccountType == masterdata.AccountTypeAsset &&
-				(strings.Contains(classification, "receiv") || strings.Contains(classification, "inventory") ||
-					strings.Contains(classification, "prepaid")) {
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(change)
-				continue
-			}
-			if account.AccountType == masterdata.AccountTypeLiability &&
-				(strings.Contains(classification, "payable") || strings.Contains(classification, "accrued")) {
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(change)
-				continue
-			}
-		}
-		if account.AccountType == masterdata.AccountTypeAsset &&
-			(strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") ||
-				strings.Contains(classification, "plant") || strings.Contains(classification, "equipment")) {
-			report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
-			continue
-		}
-		switch account.CashFlowActivity {
-		case "operating":
+		open := signedBalance(openBalances[account.ID], account)
+		close := signedBalance(closeBalances[account.ID], account)
+		balanceChange := close.Sub(open)
+		switch activity {
+		case masterdata.CashFlowOperating:
 			switch account.AccountType {
 			case masterdata.AccountTypeAsset:
-				open := signedBalance(openBalances[account.ID], account)
-				close := signedBalance(closeBalances[account.ID], account)
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(close.Sub(open))
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(balanceChange)
 			case masterdata.AccountTypeLiability:
-				open := signedBalance(openBalances[account.ID], account)
-				close := signedBalance(closeBalances[account.ID], account)
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(close.Sub(open))
+				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(balanceChange)
 			}
-		case "investing":
-			if account.AccountType == masterdata.AccountTypeAsset {
-				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
-			} else {
-				report.InvestingCashFlow = report.InvestingCashFlow.Add(change)
+		case masterdata.CashFlowInvesting:
+			switch account.AccountType {
+			case masterdata.AccountTypeAsset:
+				report.InvestingCashFlow = report.InvestingCashFlow.Sub(balanceChange)
+			case masterdata.AccountTypeLiability, masterdata.AccountTypeEquity:
+				report.InvestingCashFlow = report.InvestingCashFlow.Add(balanceChange)
 			}
-		case "financing":
-			report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
-		case "none", "unclassified":
-			if strings.Contains(classification, "receiv") || strings.Contains(classification, "inventory") || strings.Contains(classification, "prepaid") {
-				open := signedBalance(openBalances[account.ID], account)
-				close := signedBalance(closeBalances[account.ID], account)
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Sub(close.Sub(open))
-			} else if strings.Contains(classification, "payable") || strings.Contains(classification, "accrued") {
-				open := signedBalance(openBalances[account.ID], account)
-				close := signedBalance(closeBalances[account.ID], account)
-				report.WorkingCapitalChange = report.WorkingCapitalChange.Add(close.Sub(open))
-			} else if strings.Contains(classification, "fixed") || strings.Contains(classification, "ppe") || strings.Contains(classification, "equipment") || strings.Contains(classification, "plant") || strings.Contains(classification, "property") || strings.Contains(classification, "investment") {
-				report.InvestingCashFlow = report.InvestingCashFlow.Sub(change.Abs())
-			} else if strings.Contains(classification, "loan") || strings.Contains(classification, "lease") {
-				report.FinancingCashFlow = report.FinancingCashFlow.Add(change)
-			}
+		case masterdata.CashFlowFinancing:
+			report.FinancingCashFlow = report.FinancingCashFlow.Add(balanceChange)
 		}
 	}
-	report.OperatingCashFlow = report.NetProfitBeforeTax.Add(report.NonCashAdjustments).Add(report.WorkingCapitalChange)
+	report.OperatingCashFlow = report.NetProfitBeforeTax.Add(report.InvestingAndFinancingAdjustments).
+		Add(report.NonCashAdjustments).Add(report.WorkingCapitalChange)
 	report.NetChangeInCash = report.OperatingCashFlow.Add(report.InvestingCashFlow).Add(report.FinancingCashFlow)
 	for _, account := range accounts {
 		if isCashAccount(account) {
@@ -143,9 +119,127 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 	return report, nil
 }
 
+func (e *CashFlowEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	return NewCashFlowEngine(repository).Generate(start, end, currency)
+}
+
+func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (CashFlow, error) {
+	accounts, err := listAccounts(e.repository)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	entries, err := listPostedEntries(e.repository, start, end)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	accountByID := make(map[uuid.UUID]masterdata.Account, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+	}
+	report := CashFlow{StartDate: start, EndDate: end, Currency: currency}
+	for _, entry := range entries {
+		if entry.Status != posting.EntryPosted {
+			continue
+		}
+		for i, cashLine := range entry.Lines {
+			cashAccount := accountByID[cashLine.AccountID]
+			if !isCashAccount(cashAccount) {
+				continue
+			}
+			cashDebit, cashCredit := lineAmounts(cashLine, currency)
+			cashChange := cashDebit.Sub(cashCredit)
+			if cashChange.IsZero() {
+				continue
+			}
+			activityAmounts := make(map[string]decimal.Decimal)
+			total := decimal.Zero
+			for j, other := range entry.Lines {
+				if i == j {
+					continue
+				}
+				debit, credit := lineAmounts(other, currency)
+				amount := debit.Add(credit).Abs()
+				if amount.IsZero() {
+					continue
+				}
+				account := accountByID[other.AccountID]
+				activity, err := cashFlowActivity(account)
+				if err != nil {
+					return CashFlow{}, err
+				}
+				activityAmounts[activity] = activityAmounts[activity].Add(amount)
+				total = total.Add(amount)
+			}
+			if total.IsZero() {
+				report.OperatingCashFlow = report.OperatingCashFlow.Add(cashChange)
+				continue
+			}
+			for activity, amount := range activityAmounts {
+				allocated := cashChange.Mul(amount).Div(total)
+				switch activity {
+				case masterdata.CashFlowInvesting:
+					report.InvestingCashFlow = report.InvestingCashFlow.Add(allocated)
+				case masterdata.CashFlowFinancing:
+					report.FinancingCashFlow = report.FinancingCashFlow.Add(allocated)
+				default:
+					report.OperatingCashFlow = report.OperatingCashFlow.Add(allocated)
+				}
+			}
+		}
+	}
+	open, err := accountBalances(e.repository, time.Time{}, start, currency)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	close, err := accountBalances(e.repository, time.Time{}, end, currency)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	for _, account := range accounts {
+		if isCashAccount(account) {
+			report.OpeningCash = report.OpeningCash.Add(signedBalance(open[account.ID], account))
+			report.ClosingCash = report.ClosingCash.Add(signedBalance(close[account.ID], account))
+		}
+	}
+	report.NetChangeInCash = report.OperatingCashFlow.Add(report.InvestingCashFlow).Add(report.FinancingCashFlow)
+	report.Reconciled = report.NetChangeInCash.Equal(report.ClosingCash.Sub(report.OpeningCash))
+	if !report.Reconciled {
+		return report, ErrUnbalancedCashFlow
+	}
+	return report, nil
+}
+
+func (e *CashFlowEngine) GenerateDirectForCompany(companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return CashFlow{}, err
+	}
+	return NewCashFlowEngine(repository).GenerateDirect(start, end, currency)
+}
+
 func isCashAccount(account masterdata.Account) bool {
 	return account.AccountType == masterdata.AccountTypeAsset &&
-		(account.IsCashEquivalent || account.EffectiveIsCashEquivalent())
+		(account.CashFlowActivity == masterdata.CashFlowCashEquivalent ||
+			account.IsCashEquivalent || account.EffectiveIsCashEquivalent())
+}
+
+func cashFlowActivity(account masterdata.Account) (string, error) {
+	switch account.CashFlowActivity {
+	case masterdata.CashFlowOperating,
+		masterdata.CashFlowInvesting,
+		masterdata.CashFlowFinancing,
+		masterdata.CashFlowNonCashAdjustment:
+		return account.CashFlowActivity, nil
+	case masterdata.CashFlowCashEquivalent:
+		if isCashAccount(account) {
+			return account.CashFlowActivity, nil
+		}
+	}
+	return "", ErrCashFlowClassificationRequired
 }
 
 func signedBalance(side accountSide, account masterdata.Account) decimal.Decimal {

@@ -43,22 +43,44 @@ func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reve
 	}
 	for i, line := range original.Lines {
 		reversal.Lines[i] = JournalEntryLine{
-			CompanyID:      line.CompanyID,
-			ID:             uuid.New(),
-			AccountID:      line.AccountID,
-			PartnerID:      line.PartnerID,
-			CostCenterID:   line.CostCenterID,
-			ProjectID:      line.ProjectID,
-			BusinessUnitID: line.BusinessUnitID,
-			Debit:          line.Credit,
-			Credit:         line.Debit,
-			AmountCurrency: line.AmountCurrency,
-			Currency:       line.Currency,
-			ForeignAmount:  line.ForeignAmount,
+			CompanyID:           line.CompanyID,
+			ID:                  uuid.New(),
+			AccountID:           line.AccountID,
+			PartnerID:           line.PartnerID,
+			CostCenterID:        line.CostCenterID,
+			ProjectID:           line.ProjectID,
+			SegmentID:           line.SegmentID,
+			BusinessUnitID:      line.BusinessUnitID,
+			Debit:               line.Credit,
+			Credit:              line.Debit,
+			TransactionAmount:   line.TransactionAmount,
+			TransactionCurrency: line.TransactionCurrency,
+			ExchangeRate:        line.ExchangeRate,
+			FunctionalDebit:     line.FunctionalCredit,
+			FunctionalCredit:    line.FunctionalDebit,
+			AmountCurrency:      line.AmountCurrency,
+			Currency:            line.Currency,
+			ForeignAmount:       line.ForeignAmount,
 		}
 	}
 	if err := reversal.Validate(); err != nil {
 		return JournalEntry{}, err
+	}
+	if repository, ok := e.repo.(AtomicReversalRepository); ok {
+		if err := e.prepareForPosting(&reversal, posterID); err != nil {
+			return JournalEntry{}, err
+		}
+		if err := e.repo.SaveDraft(reversal); err != nil {
+			return JournalEntry{}, err
+		}
+		now := time.Now().UTC()
+		reversal.Status = EntryPosted
+		reversal.PostedBy = posterID
+		reversal.PostedAt = &now
+		reversal.UpdatedAt = now
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return repository.PostReversalAtomic(original, reversal)
 	}
 	if err := e.repo.SaveDraft(reversal); err != nil {
 		return JournalEntry{}, err

@@ -2,6 +2,8 @@ package accounting_engine_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,101 @@ import (
 
 	"github.com/google/uuid"
 )
+
+func TestConcurrentPostingSequenceIntegrity(t *testing.T) {
+	const workers = 50
+	const entriesPerWorker = 1000
+	const totalEntries = workers * entriesPerWorker
+	driver := memory.New()
+	journalID := uuid.New()
+	debitAccountID, creditAccountID := uuid.New(), uuid.New()
+	amount, err := financialtypes.NewMoneyFromString("1", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sequences := make(chan int64, totalEntries)
+	errorsFound := make(chan error, workers)
+	var workersGroup sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		workersGroup.Add(1)
+		go func(worker int) {
+			defer workersGroup.Done()
+			for index := 0; index < entriesPerWorker; index++ {
+				entry, err := posting.NewJournalEntry(journalID, time.Now().UTC(), "maker",
+					[]posting.JournalEntryLine{
+						{ID: uuid.New(), AccountID: debitAccountID, Debit: amount},
+						{ID: uuid.New(), AccountID: creditAccountID, Credit: amount},
+					})
+				if err != nil {
+					errorsFound <- err
+					return
+				}
+				if err := driver.SaveDraft(entry); err != nil {
+					errorsFound <- err
+					return
+				}
+				entry.Status = posting.EntryPosted
+				posted, err := driver.PostAndSequence(entry)
+				if err != nil {
+					errorsFound <- err
+					return
+				}
+				sequences <- posted.SequenceNumber
+			}
+		}(worker)
+	}
+	workersGroup.Wait()
+	close(sequences)
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Fatal(err)
+	}
+	seen := make([]bool, totalEntries+1)
+	count := 0
+	for sequence := range sequences {
+		if sequence < 1 || sequence > totalEntries || seen[sequence] {
+			t.Fatalf("invalid or duplicate journal sequence %d", sequence)
+		}
+		seen[sequence] = true
+		count++
+	}
+	if count != totalEntries {
+		t.Fatalf("posted entries = %d, want %d", count, totalEntries)
+	}
+	for sequence := 1; sequence <= totalEntries; sequence++ {
+		if !seen[sequence] {
+			t.Fatalf("journal sequence %d is missing", sequence)
+		}
+	}
+}
+
+func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
+	driver := memory.New()
+	journalID := uuid.New()
+	amount, err := financialtypes.NewMoneyFromString("1", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := mustEntry(t, journalID, time.Now().UTC(), uuid.New(), uuid.New(), amount, true)
+	if err := driver.SaveDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	modified := entry
+	modified.Reference = "changed-after-draft"
+	modified.Status = posting.EntryPosted
+	if _, err := driver.PostAndSequence(modified); !errors.Is(err, financialtypes.ErrCannotModifyPostedMove) {
+		t.Fatalf("PostAndSequence() error = %v, want immutable-draft error", err)
+	}
+	entry.Status = posting.EntryPosted
+	posted, err := driver.PostAndSequence(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted.SequenceNumber != 1 {
+		t.Fatalf("first valid entry sequence = %d, want 1", posted.SequenceNumber)
+	}
+}
 
 func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	driver := memory.New()
@@ -44,8 +141,8 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 		{Code: "1200", Name: "Accounts receivable", AccountType: masterdata.AccountTypeAsset},
 		{Code: "1500", Name: "Fixed assets", AccountType: masterdata.AccountTypeAsset},
 		{Code: "3000", Name: "Share capital", AccountType: masterdata.AccountTypeEquity},
-		{Code: "4000", Name: "Sales", AccountType: masterdata.AccountTypeIncome},
-		{Code: "5000", Name: "Expenses", AccountType: masterdata.AccountTypeExpense},
+		{Code: "4000", Name: "Sales", AccountType: masterdata.AccountTypeIncome, IFRSCategory: masterdata.IFRSCategoryOperating},
+		{Code: "5000", Name: "Expenses", AccountType: masterdata.AccountTypeExpense, IFRSCategory: masterdata.IFRSCategoryOperating},
 	}
 	for _, account := range definitions {
 		account.ID = uuid.New()

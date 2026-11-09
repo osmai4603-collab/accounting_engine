@@ -8,6 +8,7 @@ import (
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/subledgers"
 	financialtypes "accounting_engine/internal/types"
+	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -15,6 +16,32 @@ import (
 type memoryRepository struct {
 	accounts []masterdata.Account
 	entries  []posting.JournalEntry
+}
+
+func TestTrialBalanceReportingIsCompanyScoped(t *testing.T) {
+	repository := memory.New()
+	companyA, companyB := uuid.New(), uuid.New()
+	accountA := reportAccount(uuid.New(), "1000", "Cash A", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents)
+	accountA.CompanyID = companyA
+	accountB := reportAccount(uuid.New(), "1000", "Cash B", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents)
+	accountB.CompanyID = companyB
+	if err := repository.CreateAccount(accountA); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateAccount(accountB); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := NewTrialBalanceEngine(repository).GenerateForCompany(
+		companyA, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC), "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Lines) != 1 || report.Lines[0].AccountID != accountA.ID {
+		t.Fatalf("company-scoped trial balance contains wrong accounts: %+v", report.Lines)
+	}
 }
 
 func (r *memoryRepository) ListAccounts() ([]masterdata.Account, error) {
@@ -46,10 +73,51 @@ func reportMoney(t *testing.T, amount, currency string) financialtypes.Money {
 }
 
 func reportAccount(id uuid.UUID, code, name string, accountType masterdata.AccountType, classification string) masterdata.Account {
-	return masterdata.Account{
+	account := masterdata.Account{
 		ID: id, Code: code, Name: name, AccountType: accountType,
 		NormalBalance: masterdata.DefaultNormalBalance(accountType), SubClassification: classification,
 	}
+	switch accountType {
+	case masterdata.AccountTypeIncome, masterdata.AccountTypeExpense:
+		account.IFRSCategory = masterdata.IFRSCategoryOperating
+		account.CashFlowActivity = masterdata.CashFlowOperating
+	case masterdata.AccountTypeEquity:
+		account.IFRSCategory = masterdata.IFRSCategoryBalanceSheetPerpetual
+		account.CashFlowActivity = masterdata.CashFlowFinancing
+	case masterdata.AccountTypeAsset:
+		account.IFRSCategory = masterdata.IFRSCategoryBalanceSheetPerpetual
+		switch classification {
+		case masterdata.SubClassCashAndEquivalents, masterdata.SubClassBank, "cash":
+			account.CashFlowActivity = masterdata.CashFlowCashEquivalent
+			account.IsCashEquivalent = true
+		case masterdata.SubClassPropertyPlantEquipment, masterdata.SubClassIntangibleAssets,
+			masterdata.SubClassRightOfUseAssets, masterdata.SubClassFinancialInvestments:
+			account.CashFlowActivity = masterdata.CashFlowInvesting
+		default:
+			account.CashFlowActivity = masterdata.CashFlowOperating
+		}
+	case masterdata.AccountTypeLiability:
+		account.IFRSCategory = masterdata.IFRSCategoryBalanceSheetPerpetual
+		switch classification {
+		case masterdata.SubClassShortTermBorrowings, masterdata.SubClassLongTermBorrowings,
+			masterdata.SubClassCurrentLeaseLiabilities, masterdata.SubClassNonCurrentLeaseLiabilities,
+			"loan", "lease":
+			account.CashFlowActivity = masterdata.CashFlowFinancing
+		default:
+			account.CashFlowActivity = masterdata.CashFlowOperating
+		}
+	}
+	switch classification {
+	case masterdata.SubClassFinanceIncome:
+		account.IFRSCategory = masterdata.IFRSCategoryInvesting
+	case masterdata.SubClassFinanceCost:
+		account.IFRSCategory = masterdata.IFRSCategoryFinancing
+	case masterdata.SubClassTaxExpense, masterdata.SubClassIncomeTaxExpense:
+		account.IFRSCategory = masterdata.IFRSCategoryIncomeTaxes
+	case masterdata.SubClassOCINonRecyclable, masterdata.SubClassOCIRecyclable:
+		account.IFRSCategory = masterdata.IFRSCategoryEquityMovements
+	}
+	return account
 }
 
 func reportEntry(t *testing.T, date time.Time, lines ...posting.JournalEntryLine) posting.JournalEntry {
@@ -112,6 +180,62 @@ func TestFinancialStatementsAndTrialBalance(t *testing.T) {
 	}
 }
 
+func TestIncomeStatementRequiresExplicitIFRSCategory(t *testing.T) {
+	expense := reportAccount(uuid.New(), "5000", "Expense", masterdata.AccountTypeExpense, masterdata.SubClassOtherOperatingExpense)
+	expense.IFRSCategory = ""
+	repository := &memoryRepository{accounts: []masterdata.Account{expense}}
+	_, err := NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != ErrIFRSClassificationRequired {
+		t.Fatalf("Generate() error = %v, want explicit IFRS category error", err)
+	}
+}
+
+func TestCashFlowRequiresExplicitActivity(t *testing.T) {
+	account := reportAccount(uuid.New(), "1200", "Receivables", masterdata.AccountTypeAsset, masterdata.SubClassTradeReceivables)
+	account.CashFlowActivity = ""
+	repository := &memoryRepository{accounts: []masterdata.Account{account}}
+	_, err := NewCashFlowEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != ErrCashFlowClassificationRequired {
+		t.Fatalf("Generate() error = %v, want explicit cash-flow activity error", err)
+	}
+}
+
+func TestIndirectCashFlowSeparatesInvestingAndFinancingResults(t *testing.T) {
+	cashID, capitalID, investingIncomeID, financeCostID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	cash := reportAccount(cashID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents)
+	capital := reportAccount(capitalID, "3000", "Capital", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital)
+	investingIncome := reportAccount(investingIncomeID, "4100", "Investment income", masterdata.AccountTypeIncome, masterdata.SubClassFinanceIncome)
+	financeCost := reportAccount(financeCostID, "5100", "Finance cost", masterdata.AccountTypeExpense, masterdata.SubClassFinanceCost)
+	repository := &memoryRepository{accounts: []masterdata.Account{cash, capital, investingIncome, financeCost}}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC)
+	repository.entries = []posting.JournalEntry{
+		reportEntry(t, start.AddDate(0, 0, 1),
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "200", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: capitalID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "200", "USD")},
+		),
+		reportEntry(t, start.AddDate(0, 0, 2),
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "50", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: investingIncomeID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "50", "USD")},
+		),
+		reportEntry(t, start.AddDate(0, 0, 3),
+			posting.JournalEntryLine{AccountID: financeCostID, Debit: reportMoney(t, "20", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "20", "USD")},
+		),
+	}
+	report, err := NewCashFlowEngine(repository).Generate(start, end, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Reconciled ||
+		!report.OperatingCashFlow.Equal(decimal.Zero) ||
+		!report.InvestingCashFlow.Equal(decimal.NewFromInt(50)) ||
+		!report.FinancingCashFlow.Equal(decimal.NewFromInt(180)) ||
+		!report.ClosingCash.Equal(decimal.NewFromInt(230)) {
+		t.Fatalf("cash flow categories are incorrect: %+v", report)
+	}
+}
+
 func TestClosingAndOpeningMoves(t *testing.T) {
 	cashID := uuid.New()
 	revenueID := uuid.New()
@@ -150,6 +274,52 @@ func TestClosingAndOpeningMoves(t *testing.T) {
 	}
 	if err := closing.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	if closing.TargetPeriodNumber != 13 || !closing.AdjustmentAuthorized {
+		t.Fatalf("year-end close must target authorized period 13: %+v", closing)
+	}
+	if _, err := NewClosingEngine(repository).GenerateOpeningMove(year, uuid.New(), "USD"); err != ErrOpeningMoveNotRequired {
+		t.Fatalf("GenerateOpeningMove() error = %v, want ErrOpeningMoveNotRequired", err)
+	}
+}
+
+func TestClosingHandlesContraIncomeAndExpenseAccounts(t *testing.T) {
+	cashID, contraRevenueID, contraExpenseID, retainedID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	contraRevenue := reportAccount(contraRevenueID, "4090", "Sales returns", masterdata.AccountTypeIncome, "operating_revenue")
+	contraRevenue.NormalBalance = masterdata.NormalBalanceDebit
+	contraRevenue.IsContraAccount = true
+	contraExpense := reportAccount(contraExpenseID, "5090", "Expense recoveries", masterdata.AccountTypeExpense, "cost_of_sales")
+	contraExpense.NormalBalance = masterdata.NormalBalanceCredit
+	contraExpense.IsContraAccount = true
+	repository := &memoryRepository{accounts: []masterdata.Account{
+		reportAccount(cashID, "1000", "Cash", masterdata.AccountTypeAsset, "cash"),
+		contraRevenue, contraExpense,
+		reportAccount(retainedID, "3300", "Retained earnings", masterdata.AccountTypeEquity, "retained_earnings"),
+	}}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	repository.entries = []posting.JournalEntry{
+		reportEntry(t, start.AddDate(0, 0, 1),
+			posting.JournalEntryLine{AccountID: contraRevenueID, Debit: reportMoney(t, "30", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "30", "USD")},
+		),
+		reportEntry(t, start.AddDate(0, 0, 2),
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "10", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: contraExpenseID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "10", "USD")},
+		),
+	}
+	year := masterdata.GenerateFiscalYear(start)
+	for i := range year.Periods {
+		year.Periods[i].State = masterdata.PeriodHardClosed
+	}
+	closing, netIncome, err := NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !netIncome.Equal(decimal.NewFromInt(-20)) {
+		t.Fatalf("net income = %s, want -20", netIncome)
+	}
+	if err := closing.Validate(); err != nil {
+		t.Fatalf("contra account closing entry is unbalanced: %v", err)
 	}
 }
 

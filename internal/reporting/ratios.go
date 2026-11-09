@@ -1,10 +1,10 @@
 package reporting
 
 import (
-	"strings"
 	"time"
 
 	"accounting_engine/internal/masterdata"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -74,14 +74,14 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 			if account.EffectiveIsCashEquivalent() {
 				cash = cash.Add(amount)
 			}
-			if strings.Contains(classification, "receivable") {
+			if classification == masterdata.SubClassTradeReceivables ||
+				classification == masterdata.SubClassAccountsReceivable {
 				receivables = receivables.Add(amount)
 			}
-			if strings.Contains(classification, "invent") {
+			if classification == masterdata.SubClassInventories {
 				inventory = inventory.Add(amount)
 			}
-			if strings.Contains(classification, "current") || strings.Contains(classification, "cash") ||
-				account.EffectiveIsCashEquivalent() || strings.Contains(classification, "receivable") || strings.Contains(classification, "invent") {
+			if account.IsCurrentAsset() || account.EffectiveIsCashEquivalent() {
 				currentAssets = currentAssets.Add(amount)
 			}
 		case masterdata.AccountTypeLiability:
@@ -121,6 +121,14 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 			InterestCoverage: safeDiv(income.OperatingProfit, income.FinanceCosts.Abs()),
 		},
 	}, nil
+}
+
+func (e *RatiosEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (FinancialRatios, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return FinancialRatios{}, err
+	}
+	return NewRatiosEngine(repository).Generate(start, end, currency)
 }
 
 func safeDiv(numerator, denominator decimal.Decimal) decimal.Decimal {

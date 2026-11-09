@@ -21,7 +21,7 @@ type EconomicEvent struct {
 }
 
 func (e EconomicEvent) Validate() error {
-	if strings.TrimSpace(e.IdempotencyKey) == "" ||
+	if e.CompanyID == uuid.Nil || strings.TrimSpace(e.IdempotencyKey) == "" ||
 		strings.TrimSpace(e.EventType) == "" ||
 		e.Amount.Currency() == "" || e.Amount.IsNegative() {
 		return ErrInvalidEvent
@@ -41,7 +41,14 @@ type OpenLine struct {
 	Reference      string
 	MatchingNumber string
 	MatchIDs       []uuid.UUID
+	Matches        []OpenLineMatch
 	Closed         bool
+}
+
+type OpenLineMatch struct {
+	MatchingNumber string
+	CounterpartID  uuid.UUID
+	Amount         financialtypes.Money
 }
 
 func linePartner(line OpenLine) string {
@@ -96,22 +103,25 @@ const (
 )
 
 type FixedAsset struct {
-	CompanyID               uuid.UUID
-	ID                      uuid.UUID
-	HistoricalCost          financialtypes.Money
-	SalvageValue            financialtypes.Money
-	UsefulLifeMonths        int
-	Method                  DepreciationMethod
-	InServiceDate           time.Time
-	AccumulatedDepreciation financialtypes.Money
-	CurrentBookValue        financialtypes.Money
-	DecliningRate           decimal.Decimal
-	ExpenseAccountID        uuid.UUID
-	AccumulatedAccountID    uuid.UUID
-	AssetAccountID          uuid.UUID
-	LastDepreciationDate    time.Time
-	ImpairmentAccountID     uuid.UUID
-	DisposalGainAccountID   uuid.UUID
-	DisposalLossAccountID   uuid.UUID
-	DisposalCashAccountID   uuid.UUID
+	CompanyID                      uuid.UUID
+	ID                             uuid.UUID
+	HistoricalCost                 financialtypes.Money
+	SalvageValue                   financialtypes.Money
+	UsefulLifeMonths               int
+	Method                         DepreciationMethod
+	InServiceDate                  time.Time
+	AccumulatedDepreciation        financialtypes.Money
+	AccumulatedImpairment          financialtypes.Money
+	CurrentBookValue               financialtypes.Money
+	DecliningRate                  decimal.Decimal
+	ExpenseAccountID               uuid.UUID
+	AccumulatedAccountID           uuid.UUID
+	AccumulatedImpairmentAccountID uuid.UUID
+	AssetAccountID                 uuid.UUID
+	LastDepreciationDate           time.Time
+	ImpairmentAccountID            uuid.UUID
+	DisposalGainAccountID          uuid.UUID
+	DisposalLossAccountID          uuid.UUID
+	DisposalCashAccountID          uuid.UUID
+	DisposedAt                     *time.Time
 }

@@ -3,6 +3,8 @@ package governance
 import (
 	"context"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
 type AuditIntegrityError struct {
@@ -20,9 +22,7 @@ func (e *AuditIntegrityError) Unwrap() error {
 }
 
 func VerifyAuditIntegrity(ctx context.Context, repository Repository) (bool, error) {
-	expectedPreviousHash := GenesisHash
-	expectedID := int64(1)
-	first := true
+	expectedPreviousHash := make(map[uuid.UUID]string)
 	err := repository.IterateAuditLogs(ctx, 0, func(log FinancialAuditLog) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -30,23 +30,17 @@ func VerifyAuditIntegrity(ctx context.Context, repository Repository) (bool, err
 		if log.ID == 0 {
 			return &AuditIntegrityError{LogID: log.ID, Transaction: log.EntityID.String(), Err: ErrAuditChainBroken}
 		}
-		if log.ID != expectedID && expectedID != 0 {
-			return &AuditIntegrityError{LogID: log.ID, Transaction: log.EntityID.String(), Err: ErrAuditChainBroken}
+		previous, found := expectedPreviousHash[log.CompanyID]
+		if !found {
+			previous = GenesisHash
 		}
-		if log.PreviousLogHash != expectedPreviousHash {
+		if log.PreviousLogHash != previous {
 			return &AuditIntegrityError{LogID: log.ID, Transaction: log.EntityID.String(), Err: ErrAuditChainBroken}
-		}
-		if first {
-			if log.PreviousLogHash != GenesisHash {
-				return &AuditIntegrityError{LogID: log.ID, Transaction: log.EntityID.String(), Err: ErrAuditChainBroken}
-			}
-			first = false
 		}
 		if CalculateHash(log) != log.CurrentLogHash {
 			return &AuditIntegrityError{LogID: log.ID, Transaction: log.EntityID.String(), Err: ErrAuditChainBroken}
 		}
-		expectedPreviousHash = log.CurrentLogHash
-		expectedID++
+		expectedPreviousHash[log.CompanyID] = log.CurrentLogHash
 		return nil
 	})
 	if err != nil {

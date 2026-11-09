@@ -8,18 +8,38 @@ import (
 )
 
 type PayableLedger struct {
-	repo Repository
+	repo      Repository
+	companyID uuid.UUID
 }
 
 func NewPayableLedger(repo Repository) *PayableLedger {
 	return &PayableLedger{repo: repo}
 }
 
+func NewPayableLedgerForCompany(repo Repository, companyID uuid.UUID) *PayableLedger {
+	return &PayableLedger{repo: repo, companyID: companyID}
+}
+
 func (l *PayableLedger) AddInvoice(partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return l.addInvoice(uuid.Nil, partnerID, amount, documentDate, dueDate, reference)
+	}
+	return l.AddInvoiceForCompany(l.companyID, partnerID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceForCompany(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if companyID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	return l.addInvoice(companyID, partnerID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) addInvoice(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if partnerID == uuid.Nil || amount.Currency() == "" || amount.IsNegative() {
 		return OpenLine{}, ErrInvalidAmount
 	}
 	line := OpenLine{
+		CompanyID:      companyID,
 		ID:             uuid.New(),
 		PartnerID:      &partnerID,
 		Kind:           LinePayable,
@@ -40,7 +60,7 @@ func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedu
 	if partnerID != nil {
 		partnerKey = partnerID.String()
 	}
-	lines, err := l.repo.ListOpenLines(partnerKey)
+	lines, err := l.listOpenLines(partnerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +70,10 @@ func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedu
 	currency := lines[0].ResidualAmount.Currency()
 	result := make(AgingSchedule)
 	for _, bucket := range []AgingBucket{AgingCurrent, Aging1To30, Aging31To60, Aging61To90, AgingOver90} {
-		zero, _ := financialtypes.Zero(currency)
+		zero, err := financialtypes.Zero(currency)
+		if err != nil {
+			return nil, err
+		}
 		result[bucket] = zero
 	}
 	for _, line := range lines {
@@ -65,4 +88,15 @@ func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedu
 		result[bucket] = amount
 	}
 	return result, nil
+}
+
+func (l *PayableLedger) listOpenLines(partnerID string) ([]OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return l.repo.ListOpenLines(partnerID)
+	}
+	repository, ok := l.repo.(CompanyOpenLineRepository)
+	if !ok {
+		return nil, ErrCompanyScopedOpenLinesRequired
+	}
+	return repository.ListOpenLinesForCompany(l.companyID, partnerID)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"accounting_engine/internal/masterdata"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -42,6 +43,116 @@ func TestRejectsUnbalancedEntry(t *testing.T) {
 	entry.Lines[1].Credit = money(t, "99", "USD")
 	if err := entry.Validate(); err != financialtypes.ErrUnbalancedMove {
 		t.Fatalf("expected unbalanced move, got %v", err)
+	}
+}
+
+func TestFunctionalCurrencyBalancesMultiCurrencyEntry(t *testing.T) {
+	functionalDebit := money(t, "375.0000", "SAR")
+	functionalCredit := money(t, "375.0000", "SAR")
+	entry, err := NewJournalEntry(uuid.New(), utcDate(t, 2026, 1, 15), "maker", []JournalEntryLine{
+		{
+			AccountID: uuid.New(), Debit: money(t, "100.0000", "EUR"),
+			TransactionAmount: money(t, "100.0000", "EUR"), TransactionCurrency: "EUR",
+			ExchangeRate: decimal.RequireFromString("3.75"), FunctionalDebit: functionalDebit,
+			FunctionalCredit: money(t, "0", "SAR"),
+		},
+		{
+			AccountID: uuid.New(), Credit: money(t, "375.0000", "USD"),
+			TransactionAmount: money(t, "375.0000", "USD"), TransactionCurrency: "USD",
+			ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: money(t, "0", "SAR"),
+			FunctionalCredit: functionalCredit,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Lines[1].FunctionalCredit = money(t, "374.99", "SAR")
+	entry.Lines[1].ExchangeRate = decimal.RequireFromString("0.9999733333")
+	if err := entry.Validate(); !errors.Is(err, financialtypes.ErrUnbalancedMove) {
+		t.Fatalf("Validate() error = %v, want functional-currency imbalance", err)
+	}
+}
+
+func TestCompanyScopedPostingRejectsCrossCompanyAccount(t *testing.T) {
+	masterRepo := masterdata.NewMockRepository()
+	companyA, companyB := uuid.New(), uuid.New()
+	if err := masterRepo.CreateCompany(masterdata.Company{
+		ID: companyA, Code: "CO-A", LegalName: "Company A",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accountA := masterdata.Account{
+		CompanyID: companyA, ID: uuid.New(), Code: "1000", Name: "Cash",
+		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
+	}
+	accountB := masterdata.Account{
+		CompanyID: companyB, ID: uuid.New(), Code: "1000", Name: "Cash",
+		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
+	}
+	if err := masterRepo.CreateAccount(accountA); err != nil {
+		t.Fatal(err)
+	}
+	if err := masterRepo.CreateAccount(accountB); err != nil {
+		t.Fatal(err)
+	}
+	yearA := masterdata.GenerateFiscalYear(utcDate(t, 2026, 1, 1))
+	yearA.CompanyID = companyA
+	yearB := masterdata.GenerateFiscalYear(utcDate(t, 2026, 1, 1))
+	yearB.CompanyID = companyB
+	if err := masterRepo.CreateFiscalYear(yearA); err != nil {
+		t.Fatal(err)
+	}
+	if err := masterRepo.CreateFiscalYear(yearB); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewEngine(NewMockRepository(), masterdata.NewService(masterRepo))
+	entry := balancedEntry(t, "maker")
+	entry.CompanyID = companyA
+	entry.Lines[0].AccountID = accountA.ID
+	entry.Lines[1].AccountID = accountB.ID
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(entry.ID, "checker"); !errors.Is(err, masterdata.ErrAccountNotFound) {
+		t.Fatalf("Post() error = %v, want cross-company account rejection", err)
+	}
+}
+
+func TestPostingChecksCompanyFunctionalCurrency(t *testing.T) {
+	functional := JournalEntry{
+		CompanyID: uuid.New(),
+		Lines: []JournalEntryLine{
+			{
+				AccountID: uuid.New(), Debit: money(t, "100", "EUR"),
+				TransactionAmount: money(t, "100", "EUR"), TransactionCurrency: "EUR",
+				ExchangeRate:    decimal.RequireFromString("3.75"),
+				FunctionalDebit: money(t, "375", "SAR"), FunctionalCredit: money(t, "0", "SAR"),
+			},
+			{
+				AccountID: uuid.New(), Credit: money(t, "375", "USD"),
+				TransactionAmount: money(t, "375", "USD"), TransactionCurrency: "USD",
+				ExchangeRate:    decimal.NewFromInt(1),
+				FunctionalDebit: money(t, "0", "SAR"), FunctionalCredit: money(t, "375", "SAR"),
+			},
+		},
+	}
+	if err := validateFunctionalCurrency(functional, "SAR"); err != nil {
+		t.Fatalf("valid functional currency was rejected: %v", err)
+	}
+	if err := validateFunctionalCurrency(functional, "USD"); !errors.Is(err, ErrFunctionalCurrencyMismatch) {
+		t.Fatalf("validateFunctionalCurrency() error = %v, want mismatch", err)
+	}
+}
+
+func TestDraftContentMatchDetectsLineChanges(t *testing.T) {
+	saved := balancedEntry(t, "maker")
+	candidate := saved
+	candidate.Lines = append([]JournalEntryLine(nil), saved.Lines...)
+	candidate.Lines[0].Debit = money(t, "99", "USD")
+	if DraftContentMatches(saved, candidate) {
+		t.Fatal("DraftContentMatches accepted modified draft lines")
 	}
 }
 
@@ -134,6 +245,45 @@ func TestConcurrentSequences(t *testing.T) {
 			t.Fatalf("duplicate sequence %d", entry.SequenceNumber)
 		}
 		seen[entry.SequenceNumber] = true
+	}
+	if len(seen) != count || int64(len(seen)) != int64(count) {
+		t.Fatalf("got %d posted sequence numbers, want %d", len(seen), count)
+	}
+	for sequence := int64(1); sequence <= count; sequence++ {
+		if !seen[sequence] {
+			t.Fatalf("sequence gap at %d", sequence)
+		}
+	}
+}
+
+func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
+	repo := NewMockRepository()
+	engine := NewEngine(repo, nil)
+	engine.SetMakerCheckerThreshold(decimal.NewFromInt(500))
+
+	rejected := balancedEntry(t, "maker")
+	rejected.Lines[0].Debit = money(t, "600", "USD")
+	rejected.Lines[1].Credit = money(t, "600", "USD")
+	if err := engine.CreateDraft(rejected); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(rejected.ID, "maker"); !errors.Is(err, financialtypes.ErrMakerCheckerViolation) {
+		t.Fatalf("expected maker-checker rejection, got %v", err)
+	}
+
+	valid := balancedEntry(t, "maker")
+	if err := engine.CreateDraft(valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(valid.ID, "checker"); err != nil {
+		t.Fatal(err)
+	}
+	posted, err := repo.GetEntryByID(valid.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted.SequenceNumber != 1 {
+		t.Fatalf("first successful posting got sequence %d, want 1", posted.SequenceNumber)
 	}
 }
 

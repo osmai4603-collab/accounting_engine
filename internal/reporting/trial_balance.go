@@ -7,6 +7,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -54,6 +55,22 @@ func NewTrialBalanceEngine(repository Repository) *TrialBalanceEngine {
 
 func (e *TrialBalanceEngine) Generate(startDate, endDate time.Time, currency string) (TrialBalance, error) {
 	return e.GenerateAdjusted(startDate, endDate, currency, false)
+}
+
+func (e *TrialBalanceEngine) GenerateForCompany(companyID uuid.UUID, startDate, endDate time.Time, currency string) (TrialBalance, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return TrialBalance{}, err
+	}
+	return NewTrialBalanceEngine(repository).Generate(startDate, endDate, currency)
+}
+
+func (e *TrialBalanceEngine) GenerateAdjustedForCompany(companyID uuid.UUID, startDate, endDate time.Time, currency string, adjusted bool) (TrialBalance, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return TrialBalance{}, err
+	}
+	return NewTrialBalanceEngine(repository).GenerateAdjusted(startDate, endDate, currency, adjusted)
 }
 
 func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, currency string, adjusted bool) (TrialBalance, error) {
@@ -150,6 +167,25 @@ func entryEffectiveDate(entry posting.JournalEntry) time.Time {
 }
 
 func lineAmounts(line posting.JournalEntryLine, currency string) (decimal.Decimal, decimal.Decimal) {
+	if line.FunctionalDebit.Currency() != "" || line.FunctionalCredit.Currency() != "" {
+		functionalCurrency := line.FunctionalDebit.Currency()
+		if functionalCurrency == "" {
+			functionalCurrency = line.FunctionalCredit.Currency()
+		}
+		if currency == "" || functionalCurrency == currency {
+			return line.FunctionalDebit.Amount(), line.FunctionalCredit.Amount()
+		}
+		return decimal.Zero, decimal.Zero
+	}
+	if line.AmountCurrency.Currency() != "" {
+		if currency == "" || line.AmountCurrency.Currency() == currency {
+			if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
+				return line.AmountCurrency.Amount(), decimal.Zero
+			}
+			return decimal.Zero, line.AmountCurrency.Amount()
+		}
+		return decimal.Zero, decimal.Zero
+	}
 	debit, credit := decimal.Zero, decimal.Zero
 	if line.Debit.Currency() == "" || (currency != "" && line.Debit.Currency() != currency) {
 		if line.Credit.Currency() != "" && (currency == "" || line.Credit.Currency() == currency) {

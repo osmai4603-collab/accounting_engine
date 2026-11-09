@@ -26,7 +26,18 @@ type Repository interface {
 	ListAccounts() ([]Account, error)
 	HasChildren(uuid.UUID) (bool, error)
 	CreateFiscalYear(FiscalYear) error
+	GetFiscalYear(uuid.UUID) (FiscalYear, error)
 	GetPeriodByDate(time.Time) (FiscalPeriod, error)
 	UpdatePeriodState(uuid.UUID, PeriodState) error
 	GetNextSequenceWithLock(uuid.UUID) (int64, error)
 }
+
+type CompanyScopedRepository interface {
+	GetAccountByIDForCompany(companyID, accountID uuid.UUID) (Account, error)
+	GetAccountByCodeForCompany(companyID uuid.UUID, code string) (Account, error)
+	GetFiscalYearForCompany(companyID, fiscalYearID uuid.UUID) (FiscalYear, error)
+	GetPeriodByDateForCompany(companyID uuid.UUID, date time.Time) (FiscalPeriod, error)
+	GetPeriodByNumberForCompany(companyID, fiscalYearID uuid.UUID, number int) (FiscalPeriod, error)
+}
+
+var ErrCompanyScopeRequired = errors.New("company-scoped repository operations are required")

@@ -1,6 +1,9 @@
 package types
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 const (
 	AED CurrencyCode = "AED"
@@ -274,6 +277,15 @@ var currencies = map[CurrencyCode]Currency{
 func LookupCurrency(code string) (Currency, bool) {
 	c, ok := currencies[CurrencyCode(strings.ToUpper(strings.TrimSpace(code)))]
 	return c, ok
+}
+
+func AllCurrencies() []Currency {
+	result := make([]Currency, 0, len(currencies))
+	for _, currency := range currencies {
+		result = append(result, currency)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Code < result[j].Code })
+	return result
 }
 
 func normalizeCurrency(code string) (string, error) {

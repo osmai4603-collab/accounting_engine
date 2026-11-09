@@ -1,5 +1,7 @@
 package subledgers
 
+import "github.com/google/uuid"
+
 type Service struct {
 	Repository  Repository
 	Receivables *ReceivableLedger
@@ -10,6 +12,13 @@ type Service struct {
 	EventBridge *EventBridge
 }
 
+func NewServiceForCompany(repository Repository, creator JournalCreator, companyID uuid.UUID) *Service {
+	service := NewService(repository, creator)
+	service.Receivables = NewReceivableLedgerForCompany(repository, companyID)
+	service.Payables = NewPayableLedgerForCompany(repository, companyID)
+	service.Treasury = NewTreasuryLedgerForCompany(repository, companyID)
+	return service
+}
 func NewService(repository Repository, creator JournalCreator) *Service {
 	return &Service{
 		Repository:  repository,

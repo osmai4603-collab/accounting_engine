@@ -1,7 +1,6 @@
 package reporting
 
 import (
-	"strings"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -40,6 +39,7 @@ func (e *EquityStatementEngine) Generate(start, end time.Time, currency string) 
 	if err != nil {
 		return EquityStatement{}, err
 	}
+
 	open, err := accountBalances(e.repository, time.Time{}, start, currency)
 	if err != nil {
 		return EquityStatement{}, err
@@ -61,14 +61,10 @@ func (e *EquityStatementEngine) Generate(start, end time.Time, currency string) 
 		if account.AccountType != masterdata.AccountTypeEquity {
 			continue
 		}
-		classification := normalizeClassification(account.SubClassification)
 		distributions := period[account.ID].debit
 		transfer := decimal.Zero
-		if normalizeClassification(classification) == "retained_earnings" || classification == "retained earnings" {
-			transfer = decimal.Zero
-		}
 		netIncome := decimal.Zero
-		if strings.Contains(classification, "retained") {
+		if normalizeClassification(account.SubClassification) == masterdata.SubClassRetainedEarnings {
 			netIncome = income.NetProfit
 		}
 		openAmount := signedBalance(open[account.ID], account)
@@ -83,4 +79,12 @@ func (e *EquityStatementEngine) Generate(start, end time.Time, currency string) 
 		report.ClosingTotal = report.ClosingTotal.Add(closeAmount)
 	}
 	return report, nil
+}
+
+func (e *EquityStatementEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (EquityStatement, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return EquityStatement{}, err
+	}
+	return NewEquityStatementEngine(repository).Generate(start, end, currency)
 }

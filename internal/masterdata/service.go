@@ -26,11 +26,33 @@ func (s *Service) RegisterAccount(account Account) error {
 		return err
 	}
 	account.Code = strings.ToUpper(strings.TrimSpace(account.Code))
-	if _, err := s.repo.GetAccountByCode(account.Code); err == nil {
+	if account.CompanyID != uuid.Nil {
+		repository, ok := s.repo.(CompanyScopedRepository)
+		if !ok {
+			return ErrCompanyScopeRequired
+		}
+		if _, err := repository.GetAccountByCodeForCompany(account.CompanyID, account.Code); err == nil {
+			return errors.New("duplicate account code")
+		} else if !errors.Is(err, ErrAccountNotFound) {
+			return err
+		}
+	} else if _, err := s.repo.GetAccountByCode(account.Code); err == nil {
 		return errors.New("duplicate account code")
+	} else if !errors.Is(err, ErrAccountNotFound) {
+		return err
 	}
 	if account.ParentID != nil {
-		parent, err := s.repo.GetAccountByID(*account.ParentID)
+		var parent Account
+		var err error
+		if account.CompanyID != uuid.Nil {
+			repository, ok := s.repo.(CompanyScopedRepository)
+			if !ok {
+				return ErrCompanyScopeRequired
+			}
+			parent, err = repository.GetAccountByIDForCompany(account.CompanyID, *account.ParentID)
+		} else {
+			parent, err = s.repo.GetAccountByID(*account.ParentID)
+		}
 		if err != nil {
 			return ErrInvalidParent
 		}
@@ -84,11 +106,23 @@ func (s *Service) UpdateAccountParent(account Account, parentID *uuid.UUID) erro
 	if err != nil {
 		return err
 	}
+	if account.CompanyID != existing.CompanyID {
+		return ErrInvalidParent
+	}
 	if existing.HasPostedEntries || existing.Code != account.Code || existing.AccountType != account.AccountType {
 		return errors.New("posted account code and type cannot be modified")
 	}
 	account.ParentID = parentID
 	if parentID != nil {
+		if account.CompanyID != uuid.Nil {
+			repository, ok := s.repo.(CompanyScopedRepository)
+			if !ok {
+				return ErrCompanyScopeRequired
+			}
+			if _, err := repository.GetAccountByIDForCompany(account.CompanyID, *parentID); err != nil {
+				return ErrInvalidParent
+			}
+		}
 		cycle, err := s.accountWouldCycle(account.ID, *parentID)
 		if err != nil {
 			return err
@@ -105,10 +139,34 @@ func (s *Service) ValidateCanPostToAccount(accountID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	return validatePostableAccount(s.repo, accountID, account)
+}
+
+func (s *Service) GetCompanyByID(companyID uuid.UUID) (Company, error) {
+	repository, ok := s.repo.(CompanyRepository)
+	if !ok {
+		return Company{}, ErrCompanyScopeRequired
+	}
+	return repository.GetCompanyByID(companyID)
+}
+
+func (s *Service) ValidateCanPostToAccountForCompany(companyID, accountID uuid.UUID) error {
+	repository, ok := s.repo.(CompanyScopedRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	account, err := repository.GetAccountByIDForCompany(companyID, accountID)
+	if err != nil {
+		return err
+	}
+	return validatePostableAccount(s.repo, accountID, account)
+}
+
+func validatePostableAccount(repository Repository, accountID uuid.UUID, account Account) error {
 	if account.IsHeader {
 		return errors.New("cannot post to header account")
 	}
-	hasChildren, err := s.repo.HasChildren(accountID)
+	hasChildren, err := repository.HasChildren(accountID)
 	if err != nil {
 		return err
 	}
@@ -125,6 +183,101 @@ func (s *Service) GetOpenPeriodForDate(date time.Time) (FiscalPeriod, error) {
 	}
 	if period.State != PeriodOpen {
 		return FiscalPeriod{}, errors.New("fiscal period is closed")
+	}
+	return period, nil
+}
+
+func (s *Service) GetOpenPeriodForCompanyDate(companyID uuid.UUID, date time.Time) (FiscalPeriod, error) {
+	repository, ok := s.repo.(CompanyScopedRepository)
+	if !ok {
+		return FiscalPeriod{}, ErrCompanyScopeRequired
+	}
+	period, err := repository.GetPeriodByDateForCompany(companyID, date)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	if period.State != PeriodOpen {
+		return FiscalPeriod{}, ErrFiscalPeriodClosed
+	}
+	return period, nil
+}
+
+func (s *Service) GetOpenAdjustmentPeriod(fiscalYearID uuid.UUID, periodNumber int) (FiscalPeriod, error) {
+	if periodNumber != 13 && periodNumber != 14 {
+		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	expectedType := FiscalPeriodTypeYearEndAdjustment
+	if periodNumber == 14 {
+		expectedType = FiscalPeriodTypeAuditAdjustment
+	}
+	fiscalYear, err := s.repo.GetFiscalYear(fiscalYearID)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	if fiscalYear.CompanyID != uuid.Nil {
+		repository, ok := s.repo.(CompanyScopedRepository)
+		if !ok {
+			return FiscalPeriod{}, ErrCompanyScopeRequired
+		}
+		period, err := repository.GetPeriodByNumberForCompany(fiscalYear.CompanyID, fiscalYearID, periodNumber)
+		if err != nil {
+			return FiscalPeriod{}, err
+		}
+		if period.Type != expectedType {
+			return FiscalPeriod{}, ErrFiscalPeriodNotFound
+		}
+		if period.State != PeriodOpen {
+			return FiscalPeriod{}, ErrFiscalPeriodClosed
+		}
+		return period, nil
+	}
+	for _, period := range fiscalYear.Periods {
+		if period.Number == periodNumber {
+			if period.Type != expectedType {
+				return FiscalPeriod{}, ErrFiscalPeriodNotFound
+			}
+			if period.State != PeriodOpen {
+				return FiscalPeriod{}, ErrFiscalPeriodClosed
+			}
+			return period, nil
+		}
+	}
+	return FiscalPeriod{}, ErrFiscalPeriodNotFound
+}
+
+func (s *Service) GetOpenAdjustmentPeriodForDate(date time.Time, periodNumber int) (FiscalPeriod, error) {
+	regularPeriod, err := s.repo.GetPeriodByDate(date)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	return s.GetOpenAdjustmentPeriod(regularPeriod.FiscalYearID, periodNumber)
+}
+
+func (s *Service) GetOpenAdjustmentPeriodForCompanyDate(companyID uuid.UUID, date time.Time, periodNumber int) (FiscalPeriod, error) {
+	if periodNumber != 13 && periodNumber != 14 {
+		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	repository, ok := s.repo.(CompanyScopedRepository)
+	if !ok {
+		return FiscalPeriod{}, ErrCompanyScopeRequired
+	}
+	regularPeriod, err := repository.GetPeriodByDateForCompany(companyID, date)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	period, err := repository.GetPeriodByNumberForCompany(companyID, regularPeriod.FiscalYearID, periodNumber)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	expectedType := FiscalPeriodTypeYearEndAdjustment
+	if periodNumber == 14 {
+		expectedType = FiscalPeriodTypeAuditAdjustment
+	}
+	if period.Type != expectedType {
+		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	if period.State != PeriodOpen {
+		return FiscalPeriod{}, ErrFiscalPeriodClosed
 	}
 	return period, nil
 }

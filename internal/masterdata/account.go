@@ -88,6 +88,23 @@ const (
 	NormalBalanceCredit NormalBalance = "credit"
 )
 
+const (
+	IFRSCategoryOperating              = "operating"
+	IFRSCategoryInvesting              = "investing"
+	IFRSCategoryFinancing              = "financing"
+	IFRSCategoryTax                    = "tax"
+	IFRSCategoryIncomeTaxes            = "income_taxes"
+	IFRSCategoryDiscontinued           = "discontinued"
+	IFRSCategoryDiscontinuedOperations = "discontinued_operations"
+	IFRSCategoryEquityMovements        = "equity_movements"
+	IFRSCategoryBalanceSheetPerpetual  = "balance_sheet_perpetual"
+	CashFlowOperating                  = "operating"
+	CashFlowInvesting                  = "investing"
+	CashFlowFinancing                  = "financing"
+	CashFlowCashEquivalent             = "cash_equivalents"
+	CashFlowNonCashAdjustment          = "non_cash"
+)
+
 type Account struct {
 	CompanyID           uuid.UUID
 	ID                  uuid.UUID
@@ -164,7 +181,7 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassNonCurrentAssets: true, SubClassAccountsReceivable: true,
 			SubClassBank: true, "cash": true, "fixed_asset": true, "fixed_assets": true, "ppe": true,
 		}
-		if !valid[sub] && !strings.Contains(sub, "asset") && !strings.Contains(sub, "cash") && !strings.Contains(sub, "receiv") {
+		if !valid[sub] {
 			return ErrInvalidSubClassificationForType
 		}
 	case AccountTypeLiability:
@@ -177,7 +194,7 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassNonCurrentLiabilities: true, SubClassAccountsPayable: true,
 			"payable": true, "loan": true, "lease": true,
 		}
-		if !valid[sub] && !strings.Contains(sub, "liabilit") && !strings.Contains(sub, "payable") && !strings.Contains(sub, "borrow") {
+		if !valid[sub] {
 			return ErrInvalidSubClassificationForType
 		}
 	case AccountTypeEquity:
@@ -187,7 +204,7 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassRetainedEarnings: true, SubClassTreasuryShares: true,
 			"capital": true, "reserve": true, "equity": true,
 		}
-		if !valid[sub] && !strings.Contains(sub, "equity") && !strings.Contains(sub, "share") && !strings.Contains(sub, "reserve") && !strings.Contains(sub, "retained") {
+		if !valid[sub] {
 			return ErrInvalidSubClassificationForType
 		}
 	case AccountTypeIncome:
@@ -196,7 +213,7 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassFinanceIncome: true, SubClassOCINonRecyclable: true,
 			SubClassOCIRecyclable: true, "revenue": true, "sales": true, "income": true,
 		}
-		if !valid[sub] && !strings.Contains(sub, "revenue") && !strings.Contains(sub, "income") && !strings.Contains(sub, "sale") {
+		if !valid[sub] {
 			return ErrInvalidSubClassificationForType
 		}
 	case AccountTypeExpense:
@@ -207,7 +224,7 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassFinanceCost: true, SubClassTaxExpense: true,
 			SubClassIncomeTaxExpense: true, "expense": true, "cost": true, "depreciation": true, "provision": true,
 		}
-		if !valid[sub] && !strings.Contains(sub, "expense") && !strings.Contains(sub, "cost") && !strings.Contains(sub, "deprec") && !strings.Contains(sub, "tax") {
+		if !valid[sub] {
 			return ErrInvalidSubClassificationForType
 		}
 	}
@@ -215,7 +232,17 @@ func validateSubClassification(accType AccountType, sub string) error {
 }
 
 func (a Account) IsCurrentAsset() bool {
-	return a.AccountType == AccountTypeAsset && taxonomyContains(a.SubClassification, "current")
+	if a.AccountType != AccountTypeAsset {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(a.SubClassification)) {
+	case SubClassCashAndEquivalents, SubClassAccountsReceivable, SubClassTradeReceivables,
+		SubClassInventories, SubClassPrepaymentsOtherDebit, SubClassCurrentAssets,
+		SubClassBank, "cash":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a Account) EffectiveIsCashEquivalent() bool {
@@ -224,30 +251,37 @@ func (a Account) EffectiveIsCashEquivalent() bool {
 		return true
 	}
 	return a.AccountType == AccountTypeAsset &&
-		(classification == SubClassCashAndEquivalents || classification == SubClassBank || strings.Contains(classification, "cash"))
+		(classification == SubClassCashAndEquivalents || classification == SubClassBank || classification == "cash")
 }
 
 func (a Account) IsPPE() bool {
-	return a.AccountType == AccountTypeAsset && taxonomyContains(a.SubClassification,
-		SubClassPropertyPlantEquipment, "fixed_asset", "fixed_assets", "ppe")
+	if a.AccountType != AccountTypeAsset {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(a.SubClassification)) {
+	case SubClassPropertyPlantEquipment, "fixed_asset", "fixed_assets", "ppe":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a Account) IsCurrent() bool {
 	classification := strings.ToLower(strings.TrimSpace(a.SubClassification))
-	return strings.Contains(classification, "current") ||
-		classification == SubClassShortTermBorrowings ||
-		classification == SubClassCurrentLeaseLiabilities ||
-		classification == SubClassTradePayables ||
-		classification == SubClassAccountsPayable
-}
-
-func taxonomyContains(value string, terms ...string) bool {
-	value = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "-", "_"))
-	for _, term := range terms {
-		term = strings.ToLower(strings.ReplaceAll(term, "-", "_"))
-		if strings.Contains(value, term) || strings.Contains(term, value) && value != "" {
+	switch a.AccountType {
+	case AccountTypeAsset:
+		return a.IsCurrentAsset()
+	case AccountTypeLiability:
+		switch classification {
+		case SubClassShortTermBorrowings, SubClassCurrentLeaseLiabilities,
+			SubClassTradePayables, SubClassAccrualsOtherCredit,
+			SubClassCurrentTaxLiabilities, SubClassCurrentLiabilities,
+			SubClassAccountsPayable, "payable":
 			return true
+		default:
+			return false
 		}
+	default:
+		return false
 	}
-	return false
 }

@@ -17,6 +17,23 @@ func mustMoney(t *testing.T, value, currency string) Money {
 	return money
 }
 
+func TestZeroValueMoneyJSONRoundTrip(t *testing.T) {
+	data, err := json.Marshal(Money{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "null" {
+		t.Fatalf("zero value marshaled as %s, want null", data)
+	}
+	var decoded Money
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Currency() != "" || !decoded.Amount().IsZero() {
+		t.Fatalf("zero value did not round-trip: %+v", decoded)
+	}
+}
+
 func TestDecimalAddition(t *testing.T) {
 	a := mustMoney(t, "0.1", "SAR")
 	b := mustMoney(t, "0.2", "SAR")
@@ -56,6 +73,28 @@ func TestScaleAndBankersRounding(t *testing.T) {
 	}
 	if amount.String() != "0.1250 SAR" {
 		t.Fatalf("got %q", amount.String())
+	}
+}
+
+func TestMinorUnitsUseCurrencyPrecisionAndBankersRounding(t *testing.T) {
+	for _, test := range []struct {
+		amount   string
+		currency string
+		want     int64
+	}{
+		{amount: "0.025", currency: "USD", want: 2},
+		{amount: "0.035", currency: "USD", want: 4},
+		{amount: "2.5", currency: "JPY", want: 2},
+		{amount: "2.5", currency: "KWD", want: 2500},
+	} {
+		value := mustMoney(t, test.amount, test.currency)
+		got, err := value.MinorUnits()
+		if err != nil {
+			t.Fatalf("MinorUnits(%s %s): %v", test.amount, test.currency, err)
+		}
+		if got != test.want {
+			t.Errorf("MinorUnits(%s %s) = %d, want %d", test.amount, test.currency, got, test.want)
+		}
 	}
 }
 

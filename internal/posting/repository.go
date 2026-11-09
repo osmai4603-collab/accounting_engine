@@ -11,6 +11,14 @@ type Repository interface {
 	GetNextSequence(uuid.UUID) (int64, error)
 }
 
+type AtomicPostingRepository interface {
+	PostAndSequence(JournalEntry) (JournalEntry, error)
+}
+
+type AtomicReversalRepository interface {
+	PostReversalAtomic(original, reversal JournalEntry) (JournalEntry, error)
+}
+
 type BulkRepository interface {
 	Repository
 	PostBulk([]JournalEntry) error

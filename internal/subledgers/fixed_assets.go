@@ -10,41 +10,85 @@ import (
 )
 
 type FixedAssetLedger struct {
-	repo    Repository
-	creator JournalCreator
+	repo Repository
 }
 
-func NewFixedAssetLedger(repo Repository, creator JournalCreator) *FixedAssetLedger {
-	return &FixedAssetLedger{repo: repo, creator: creator}
+func NewFixedAssetLedger(repo Repository, _ JournalCreator) *FixedAssetLedger {
+	return &FixedAssetLedger{repo: repo}
 }
 
 func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
+	if asset.CompanyID == uuid.Nil {
+		return ErrInvalidAsset
+	}
 	if asset.ID == uuid.Nil {
 		asset.ID = uuid.New()
 	}
 	if asset.HistoricalCost.Currency() == "" ||
 		asset.SalvageValue.Currency() != asset.HistoricalCost.Currency() ||
+		asset.SalvageValue.GreaterThan(asset.HistoricalCost) ||
 		asset.UsefulLifeMonths <= 0 ||
-		(asset.Method != StraightLine && asset.Method != DecliningBalance) {
+		(asset.Method != StraightLine && asset.Method != DecliningBalance) ||
+		(asset.Method == DecliningBalance &&
+			(asset.DecliningRate.IsNegative() || asset.DecliningRate.GreaterThan(decimal.NewFromInt(1)))) {
 		return ErrInvalidAsset
 	}
-	if asset.CurrentBookValue.Currency() == "" {
-		asset.CurrentBookValue = asset.HistoricalCost
-	}
 	if asset.AccumulatedDepreciation.Currency() == "" {
-		asset.AccumulatedDepreciation, _ = financialtypes.Zero(asset.HistoricalCost.Currency())
+		zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+		if err != nil {
+			return err
+		}
+		asset.AccumulatedDepreciation = zero
+	}
+	if asset.AccumulatedImpairment.Currency() == "" {
+		zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+		if err != nil {
+			return err
+		}
+		asset.AccumulatedImpairment = zero
+	}
+	if asset.AccumulatedDepreciation.Currency() != asset.HistoricalCost.Currency() ||
+		asset.AccumulatedImpairment.Currency() != asset.HistoricalCost.Currency() {
+		return ErrInvalidAsset
+	}
+	bookValue, err := asset.HistoricalCost.Subtract(asset.AccumulatedDepreciation)
+	if err != nil {
+		return err
+	}
+	bookValue, err = bookValue.Subtract(asset.AccumulatedImpairment)
+	if err != nil {
+		return err
+	}
+	if asset.CurrentBookValue.Currency() == "" {
+		asset.CurrentBookValue = bookValue
+	}
+	if asset.CurrentBookValue.Currency() != asset.HistoricalCost.Currency() ||
+		asset.CurrentBookValue.IsNegative() || asset.AccumulatedDepreciation.IsNegative() ||
+		asset.AccumulatedImpairment.IsNegative() ||
+		asset.CurrentBookValue.GreaterThan(asset.HistoricalCost) ||
+		!asset.CurrentBookValue.Equal(bookValue) {
+		return ErrInvalidAsset
 	}
 	return l.repo.SaveFixedAsset(asset)
 }
 
 func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, financialtypes.Money, error) {
+	if journalID == uuid.Nil {
+		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
+	}
 	asset, err := l.repo.GetFixedAsset(assetID)
 	if err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
+	if asset.DisposedAt != nil {
+		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
+	}
 	if !asset.LastDepreciationDate.IsZero() &&
 		asset.LastDepreciationDate.UTC().Format("2006-01") == asOf.UTC().Format("2006-01") {
 		return posting.JournalEntry{}, financialtypes.Money{}, ErrAlreadyExists
+	}
+	if !asset.LastDepreciationDate.IsZero() && asOf.Before(asset.LastDepreciationDate) {
+		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
 	}
 	expense, err := l.calculateDepreciation(asset, asOf)
 	if err != nil {
@@ -69,28 +113,24 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 		}
 		bookValue = asset.SalvageValue
 	}
-	asset.AccumulatedDepreciation = assetAccumulated
-	asset.CurrentBookValue = bookValue
-	asset.LastDepreciationDate = asOf.UTC()
-	if err := l.repo.SaveFixedAsset(asset); err != nil {
-		return posting.JournalEntry{}, financialtypes.Money{}, err
-	}
+	updatedAsset := asset
+	updatedAsset.AccumulatedDepreciation = assetAccumulated
+	updatedAsset.CurrentBookValue = bookValue
+	updatedAsset.LastDepreciationDate = asOf.UTC()
 
 	entry := posting.JournalEntry{
-		ID: uuid.New(), JournalID: journalID, EntryDate: asOf, Date: asOf,
+		CompanyID: asset.CompanyID, ID: uuid.New(), JournalID: journalID, EntryDate: asOf, Date: asOf,
 		Status: posting.EntryDraft, CreatedAt: time.Now().UTC(),
 		Lines: []posting.JournalEntryLine{
-			{ID: uuid.New(), AccountID: asset.ExpenseAccountID, Debit: expense},
-			{ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Credit: expense},
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.ExpenseAccountID, Debit: expense},
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Credit: expense},
 		},
 	}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
-	if l.creator != nil {
-		if err := l.creator.CreateDraft(entry); err != nil {
-			return posting.JournalEntry{}, financialtypes.Money{}, err
-		}
+	if err := l.saveAssetAndDraft(asset, updatedAsset, entry); err != nil {
+		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
 	return entry, expense, nil
 }
@@ -122,20 +162,53 @@ func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) 
 	return err
 }
 
-func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
+func (l *FixedAssetLedger) PostImpairment(assetID uuid.UUID, recoverableAmount financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
 	asset, err := l.repo.GetFixedAsset(assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if loss.Currency() != asset.CurrentBookValue.Currency() || loss.Amount().IsNegative() ||
-		loss.GreaterThan(asset.CurrentBookValue) {
+	if asset.DisposedAt != nil || recoverableAmount.Currency() != asset.CurrentBookValue.Currency() ||
+		recoverableAmount.IsNegative() || recoverableAmount.GreaterThan(asset.CurrentBookValue) {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset.CurrentBookValue, err = asset.CurrentBookValue.Subtract(loss)
+	loss, err := asset.CurrentBookValue.Subtract(recoverableAmount)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if err := l.repo.SaveFixedAsset(asset); err != nil {
+	if loss.Amount().IsZero() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	return l.ImpairAsset(assetID, loss, journalID, asOf)
+}
+
+func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
+	if journalID == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	asset, err := l.repo.GetFixedAsset(assetID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if asset.DisposedAt != nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	if loss.Currency() != asset.CurrentBookValue.Currency() || loss.Amount().IsNegative() || loss.Amount().IsZero() ||
+		loss.GreaterThan(asset.CurrentBookValue) {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	updatedAsset := asset
+	updatedAsset.CurrentBookValue, err = asset.CurrentBookValue.Subtract(loss)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if updatedAsset.AccumulatedImpairment.Currency() == "" {
+		updatedAsset.AccumulatedImpairment, err = financialtypes.Zero(loss.Currency())
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+	}
+	updatedAsset.AccumulatedImpairment, err = updatedAsset.AccumulatedImpairment.Add(loss)
+	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 
@@ -144,11 +217,17 @@ func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Mo
 		expenseAccount = asset.ExpenseAccountID
 	}
 	accumulatedAccount := asset.AccumulatedAccountID
+	if asset.AccumulatedImpairmentAccountID != uuid.Nil {
+		accumulatedAccount = asset.AccumulatedImpairmentAccountID
+	}
 	if accumulatedAccount == uuid.Nil {
 		accumulatedAccount = asset.AssetAccountID
 	}
 
-	zero, _ := financialtypes.Zero(loss.Currency())
+	zero, err := financialtypes.Zero(loss.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
 	entry := posting.JournalEntry{
 		CompanyID:         asset.CompanyID,
 		ID:                uuid.New(),
@@ -163,58 +242,94 @@ func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Mo
 			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: accumulatedAccount, Debit: zero, Credit: loss},
 		},
 	}
-	if journalID != uuid.Nil && expenseAccount != uuid.Nil && accumulatedAccount != uuid.Nil {
-		if err := entry.Validate(); err != nil {
-			return posting.JournalEntry{}, err
-		}
-		if l.creator != nil {
-			if err := l.creator.CreateDraft(entry); err != nil {
-				return posting.JournalEntry{}, err
-			}
-		}
+	if expenseAccount == uuid.Nil || accumulatedAccount == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	if err := entry.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := l.saveAssetAndDraft(asset, updatedAsset, entry); err != nil {
+		return posting.JournalEntry{}, err
 	}
 	return entry, nil
 }
 
 func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money, journalID uuid.UUID) (posting.JournalEntry, error) {
+	if journalID == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
 	asset, err := l.repo.GetFixedAsset(assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
+	if asset.DisposedAt != nil || proceeds.Currency() != asset.HistoricalCost.Currency() || proceeds.IsNegative() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
 	netBookValue, err := asset.HistoricalCost.Subtract(asset.AccumulatedDepreciation)
+	if err == nil && asset.AccumulatedImpairment.Currency() != "" {
+		netBookValue, err = netBookValue.Subtract(asset.AccumulatedImpairment)
+	}
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-	zeroCost, _ := financialtypes.Zero(asset.HistoricalCost.Currency())
-	zeroProceeds, _ := financialtypes.Zero(asset.HistoricalCost.Currency())
+	if netBookValue.IsNegative() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	zeroCost, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	zeroProceeds, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
 	lines := []posting.JournalEntryLine{
-		{ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Debit: asset.AccumulatedDepreciation, Credit: zeroCost},
-		{ID: uuid.New(), AccountID: asset.AssetAccountID, Credit: asset.HistoricalCost, Debit: zeroCost},
+		{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Debit: asset.AccumulatedDepreciation, Credit: zeroCost},
+		{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AssetAccountID, Credit: asset.HistoricalCost, Debit: zeroCost},
+	}
+	if asset.AccumulatedImpairment.Currency() != "" && !asset.AccumulatedImpairment.Amount().IsZero() {
+		accumulatedImpairmentAccount := asset.AccumulatedImpairmentAccountID
+		if accumulatedImpairmentAccount == uuid.Nil {
+			accumulatedImpairmentAccount = asset.AccumulatedAccountID
+		}
+		lines = append(lines, posting.JournalEntryLine{
+			CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: accumulatedImpairmentAccount,
+			Debit: asset.AccumulatedImpairment, Credit: zeroCost,
+		})
 	}
 	if proceeds.GreaterThan(zeroProceeds) {
-		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalCashAccountID, Debit: proceeds, Credit: zeroProceeds})
+		lines = append(lines, posting.JournalEntryLine{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.DisposalCashAccountID, Debit: proceeds, Credit: zeroProceeds})
 	}
 	gainLoss, err := proceeds.Subtract(netBookValue)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	if gainLoss.GreaterThan(zeroProceeds) {
-		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalGainAccountID, Credit: gainLoss, Debit: zeroProceeds})
+		lines = append(lines, posting.JournalEntryLine{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.DisposalGainAccountID, Credit: gainLoss, Debit: zeroProceeds})
 	} else if gainLoss.IsNegative() {
 		loss, err := gainLoss.Multiply(decimal.NewFromInt(-1))
 		if err != nil {
 			return posting.JournalEntry{}, err
 		}
-		lines = append(lines, posting.JournalEntryLine{ID: uuid.New(), AccountID: asset.DisposalLossAccountID, Debit: loss, Credit: zeroProceeds})
+		lines = append(lines, posting.JournalEntryLine{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.DisposalLossAccountID, Debit: loss, Credit: zeroProceeds})
 	}
 	entry := posting.JournalEntry{ID: uuid.New(), CompanyID: asset.CompanyID, JournalID: journalID, EntryDate: disposalDate, Date: disposalDate, Status: posting.EntryDraft, CreatedAt: time.Now().UTC(), Lines: lines}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if l.creator != nil {
-		if err := l.creator.CreateDraft(entry); err != nil {
-			return posting.JournalEntry{}, err
-		}
+	disposedAsset := asset
+	disposedAt := disposalDate.UTC()
+	disposedAsset.DisposedAt = &disposedAt
+	if err := l.saveAssetAndDraft(asset, disposedAsset, entry); err != nil {
+		return posting.JournalEntry{}, err
 	}
 	return entry, nil
+}
+
+func (l *FixedAssetLedger) saveAssetAndDraft(expected, updated FixedAsset, entry posting.JournalEntry) error {
+	repository, ok := l.repo.(AtomicFixedAssetRepository)
+	if !ok {
+		return ErrAtomicFixedAssetRequired
+	}
+	return repository.SaveFixedAssetAndDraft(expected, updated, entry)
 }

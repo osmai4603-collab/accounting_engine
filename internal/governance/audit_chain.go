@@ -61,9 +61,14 @@ func (c *AuditChain) Append(ctx context.Context, log FinancialAuditLog) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if repository, ok := c.repository.(AtomicAuditRepository); ok {
+		_, err := repository.AppendAuditLogAtomic(ctx, log)
+		return err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		last, err := c.repository.GetLastAuditLog(ctx)
+		last, err := c.lastLogForCompany(ctx, log.CompanyID)
 		if err != nil {
 			return err
 		}
@@ -72,7 +77,11 @@ func (c *AuditChain) Append(ctx context.Context, log FinancialAuditLog) error {
 		} else {
 			log.PreviousLogHash = last.CurrentLogHash
 		}
-		log.Timestamp = log.Timestamp.UTC()
+		if log.Timestamp.IsZero() {
+			log.Timestamp = time.Now().UTC()
+		} else {
+			log.Timestamp = log.Timestamp.UTC()
+		}
 		log.CurrentLogHash = CalculateHash(log)
 		if err := c.repository.AppendAuditLog(ctx, log); err != nil {
 			lastErr = err
@@ -82,4 +91,19 @@ func (c *AuditChain) Append(ctx context.Context, log FinancialAuditLog) error {
 		return nil
 	}
 	return lastErr
+}
+
+func (c *AuditChain) lastLogForCompany(ctx context.Context, companyID uuid.UUID) (*FinancialAuditLog, error) {
+	if repository, ok := c.repository.(CompanyAuditRepository); ok {
+		return repository.GetLastAuditLogForCompany(ctx, companyID)
+	}
+	var last *FinancialAuditLog
+	err := c.repository.IterateAuditLogs(ctx, 0, func(log FinancialAuditLog) error {
+		if log.CompanyID == companyID && (last == nil || log.ID > last.ID) {
+			copy := log
+			last = &copy
+		}
+		return nil
+	})
+	return last, err
 }

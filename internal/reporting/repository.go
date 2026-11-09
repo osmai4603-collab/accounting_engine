@@ -1,12 +1,13 @@
 package reporting
 
 import (
+	"errors"
 	"time"
-
-	"github.com/google/uuid"
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/subledgers"
+	"github.com/google/uuid"
 )
 
 // Repository is intentionally left as an open SPI. Ledger implementations can
@@ -28,4 +29,60 @@ type EntryDateRepository interface {
 type FiscalYearRepository interface {
 	GetFiscalYear(uuid.UUID) (masterdata.FiscalYear, error)
 	UpdatePeriodState(uuid.UUID, masterdata.PeriodState) error
+}
+
+var ErrCompanyScopeRequired = errors.New("company-scoped reporting repository is required")
+
+type CompanyScopedReportingRepository interface {
+	ListAccountsForCompany(uuid.UUID) ([]masterdata.Account, error)
+	ListEntriesForCompany(uuid.UUID, time.Time, time.Time) ([]posting.JournalEntry, error)
+}
+
+type CompanyScopedSubledgerReportingRepository interface {
+	ListFixedAssetsForCompany(uuid.UUID) ([]subledgers.FixedAsset, error)
+	ListOpenLinesForCompany(uuid.UUID, string) ([]subledgers.OpenLine, error)
+}
+
+type companyReportingRepository struct {
+	companyID uuid.UUID
+	ledger    CompanyScopedReportingRepository
+	subledger CompanyScopedSubledgerReportingRepository
+}
+
+func newCompanyReportingRepository(repository Repository, companyID uuid.UUID) (Repository, error) {
+	if companyID == uuid.Nil {
+		return nil, ErrCompanyScopeRequired
+	}
+	ledger, ok := repository.(CompanyScopedReportingRepository)
+	if !ok {
+		return nil, ErrCompanyScopeRequired
+	}
+	subledger, _ := repository.(CompanyScopedSubledgerReportingRepository)
+	return companyReportingRepository{companyID: companyID, ledger: ledger, subledger: subledger}, nil
+}
+
+func (r companyReportingRepository) ListAccounts() ([]masterdata.Account, error) {
+	return r.ledger.ListAccountsForCompany(r.companyID)
+}
+
+func (r companyReportingRepository) ListEntries(start, end time.Time) ([]posting.JournalEntry, error) {
+	return r.ledger.ListEntriesForCompany(r.companyID, start, end)
+}
+
+func (r companyReportingRepository) ListPostedEntries(start, end time.Time) ([]posting.JournalEntry, error) {
+	return r.ListEntries(start, end)
+}
+
+func (r companyReportingRepository) ListFixedAssets() ([]subledgers.FixedAsset, error) {
+	if r.subledger == nil {
+		return nil, ErrCompanyScopeRequired
+	}
+	return r.subledger.ListFixedAssetsForCompany(r.companyID)
+}
+
+func (r companyReportingRepository) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) {
+	if r.subledger == nil {
+		return nil, ErrCompanyScopeRequired
+	}
+	return r.subledger.ListOpenLinesForCompany(r.companyID, partnerID)
 }

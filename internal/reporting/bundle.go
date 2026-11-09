@@ -112,6 +112,14 @@ func (e *BundleEngine) Generate(start, end time.Time, currency string) (Statemen
 	}, nil
 }
 
+func (e *BundleEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (StatementBundle, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return StatementBundle{}, err
+	}
+	return NewBundleEngine(repository).Generate(start, end, currency)
+}
+
 func (e *BundleEngine) ppeReport(start, end time.Time, currency string, sheet BalanceSheet) (PPERollForwardReport, error) {
 	report := PPERollForwardReport{
 		Currency:           currency,

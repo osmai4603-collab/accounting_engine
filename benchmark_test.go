@@ -1,7 +1,6 @@
 package accounting_engine_test
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -35,32 +34,7 @@ func BenchmarkSinglePosting(b *testing.B) {
 			b.Fatal(err)
 		}
 		entry.Status = posting.EntryPosted
-		if err := driver.PostAtomic(entry); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkBulkPosting10000(b *testing.B) {
-	driver := memory.New()
-	entries := make([]posting.JournalEntry, 10000)
-	amount, _ := financialtypes.NewMoneyFromString("1", "USD")
-	journalID := uuid.New()
-	debitAccount, creditAccount := uuid.New(), uuid.New()
-	for i := range entries {
-		entry, err := posting.NewJournalEntry(journalID, time.Now().UTC(), fmt.Sprintf("maker-%d", i),
-			[]posting.JournalEntryLine{
-				{ID: uuid.New(), AccountID: debitAccount, Debit: amount},
-				{ID: uuid.New(), AccountID: creditAccount, Credit: amount},
-			})
-		if err != nil {
-			b.Fatal(err)
-		}
-		entries[i] = entry
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := driver.PostBulk(entries); err != nil {
+		if _, err := driver.PostAndSequence(entry); err != nil {
 			b.Fatal(err)
 		}
 	}

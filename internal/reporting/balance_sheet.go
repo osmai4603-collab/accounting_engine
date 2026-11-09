@@ -1,9 +1,11 @@
 package reporting
 
 import (
-	"accounting_engine/internal/masterdata"
-	"github.com/shopspring/decimal"
 	"time"
+
+	"accounting_engine/internal/masterdata"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type ReportAmount struct {
@@ -46,16 +48,15 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 		if account.IsContraAccount {
 			amount = amount.Neg()
 		}
-		classification := normalizeClassification(account.SubClassification)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:
-			if isCurrent(classification) {
+			if account.IsCurrentAsset() {
 				report.CurrentAssets = report.CurrentAssets.Add(amount)
 			} else {
 				report.NonCurrentAssets = report.NonCurrentAssets.Add(amount)
 			}
 		case masterdata.AccountTypeLiability:
-			if isCurrent(classification) {
+			if account.IsCurrent() {
 				report.CurrentLiabilities = report.CurrentLiabilities.Add(amount)
 			} else {
 				report.NonCurrentLiabilities = report.NonCurrentLiabilities.Add(amount)
@@ -64,16 +65,11 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 			report.Equity = report.Equity.Add(amount)
 		}
 	}
-	currentResult := decimal.Zero
-	for _, account := range accounts {
-		if account.AccountType == masterdata.AccountTypeIncome {
-			currentResult = currentResult.Add(accountBalance(balances[account.ID], account))
-		}
-		if account.AccountType == masterdata.AccountTypeExpense {
-			currentResult = currentResult.Sub(accountBalance(balances[account.ID], account))
-		}
+	income, err := NewIncomeStatementEngine(e.repository).Generate(time.Time{}, asOf, currency)
+	if err != nil {
+		return BalanceSheet{}, err
 	}
-	report.Equity = report.Equity.Add(currentResult)
+	report.Equity = report.Equity.Add(income.NetProfit).Add(income.OCI)
 	report.TotalAssets = report.CurrentAssets.Add(report.NonCurrentAssets)
 	report.TotalLiabilities = report.CurrentLiabilities.Add(report.NonCurrentLiabilities)
 	report.TotalLiabilitiesAndEquity = report.TotalLiabilities.Add(report.Equity)
@@ -84,13 +80,10 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 	return report, nil
 }
 
-func isCurrent(classification string) bool {
-	return classification == "" || classification == "current" ||
-		classification == "current_asset" || classification == "current_assets" ||
-		classification == "current_liability" || classification == "current_liabilities" ||
-		classification == "trade_receivable" || classification == "accounts_receivable" ||
-		classification == "inventory" || classification == "inventories" ||
-		classification == "prepaid_expense" || classification == "prepayments" ||
-		classification == "trade_payable" || classification == "accounts_payable" ||
-		classification == "accrued_expense" || classification == "short_term_borrowing"
+func (e *BalanceSheetEngine) GenerateForCompany(companyID uuid.UUID, asOf time.Time, currency string) (BalanceSheet, error) {
+	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	if err != nil {
+		return BalanceSheet{}, err
+	}
+	return NewBalanceSheetEngine(repository).Generate(asOf, currency)
 }

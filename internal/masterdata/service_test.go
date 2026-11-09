@@ -130,3 +130,51 @@ func TestGaplessConcurrentSequences(t *testing.T) {
 		t.Fatalf("got %d sequences, want %d", len(seen), count)
 	}
 }
+
+func TestCompanyScopedFiscalPeriods(t *testing.T) {
+	repository := NewMockRepository()
+	service := NewService(repository)
+	companyA, companyB := uuid.New(), uuid.New()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	yearA := GenerateFiscalYear(start)
+	yearA.CompanyID = companyA
+	yearB := GenerateFiscalYear(start)
+	yearB.CompanyID = companyB
+	if err := repository.CreateFiscalYear(yearA); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateFiscalYear(yearB); err != nil {
+		t.Fatal(err)
+	}
+
+	date := start.AddDate(0, 0, 14)
+	periodA, err := service.GetOpenPeriodForCompanyDate(companyA, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	periodB, err := service.GetOpenPeriodForCompanyDate(companyB, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if periodA.ID == periodB.ID || periodA.CompanyID != companyA || periodB.CompanyID != companyB {
+		t.Fatalf("company-scoped periods crossed: A=%+v B=%+v", periodA, periodB)
+	}
+
+	period13A := yearA.Periods[12]
+	if err := repository.UpdatePeriodState(period13A.ID, PeriodSoftClosed); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdatePeriodState(period13A.ID, PeriodHardClosed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetOpenAdjustmentPeriodForCompanyDate(companyA, date, 13); err != ErrFiscalPeriodClosed {
+		t.Fatalf("closed adjustment period error = %v, want ErrFiscalPeriodClosed", err)
+	}
+	openPeriod, err := service.GetOpenAdjustmentPeriodForCompanyDate(companyB, date, 13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openPeriod.CompanyID != companyB {
+		t.Fatalf("adjustment period belongs to company %s, want %s", openPeriod.CompanyID, companyB)
+	}
+}
