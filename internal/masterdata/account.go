@@ -9,26 +9,26 @@ import (
 )
 
 var (
-	ErrAccountCodeRequired               = errors.New("account code is required")
-	ErrAccountNameRequired               = errors.New("account name is required")
-	ErrInvalidAccountType                = errors.New("invalid account type")
-	ErrInvalidParent                     = errors.New("invalid parent account")
-	ErrAccountCycle                      = errors.New("account hierarchy contains a cycle")
-	ErrInvalidSubClassificationForType   = errors.New("invalid sub-classification for the specified account type")
+	ErrAccountCodeRequired             = errors.New("account code is required")
+	ErrAccountNameRequired             = errors.New("account name is required")
+	ErrInvalidAccountType              = errors.New("invalid account type")
+	ErrInvalidParent                   = errors.New("invalid parent account")
+	ErrAccountCycle                    = errors.New("account hierarchy contains a cycle")
+	ErrInvalidSubClassificationForType = errors.New("invalid sub-classification for the specified account type")
 )
 
 const (
-	SubClassCashAndEquivalents         = "cash_and_equivalents"
-	SubClassTradeReceivables           = "trade_receivables"
-	SubClassInventories                = "inventories"
-	SubClassPropertyPlantEquipment     = "property_plant_equipment"
-	SubClassIntangibleAssets           = "intangible_assets"
-	SubClassRightOfUseAssets           = "right_of_use_assets"
-	SubClassFinancialInvestments       = "financial_investments"
-	SubClassPrepaymentsOtherDebit      = "prepayments_and_other_debit"
-	SubClassOtherNonCurrentAssets      = "other_non_current_assets"
-	SubClassCurrentAssets              = "current_assets"
-	SubClassNonCurrentAssets           = "non_current_assets"
+	SubClassCashAndEquivalents     = "cash_and_equivalents"
+	SubClassTradeReceivables       = "trade_receivables"
+	SubClassInventories            = "inventories"
+	SubClassPropertyPlantEquipment = "property_plant_equipment"
+	SubClassIntangibleAssets       = "intangible_assets"
+	SubClassRightOfUseAssets       = "right_of_use_assets"
+	SubClassFinancialInvestments   = "financial_investments"
+	SubClassPrepaymentsOtherDebit  = "prepayments_and_other_debit"
+	SubClassOtherNonCurrentAssets  = "other_non_current_assets"
+	SubClassCurrentAssets          = "current_assets"
+	SubClassNonCurrentAssets       = "non_current_assets"
 
 	SubClassTradePayables              = "trade_payables"
 	SubClassShortTermBorrowings        = "short_term_borrowings"
@@ -42,12 +42,12 @@ const (
 	SubClassCurrentLiabilities         = "current_liabilities"
 	SubClassNonCurrentLiabilities      = "non_current_liabilities"
 
-	SubClassShareCapital               = "share_capital"
-	SubClassSharePremium               = "share_premium"
-	SubClassStatutoryReserve           = "statutory_reserve"
-	SubClassOCIReserves                = "oci_reserves"
-	SubClassRetainedEarnings           = "retained_earnings"
-	SubClassTreasuryShares             = "treasury_shares"
+	SubClassShareCapital     = "share_capital"
+	SubClassSharePremium     = "share_premium"
+	SubClassStatutoryReserve = "statutory_reserve"
+	SubClassOCIReserves      = "oci_reserves"
+	SubClassRetainedEarnings = "retained_earnings"
+	SubClassTreasuryShares   = "treasury_shares"
 
 	SubClassOperatingRevenue           = "operating_revenue"
 	SubClassCostOfSales                = "cost_of_sales"
@@ -65,9 +65,9 @@ const (
 	SubClassOCIRecyclable              = "oci_recyclable"
 
 	// Legacy aliases
-	SubClassAccountsReceivable         = "accounts_receivable"
-	SubClassAccountsPayable            = "accounts_payable"
-	SubClassBank                       = "bank"
+	SubClassAccountsReceivable = "accounts_receivable"
+	SubClassAccountsPayable    = "accounts_payable"
+	SubClassBank               = "bank"
 )
 
 type AccountType string
@@ -89,17 +89,25 @@ const (
 )
 
 type Account struct {
-	ID                uuid.UUID
-	Code              string
-	Name              string
-	AccountType       AccountType
-	NormalBalance     NormalBalance
-	SubClassification string
-	ParentID          *uuid.UUID
-	IsHeader          bool
-	HasPostedEntries  bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                  uuid.UUID
+	Code                string
+	Name                string
+	AccountType         AccountType
+	NormalBalance       NormalBalance
+	CurrencyID          string
+	ParentID            *uuid.UUID
+	IsReconcilable      bool
+	IsActive            bool
+	IsCashEquivalent    bool
+	IsNonCashAdjustment bool
+	CashFlowActivity    string
+	IFRSCategory        string
+	SubClassification   string
+	IsHeader            bool
+	HasPostedEntries    bool
+	DisplayOrder        int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func DefaultNormalBalance(accountType AccountType) NormalBalance {
@@ -208,8 +216,11 @@ func (a Account) IsCurrentAsset() bool {
 	return a.AccountType == AccountTypeAsset && taxonomyContains(a.SubClassification, "current")
 }
 
-func (a Account) IsCashEquivalent() bool {
+func (a Account) EffectiveIsCashEquivalent() bool {
 	classification := strings.ToLower(strings.TrimSpace(a.SubClassification))
+	if a.IsCashEquivalent {
+		return true
+	}
 	return a.AccountType == AccountTypeAsset &&
 		(classification == SubClassCashAndEquivalents || classification == SubClassBank || strings.Contains(classification, "cash"))
 }

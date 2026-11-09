@@ -105,9 +105,8 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 }
 
 func isCashAccount(account masterdata.Account) bool {
-	classification := normalizeClassification(account.SubClassification)
 	return account.AccountType == masterdata.AccountTypeAsset &&
-		(classification == "cash" || strings.Contains(classification, "cash") || strings.Contains(classification, "bank"))
+		(account.IsCashEquivalent || account.EffectiveIsCashEquivalent())
 }
 
 func signedBalance(side accountSide, account masterdata.Account) decimal.Decimal {

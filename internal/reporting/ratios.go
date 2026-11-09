@@ -71,7 +71,7 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 		classification := normalizeClassification(account.SubClassification)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:
-			if account.IsCashEquivalent() {
+			if account.EffectiveIsCashEquivalent() {
 				cash = cash.Add(amount)
 			}
 			if strings.Contains(classification, "receivable") {
@@ -81,7 +81,7 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 				inventory = inventory.Add(amount)
 			}
 			if strings.Contains(classification, "current") || strings.Contains(classification, "cash") ||
-				account.IsCashEquivalent() || strings.Contains(classification, "receivable") || strings.Contains(classification, "invent") {
+				account.EffectiveIsCashEquivalent() || strings.Contains(classification, "receivable") || strings.Contains(classification, "invent") {
 				currentAssets = currentAssets.Add(amount)
 			}
 		case masterdata.AccountTypeLiability:

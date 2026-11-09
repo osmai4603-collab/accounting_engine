@@ -34,14 +34,17 @@ const (
 )
 
 type JournalEntryLine struct {
-	ID             uuid.UUID
-	AccountID      uuid.UUID
-	PartnerID      *uuid.UUID
-	Debit          financialtypes.Money
-	Credit         financialtypes.Money
-	AmountCurrency financialtypes.Money
-	Currency       string
-	ForeignAmount  decimal.Decimal
+	ID               uuid.UUID
+	AccountID        uuid.UUID
+	PartnerID        *uuid.UUID
+	CostCenterID     *uuid.UUID
+	MatchingNumber   string
+	ReconciledAmount decimal.Decimal
+	Debit            financialtypes.Money
+	Credit           financialtypes.Money
+	AmountCurrency   financialtypes.Money
+	Currency         string
+	ForeignAmount    decimal.Decimal
 }
 
 func (l JournalEntryLine) Validate() error {
