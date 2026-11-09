@@ -619,20 +619,39 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if date.IsZero() {
 		date = entry.Date
 	}
+	if entry.Status == posting.EntryPosted || entry.Status == posting.EntryReversed {
+		expectedStatus := posting.EntryDraft
+		if entry.Status == posting.EntryReversed {
+			expectedStatus = posting.EntryPosted
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE account_moves SET journal_id=$3,period_id=$4,entry_date=$5,entry_number=$6,
+			 status=$7,reversed_move_id=$8,entry=$9
+			 WHERE id=$1 AND company_id=$2 AND status=$10`,
+			entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
+			entry.Status, entry.ReversedEntryID, data, expectedStatus)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return posting.ErrEntryNotDraft
+		}
+		return nil
+	}
+	if entry.Status != posting.EntryDraft {
+		return posting.ErrInvalidEntry
+	}
 	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,reversed_move_id,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,
 	 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
 	 reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry
-	 WHERE account_moves.status='draft' OR (account_moves.status='posted' AND EXCLUDED.status='reversed')`,
+	 WHERE account_moves.status='draft'`,
 		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber, entry.Status, entry.ReversedEntryID, data)
 	if err != nil {
 		return err
 	}
 	if affected := result.RowsAffected(); affected != 1 {
 		return posting.ErrEntryNotDraft
-	}
-	if entry.Status != posting.EntryDraft {
-		return nil
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM account_move_lines WHERE move_id=$1`, entry.ID); err != nil {
 		return err
@@ -1155,10 +1174,9 @@ func (d *Driver) SaveFixedAsset(asset subledgers.FixedAsset) error {
 	return err
 }
 
-func (d *Driver) SaveFixedAssetAndDraft(expected, updated subledgers.FixedAsset, entry posting.JournalEntry) error {
-	if updated.ID == uuid.Nil || updated.CompanyID == uuid.Nil || expected.ID != updated.ID ||
-		expected.CompanyID != updated.CompanyID || entry.ID == uuid.Nil ||
-		entry.CompanyID != updated.CompanyID || entry.Status != posting.EntryDraft {
+func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
+		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return subledgers.ErrInvalidAsset
 	}
 	ctx := context.Background()
@@ -1184,16 +1202,85 @@ func (d *Driver) SaveFixedAssetAndDraft(expected, updated subledgers.FixedAsset,
 	if !reflect.DeepEqual(current, expected) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM account_moves
+				WHERE company_id=$1 AND status IN ('draft', 'posted')
+				  AND entry->>'DocumentReference'=$2
+			)`,
+			entry.CompanyID, entry.DocumentReference).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return subledgers.ErrAlreadyExists
+		}
+	}
 	if err := d.saveEntryTx(ctx, tx, entry); err != nil {
 		return err
 	}
-	data, err := json.Marshal(updated)
+	return tx.Commit(ctx)
+}
+
+func (d *Driver) ConfirmFixedAssetMutation(expected, updated subledgers.FixedAsset, expectedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || expectedEntry.ID == uuid.Nil ||
+		expectedEntry.CompanyID != expected.CompanyID || expectedEntry.Status != posting.EntryPosted {
+		return subledgers.ErrInvalidAsset
+	}
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var currentData []byte
+	err = tx.QueryRow(ctx,
+		`SELECT asset_data FROM fixed_assets WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		expected.CompanyID, expected.ID).Scan(&currentData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return subledgers.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var current subledgers.FixedAsset
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+
+	var moveStatus posting.EntryStatus
+	var entryData []byte
+	err = tx.QueryRow(ctx,
+		`SELECT status, entry FROM account_moves
+		 WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		expectedEntry.CompanyID, expectedEntry.ID).Scan(&moveStatus, &entryData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return posting.ErrEntryNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var actualEntry posting.JournalEntry
+	if err := json.Unmarshal(entryData, &actualEntry); err != nil {
+		return err
+	}
+	if moveStatus != posting.EntryPosted || !subledgers.FixedAssetEntryMatches(actualEntry, expectedEntry) {
+		return posting.ErrEntryNotPosted
+	}
+
+	updatedData, err := json.Marshal(updated)
 	if err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx,
 		`UPDATE fixed_assets SET asset_data=$3 WHERE company_id=$1 AND id=$2`,
-		updated.CompanyID, updated.ID, data)
+		updated.CompanyID, updated.ID, updatedData)
 	if err != nil {
 		return err
 	}

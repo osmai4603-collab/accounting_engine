@@ -301,6 +301,7 @@ func cloneEntry(entry posting.JournalEntry) posting.JournalEntry {
 }
 
 func cloneFixedAsset(asset subledgers.FixedAsset) subledgers.FixedAsset {
+	asset.AppliedEntryIDs = append([]uuid.UUID(nil), asset.AppliedEntryIDs...)
 	if asset.DisposedAt != nil {
 		disposedAt := *asset.DisposedAt
 		asset.DisposedAt = &disposedAt
@@ -672,10 +673,9 @@ func (d *Driver) SaveFixedAsset(asset subledgers.FixedAsset) error {
 	return nil
 }
 
-func (d *Driver) SaveFixedAssetAndDraft(expected, updated subledgers.FixedAsset, entry posting.JournalEntry) error {
-	if updated.ID == uuid.Nil || updated.CompanyID == uuid.Nil || expected.ID != updated.ID ||
-		expected.CompanyID != updated.CompanyID || entry.ID == uuid.Nil ||
-		entry.CompanyID != updated.CompanyID || entry.Status != posting.EntryDraft {
+func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
+		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return subledgers.ErrInvalidAsset
 	}
 	if err := entry.Validate(); err != nil {
@@ -690,8 +690,16 @@ func (d *Driver) SaveFixedAssetAndDraft(expected, updated subledgers.FixedAsset,
 	if !reflect.DeepEqual(currentAsset, expected) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
-	if current, exists := d.entries[entry.ID]; exists && current.Status != posting.EntryDraft {
-		return posting.ErrEntryNotDraft
+	if _, exists := d.entries[entry.ID]; exists {
+		return subledgers.ErrAlreadyExists
+	}
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+		for _, current := range d.entries {
+			if current.DocumentReference == entry.DocumentReference &&
+				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {
+				return subledgers.ErrAlreadyExists
+			}
+		}
 	}
 	for i := range entry.Lines {
 		if entry.Lines[i].CompanyID != uuid.Nil && entry.Lines[i].CompanyID != entry.CompanyID {
@@ -704,6 +712,31 @@ func (d *Driver) SaveFixedAssetAndDraft(expected, updated subledgers.FixedAsset,
 		entry.Lines[i].CompanyID = entry.CompanyID
 	}
 	d.entries[entry.ID] = cloneEntry(entry)
+	return nil
+}
+
+func (d *Driver) ConfirmFixedAssetMutation(expected, updated subledgers.FixedAsset, expectedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || expectedEntry.ID == uuid.Nil ||
+		expectedEntry.CompanyID != expected.CompanyID || expectedEntry.Status != posting.EntryPosted {
+		return subledgers.ErrInvalidAsset
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	currentAsset, exists := d.assets[expected.ID]
+	if !exists {
+		return subledgers.ErrNotFound
+	}
+	if !reflect.DeepEqual(currentAsset, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+	actualEntry, exists := d.entries[expectedEntry.ID]
+	if !exists {
+		return posting.ErrEntryNotFound
+	}
+	if !subledgers.FixedAssetEntryMatches(actualEntry, expectedEntry) {
+		return posting.ErrEntryNotPosted
+	}
 	d.assets[updated.ID] = cloneFixedAsset(updated)
 	return nil
 }

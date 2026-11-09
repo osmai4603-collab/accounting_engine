@@ -40,6 +40,14 @@ func accountBalance(side accountSide, account masterdata.Account) decimal.Decima
 	return amount
 }
 
+func adjustedAccountBalance(side accountSide, account masterdata.Account) decimal.Decimal {
+	amount := accountBalance(side, account)
+	if account.IsContraAccount {
+		amount = amount.Neg()
+	}
+	return amount
+}
+
 func postedEntriesInRange(entries []posting.JournalEntry, start, end time.Time) []posting.JournalEntry {
 	result := make([]posting.JournalEntry, 0, len(entries))
 	for _, entry := range entries {

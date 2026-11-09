@@ -190,6 +190,122 @@ func TestIncomeStatementRequiresExplicitIFRSCategory(t *testing.T) {
 	}
 }
 
+func TestIncomeStatementOffsetsContraRevenueAndExpense(t *testing.T) {
+	revenue := reportAccount(uuid.New(), "4000", "Sales", masterdata.AccountTypeIncome, "operating_revenue")
+	returns := reportAccount(uuid.New(), "4050", "Sales returns", masterdata.AccountTypeIncome, "sales_returns")
+	returns.IsContraAccount = true
+	returns.NormalBalance = masterdata.NormalBalanceDebit
+	costOfSales := reportAccount(uuid.New(), "5000", "Cost of sales", masterdata.AccountTypeExpense, masterdata.SubClassCostOfSales)
+	purchaseDiscount := reportAccount(uuid.New(), "5050", "Purchase discounts", masterdata.AccountTypeExpense, masterdata.SubClassCostOfSales)
+	purchaseDiscount.IsContraAccount = true
+	purchaseDiscount.NormalBalance = masterdata.NormalBalanceCredit
+	cash := reportAccount(uuid.New(), "1000", "Cash", masterdata.AccountTypeAsset, "cash")
+	repository := &memoryRepository{accounts: []masterdata.Account{revenue, returns, costOfSales, purchaseDiscount, cash}}
+	date := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	repository.entries = []posting.JournalEntry{
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: cash.ID, Debit: reportMoney(t, "1000", "USD")},
+			posting.JournalEntryLine{AccountID: revenue.ID, Credit: reportMoney(t, "1000", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: returns.ID, Debit: reportMoney(t, "100", "USD")},
+			posting.JournalEntryLine{AccountID: cash.ID, Credit: reportMoney(t, "100", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: costOfSales.ID, Debit: reportMoney(t, "500", "USD")},
+			posting.JournalEntryLine{AccountID: cash.ID, Credit: reportMoney(t, "500", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: cash.ID, Debit: reportMoney(t, "50", "USD")},
+			posting.JournalEntryLine{AccountID: purchaseDiscount.ID, Credit: reportMoney(t, "50", "USD")},
+		),
+	}
+
+	report, err := NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Revenue.Equal(decimal.NewFromInt(900)) ||
+		!report.CostOfSales.Equal(decimal.NewFromInt(450)) ||
+		!report.GrossProfit.Equal(decimal.NewFromInt(450)) {
+		t.Fatalf("contra accounts were not deducted from their categories: revenue=%s cost_of_sales=%s gross_profit=%s",
+			report.Revenue, report.CostOfSales, report.GrossProfit)
+	}
+}
+
+func TestAdjustedAccountBalanceHandlesContraSides(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountType masterdata.AccountType
+		normal      masterdata.NormalBalance
+		debit       string
+		credit      string
+		want        int64
+	}{
+		{name: "contra asset", accountType: masterdata.AccountTypeAsset, normal: masterdata.NormalBalanceCredit, credit: "25", want: -25},
+		{name: "contra liability", accountType: masterdata.AccountTypeLiability, normal: masterdata.NormalBalanceDebit, debit: "25", want: -25},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			account := reportAccount(uuid.New(), "1000", test.name, test.accountType, "other")
+			account.IsContraAccount = true
+			account.NormalBalance = test.normal
+			side := accountSide{debit: decimal.NewFromInt(0), credit: decimal.NewFromInt(0)}
+			if test.debit != "" {
+				side.debit = decimal.RequireFromString(test.debit)
+			}
+			if test.credit != "" {
+				side.credit = decimal.RequireFromString(test.credit)
+			}
+			if got := adjustedAccountBalance(side, account); !got.Equal(decimal.NewFromInt(test.want)) {
+				t.Fatalf("adjustedAccountBalance() = %s, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestQuickRatioNetsContraReceivables(t *testing.T) {
+	cash := reportAccount(uuid.New(), "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents)
+	receivables := reportAccount(uuid.New(), "1100", "Trade receivables", masterdata.AccountTypeAsset, masterdata.SubClassTradeReceivables)
+	allowance := reportAccount(uuid.New(), "1190", "Allowance for ECL", masterdata.AccountTypeAsset, masterdata.SubClassTradeReceivables)
+	allowance.IsContraAccount = true
+	allowance.NormalBalance = masterdata.NormalBalanceCredit
+	equity := reportAccount(uuid.New(), "3000", "Capital", masterdata.AccountTypeEquity, "capital")
+	revenue := reportAccount(uuid.New(), "4000", "Sales", masterdata.AccountTypeIncome, "operating_revenue")
+	provision := reportAccount(uuid.New(), "5100", "ECL expense", masterdata.AccountTypeExpense, masterdata.SubClassExpectedCreditLossExpense)
+	payable := reportAccount(uuid.New(), "2000", "Accounts payable", masterdata.AccountTypeLiability, masterdata.SubClassAccountsPayable)
+	repository := &memoryRepository{accounts: []masterdata.Account{
+		cash, receivables, allowance, equity, revenue, provision, payable,
+	}}
+	date := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	repository.entries = []posting.JournalEntry{
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: cash.ID, Debit: reportMoney(t, "1000", "USD")},
+			posting.JournalEntryLine{AccountID: equity.ID, Credit: reportMoney(t, "1000", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: receivables.ID, Debit: reportMoney(t, "500", "USD")},
+			posting.JournalEntryLine{AccountID: revenue.ID, Credit: reportMoney(t, "500", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: provision.ID, Debit: reportMoney(t, "100", "USD")},
+			posting.JournalEntryLine{AccountID: allowance.ID, Credit: reportMoney(t, "100", "USD")},
+		),
+		reportEntry(t, date,
+			posting.JournalEntryLine{AccountID: cash.ID, Debit: reportMoney(t, "500", "USD")},
+			posting.JournalEntryLine{AccountID: payable.ID, Credit: reportMoney(t, "500", "USD")},
+		),
+	}
+
+	report, err := NewRatiosEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Liquidity.QuickRatio.Equal(decimal.RequireFromString("3.8")) {
+		t.Fatalf("QuickRatio = %s, want 3.8 with net receivables", report.Liquidity.QuickRatio)
+	}
+}
+
 func TestCashFlowRequiresExplicitActivity(t *testing.T) {
 	account := reportAccount(uuid.New(), "1200", "Receivables", masterdata.AccountTypeAsset, masterdata.SubClassTradeReceivables)
 	account.CashFlowActivity = ""

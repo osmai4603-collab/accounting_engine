@@ -53,7 +53,7 @@ func (e *IncomeStatementEngine) Generate(start, end time.Time, currency string) 
 	}
 	report := IncomeStatement{StartDate: start, EndDate: end, Currency: currency}
 	for _, account := range accounts {
-		amount := accountBalance(balances[account.ID], account)
+		amount := adjustedAccountBalance(balances[account.ID], account)
 		classification := normalizeClassification(account.SubClassification)
 		category := normalizeClassification(account.IFRSCategory)
 		switch account.AccountType {

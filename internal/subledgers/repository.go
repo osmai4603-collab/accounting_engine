@@ -3,6 +3,7 @@ package subledgers
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 
 	"accounting_engine/internal/posting"
@@ -20,6 +21,7 @@ var (
 	ErrCompanyMismatch                  = errors.New("subledger records belong to different companies")
 	ErrAtomicMatchRequired              = errors.New("atomic open-line updates are required for reconciliation")
 	ErrAtomicFixedAssetRequired         = errors.New("atomic fixed-asset and journal-draft storage is required")
+	ErrFixedAssetConfirmationRequired   = errors.New("atomic fixed-asset posting confirmation is required")
 	ErrConcurrentAssetUpdate            = errors.New("fixed asset changed during processing")
 	ErrConcurrentMatch                  = errors.New("open line changed during reconciliation")
 	ErrConcurrentBankItem               = errors.New("bank item changed during reconciliation")
@@ -109,8 +111,12 @@ type AtomicEconomicEventRepository interface {
 	SaveEventAndDraft(EconomicEvent, posting.JournalEntry) error
 }
 
-type AtomicFixedAssetRepository interface {
-	SaveFixedAssetAndDraft(expected, updated FixedAsset, entry posting.JournalEntry) error
+type AtomicFixedAssetDraftRepository interface {
+	SaveFixedAssetDraft(expected FixedAsset, entry posting.JournalEntry) error
+}
+
+type AtomicFixedAssetConfirmationRepository interface {
+	ConfirmFixedAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error
 }
 
 type MemoryRepository struct {
@@ -308,10 +314,9 @@ func (r *MemoryRepository) SaveFixedAsset(asset FixedAsset) error {
 	return nil
 }
 
-func (r *MemoryRepository) SaveFixedAssetAndDraft(expected, updated FixedAsset, entry posting.JournalEntry) error {
-	if updated.ID == uuid.Nil || updated.CompanyID == uuid.Nil || expected.ID != updated.ID ||
-		expected.CompanyID != updated.CompanyID || entry.ID == uuid.Nil ||
-		entry.CompanyID != updated.CompanyID || entry.Status != posting.EntryDraft {
+func (r *MemoryRepository) SaveFixedAssetDraft(expected FixedAsset, entry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
+		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return ErrInvalidAsset
 	}
 	if err := entry.Validate(); err != nil {
@@ -326,13 +331,64 @@ func (r *MemoryRepository) SaveFixedAssetAndDraft(expected, updated FixedAsset, 
 	if !reflect.DeepEqual(currentAsset, expected) {
 		return ErrConcurrentAssetUpdate
 	}
-	if current, exists := r.drafts[entry.ID]; exists && current.Status != posting.EntryDraft {
-		return posting.ErrEntryNotDraft
+	if _, exists := r.drafts[entry.ID]; exists {
+		return ErrAlreadyExists
+	}
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+		for _, current := range r.drafts {
+			if current.DocumentReference == entry.DocumentReference &&
+				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {
+				return ErrAlreadyExists
+			}
+		}
 	}
 	entry.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
 	r.drafts[entry.ID] = entry
+	return nil
+}
+
+func (r *MemoryRepository) ConfirmFixedAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || expectedEntry.ID == uuid.Nil ||
+		expectedEntry.CompanyID != expected.CompanyID || expectedEntry.Status != posting.EntryPosted {
+		return ErrInvalidAsset
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	currentAsset, exists := r.assets[expected.ID]
+	if !exists {
+		return ErrNotFound
+	}
+	if !reflect.DeepEqual(currentAsset, expected) {
+		return ErrConcurrentAssetUpdate
+	}
+	entry, exists := r.drafts[expectedEntry.ID]
+	if !exists {
+		return posting.ErrEntryNotFound
+	}
+	if !FixedAssetEntryMatches(entry, expectedEntry) {
+		return posting.ErrEntryNotPosted
+	}
 	r.assets[updated.ID] = cloneFixedAsset(updated)
 	return nil
+}
+
+func FixedAssetEntryMatches(actual, expected posting.JournalEntry) bool {
+	if actual.ID != expected.ID || actual.CompanyID != expected.CompanyID ||
+		actual.Status != posting.EntryPosted || expected.Status != posting.EntryPosted ||
+		actual.DocumentReference != expected.DocumentReference ||
+		!actual.EntryDate.Equal(expected.EntryDate) || !actual.Date.Equal(expected.Date) ||
+		len(actual.Lines) != len(expected.Lines) {
+		return false
+	}
+	for i, actualLine := range actual.Lines {
+		expectedLine := expected.Lines[i]
+		if actualLine.CompanyID != expectedLine.CompanyID || actualLine.AccountID != expectedLine.AccountID ||
+			!actualLine.Debit.Equal(expectedLine.Debit) || !actualLine.Credit.Equal(expectedLine.Credit) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *MemoryRepository) GetFixedAsset(id uuid.UUID) (FixedAsset, error) {
@@ -488,6 +544,7 @@ func cloneOpenLine(line OpenLine) OpenLine {
 }
 
 func cloneFixedAsset(asset FixedAsset) FixedAsset {
+	asset.AppliedEntryIDs = append([]uuid.UUID(nil), asset.AppliedEntryIDs...)
 	if asset.DisposedAt != nil {
 		disposedAt := *asset.DisposedAt
 		asset.DisposedAt = &disposedAt

@@ -353,9 +353,66 @@ func TestConcurrentMonthlyDepreciationIsAppliedOnce(t *testing.T) {
 	drafts := len(repo.drafts)
 	repo.mu.Unlock()
 	if successes != 1 || drafts != 1 ||
-		!updated.AccumulatedDepreciation.Amount().Equal(decimal.NewFromInt(1000)) {
-		t.Fatalf("depreciation was not applied exactly once: successes=%d drafts=%d accumulated=%s",
+		!updated.AccumulatedDepreciation.Amount().IsZero() || !updated.LastDepreciationDate.IsZero() {
+		t.Fatalf("draft creation mutated asset or was not idempotent: successes=%d drafts=%d accumulated=%s",
 			successes, drafts, updated.AccumulatedDepreciation)
+	}
+}
+
+func TestMonthlyDepreciationConfirmationAndRejectedDraftRetry(t *testing.T) {
+	repo := NewMemoryRepository()
+	ledger := NewFixedAssetLedger(repo, &draftCreator{})
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: uuid.New(),
+		HistoricalCost: money(t, "12000"), SalvageValue: money(t, "0"),
+		UsefulLifeMonths: 12, Method: StraightLine,
+		InServiceDate:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ExpenseAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
+	}
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	asOf := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	first, amount, err := ledger.MonthlyDepreciation(asset.ID, uuid.New(), asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.ConfirmDepreciation(asset.ID, first.ID, amount, asOf); !errors.Is(err, posting.ErrEntryNotPosted) {
+		t.Fatalf("ConfirmDepreciation() error = %v, want posted-entry error", err)
+	}
+	unchanged, err := repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unchanged.CurrentBookValue.Equal(money(t, "12000")) || !unchanged.AccumulatedDepreciation.Amount().IsZero() {
+		t.Fatal("draft depreciation changed the fixed asset")
+	}
+
+	repo.mu.Lock()
+	delete(repo.drafts, first.ID)
+	repo.mu.Unlock()
+	second, amount, err := ledger.MonthlyDepreciation(asset.ID, uuid.New(), asOf)
+	if err != nil {
+		t.Fatalf("MonthlyDepreciation() after rejected draft = %v", err)
+	}
+	repo.mu.Lock()
+	posted := repo.drafts[second.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[second.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmDepreciation(asset.ID, second.ID, amount, asOf); err != nil {
+		t.Fatalf("ConfirmDepreciation() = %v", err)
+	}
+	updated, err := repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.CurrentBookValue.Equal(money(t, "11000")) ||
+		!updated.AccumulatedDepreciation.Equal(amount) || !updated.LastDepreciationDate.Equal(asOf) {
+		t.Fatalf("confirmed depreciation was not applied: %+v", updated)
+	}
+	if err := ledger.ConfirmDepreciation(asset.ID, second.ID, amount, asOf); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate confirmation error = %v, want ErrAlreadyExists", err)
 	}
 }
 
@@ -454,9 +511,69 @@ func TestFixedAssetImpairmentIAS36(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedBookValue := decimal.NewFromInt(7500)
-	if !updated.CurrentBookValue.Amount().Equal(expectedBookValue) {
-		t.Fatalf("expected current book value %s, got %s", expectedBookValue, updated.CurrentBookValue.Amount())
+	if !updated.CurrentBookValue.Amount().Equal(decimal.NewFromInt(10000)) ||
+		!updated.AccumulatedImpairment.Amount().IsZero() {
+		t.Fatalf("impairment draft changed asset before posting: %+v", updated)
+	}
+	repo.mu.Lock()
+	posted := repo.drafts[entry.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[entry.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmImpairment(asset.ID, entry.ID, loss, asOf); err != nil {
+		t.Fatalf("ConfirmImpairment() failed: %v", err)
+	}
+	updated, err = repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.CurrentBookValue.Amount().Equal(decimal.NewFromInt(7500)) ||
+		!updated.AccumulatedImpairment.Equal(loss) {
+		t.Fatalf("posted impairment was not applied: %+v", updated)
+	}
+}
+
+func TestDisposeAssetOnlyUpdatesAfterPosting(t *testing.T) {
+	repo := NewMemoryRepository()
+	ledger := NewFixedAssetLedger(repo, &draftCreator{})
+	disposalDate := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: uuid.New(),
+		HistoricalCost: money(t, "10000"), SalvageValue: money(t, "0"),
+		AccumulatedDepreciation: money(t, "1000"), CurrentBookValue: money(t, "9000"),
+		UsefulLifeMonths: 10, Method: StraightLine, InServiceDate: disposalDate,
+		AssetAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
+		DisposalCashAccountID: uuid.New(),
+	}
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := ledger.DisposeAsset(asset.ID, disposalDate, money(t, "9000"), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.DisposedAt != nil {
+		t.Fatal("disposal draft marked the asset as disposed")
+	}
+
+	repo.mu.Lock()
+	posted := repo.drafts[entry.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[entry.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmDisposal(asset.ID, entry.ID, disposalDate, money(t, "9000")); err != nil {
+		t.Fatalf("ConfirmDisposal() failed: %v", err)
+	}
+	updated, err := repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DisposedAt == nil || !updated.DisposedAt.Equal(disposalDate) {
+		t.Fatalf("posted disposal did not mark the asset disposed: %+v", updated)
 	}
 }
 

@@ -67,7 +67,7 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 
 	var cash, receivables, inventory, currentAssets, currentLiabilities decimal.Decimal
 	for _, account := range accounts {
-		amount := accountBalance(balances[account.ID], account).Abs()
+		amount := adjustedAccountBalance(balances[account.ID], account)
 		classification := normalizeClassification(account.SubClassification)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:

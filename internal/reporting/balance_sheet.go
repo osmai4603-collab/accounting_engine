@@ -44,10 +44,7 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 		return BalanceSheet{}, err
 	}
 	for _, account := range accounts {
-		amount := accountBalance(balances[account.ID], account)
-		if account.IsContraAccount {
-			amount = amount.Neg()
-		}
+		amount := adjustedAccountBalance(balances[account.ID], account)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:
 			if account.IsCurrentAsset() {

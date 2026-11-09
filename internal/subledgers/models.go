@@ -144,4 +144,5 @@ type FixedAsset struct {
 	DisposalLossAccountID          uuid.UUID
 	DisposalCashAccountID          uuid.UUID
 	DisposedAt                     *time.Time
+	AppliedEntryIDs                []uuid.UUID
 }
