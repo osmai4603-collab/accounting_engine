@@ -43,6 +43,9 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 	}
 	for _, account := range accounts {
 		amount := accountBalance(balances[account.ID], account)
+		if account.IsContraAccount {
+			amount = amount.Neg()
+		}
 		classification := normalizeClassification(account.SubClassification)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:

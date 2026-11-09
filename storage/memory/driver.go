@@ -128,12 +128,23 @@ func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
 func (d *Driver) GetPeriodByDate(date time.Time) (masterdata.FiscalPeriod, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	var matched []masterdata.FiscalPeriod
 	for _, period := range d.periods {
 		if period.Contains(date) {
+			matched = append(matched, period)
+		}
+	}
+	if len(matched) == 0 {
+		return masterdata.FiscalPeriod{}, masterdata.ErrFiscalPeriodNotFound
+	}
+	// Prefer regular monthly periods over adjustment periods
+	for _, period := range matched {
+		if period.Type == masterdata.FiscalPeriodTypeNormal {
 			return period, nil
 		}
 	}
-	return masterdata.FiscalPeriod{}, masterdata.ErrFiscalPeriodNotFound
+	sort.Slice(matched, func(i, j int) bool { return matched[i].Number < matched[j].Number })
+	return matched[0], nil
 }
 
 func (d *Driver) UpdatePeriodState(id uuid.UUID, state masterdata.PeriodState) error {

@@ -348,3 +348,46 @@ func TestStatementBundleComprehensive(t *testing.T) {
 		t.Fatal("cash flow in bundle must reconcile with cash account movement")
 	}
 }
+
+func TestBalanceSheetContraAccountCalculation(t *testing.T) {
+	ppeID := uuid.New()
+	accumDepID := uuid.New()
+	equityID := uuid.New()
+
+	ppeAccount := reportAccount(ppeID, "1500", "Machinery", masterdata.AccountTypeAsset, "property_plant_equipment")
+	accumDepAccount := reportAccount(accumDepID, "1590", "Accumulated Depreciation", masterdata.AccountTypeAsset, "property_plant_equipment")
+	accumDepAccount.NormalBalance = masterdata.NormalBalanceCredit
+	accumDepAccount.IsContraAccount = true
+
+	equityAccount := reportAccount(equityID, "3000", "Share Capital", masterdata.AccountTypeEquity, "share_capital")
+
+	asOf := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	repo := &memoryRepository{
+		accounts: []masterdata.Account{ppeAccount, accumDepAccount, equityAccount},
+		entries: []posting.JournalEntry{
+			reportEntry(t, asOf,
+				posting.JournalEntryLine{AccountID: ppeID, Debit: reportMoney(t, "100000", "USD"), Credit: reportMoney(t, "0", "USD")},
+				posting.JournalEntryLine{AccountID: accumDepID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "20000", "USD")},
+				posting.JournalEntryLine{AccountID: equityID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "80000", "USD")},
+			),
+		},
+	}
+
+	balanceSheet, err := NewBalanceSheetEngine(repo).Generate(asOf, "USD")
+	if err != nil {
+		t.Fatalf("balance sheet generation failed: %v", err)
+	}
+
+	if !balanceSheet.Balanced {
+		t.Fatalf("balance sheet with contra account is not balanced: assets=%s, liabilities_equity=%s",
+			balanceSheet.TotalAssets, balanceSheet.TotalLiabilitiesAndEquity)
+	}
+
+	expectedNetPPE := decimal.NewFromInt(80000)
+	if !balanceSheet.NonCurrentAssets.Equal(expectedNetPPE) {
+		t.Fatalf("expected NonCurrentAssets %s, got %s", expectedNetPPE, balanceSheet.NonCurrentAssets)
+	}
+	if !balanceSheet.TotalAssets.Equal(expectedNetPPE) {
+		t.Fatalf("expected TotalAssets %s, got %s", expectedNetPPE, balanceSheet.TotalAssets)
+	}
+}

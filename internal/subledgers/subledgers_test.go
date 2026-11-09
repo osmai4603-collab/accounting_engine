@@ -122,3 +122,49 @@ func TestStraightLineDepreciation(t *testing.T) {
 		t.Fatalf("unexpected depreciation: amount=%s lines=%d", amount, len(entry.Lines))
 	}
 }
+
+func TestFixedAssetImpairmentIAS36(t *testing.T) {
+	repo := NewMemoryRepository()
+	creator := &draftCreator{}
+	ledger := NewFixedAssetLedger(repo, creator)
+	expenseAccount := uuid.New()
+	accumulatedAccount := uuid.New()
+	journalID := uuid.New()
+
+	asset := FixedAsset{
+		ID:                   uuid.New(),
+		HistoricalCost:       money(t, "10000.00"),
+		SalvageValue:         money(t, "0.00"),
+		UsefulLifeMonths:     10,
+		Method:               StraightLine,
+		InServiceDate:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		ExpenseAccountID:     expenseAccount,
+		AccumulatedAccountID: accumulatedAccount,
+	}
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+
+	loss := money(t, "2500.00")
+	asOf := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	entry, err := ledger.ImpairAsset(asset.ID, loss, journalID, asOf)
+	if err != nil {
+		t.Fatalf("ImpairAsset failed: %v", err)
+	}
+
+	if creator.count != 1 {
+		t.Fatalf("expected 1 draft journal entry created, got %d", creator.count)
+	}
+	if len(entry.Lines) != 2 {
+		t.Fatalf("expected 2 lines in impairment entry, got %d", len(entry.Lines))
+	}
+
+	updated, err := repo.GetFixedAsset(asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBookValue := decimal.NewFromInt(7500)
+	if !updated.CurrentBookValue.Amount().Equal(expectedBookValue) {
+		t.Fatalf("expected current book value %s, got %s", expectedBookValue, updated.CurrentBookValue.Amount())
+	}
+}

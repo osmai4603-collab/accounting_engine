@@ -118,16 +118,62 @@ func (l *FixedAssetLedger) calculateDepreciation(asset FixedAsset, asOf time.Tim
 }
 
 func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) error {
+	_, err := l.ImpairAsset(assetID, loss, uuid.Nil, time.Now().UTC())
+	return err
+}
+
+func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
 	asset, err := l.repo.GetFixedAsset(assetID)
 	if err != nil {
-		return err
+		return posting.JournalEntry{}, err
 	}
 	if loss.Currency() != asset.CurrentBookValue.Currency() || loss.Amount().IsNegative() ||
 		loss.GreaterThan(asset.CurrentBookValue) {
-		return ErrInvalidAsset
+		return posting.JournalEntry{}, ErrInvalidAsset
 	}
 	asset.CurrentBookValue, err = asset.CurrentBookValue.Subtract(loss)
-	return l.repo.SaveFixedAsset(asset)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := l.repo.SaveFixedAsset(asset); err != nil {
+		return posting.JournalEntry{}, err
+	}
+
+	expenseAccount := asset.ImpairmentAccountID
+	if expenseAccount == uuid.Nil {
+		expenseAccount = asset.ExpenseAccountID
+	}
+	accumulatedAccount := asset.AccumulatedAccountID
+	if accumulatedAccount == uuid.Nil {
+		accumulatedAccount = asset.AssetAccountID
+	}
+
+	zero, _ := financialtypes.Zero(loss.Currency())
+	entry := posting.JournalEntry{
+		CompanyID:         asset.CompanyID,
+		ID:                uuid.New(),
+		JournalID:         journalID,
+		EntryDate:         asOf,
+		Date:              asOf,
+		Status:            posting.EntryDraft,
+		DocumentReference: "IMPAIRMENT: " + asset.ID.String(),
+		CreatedAt:         time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: expenseAccount, Debit: loss, Credit: zero},
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: accumulatedAccount, Debit: zero, Credit: loss},
+		},
+	}
+	if journalID != uuid.Nil && expenseAccount != uuid.Nil && accumulatedAccount != uuid.Nil {
+		if err := entry.Validate(); err != nil {
+			return posting.JournalEntry{}, err
+		}
+		if l.creator != nil {
+			if err := l.creator.CreateDraft(entry); err != nil {
+				return posting.JournalEntry{}, err
+			}
+		}
+	}
+	return entry, nil
 }
 
 func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money, journalID uuid.UUID) (posting.JournalEntry, error) {

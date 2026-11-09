@@ -8,10 +8,14 @@ import (
 )
 
 func (e *Engine) Reverse(entryID uuid.UUID, posterID string) (JournalEntry, error) {
-	return e.ReverseAt(entryID, posterID, time.Now().UTC())
+	return e.ReverseDual(entryID, "system-reversal", posterID, time.Now().UTC())
 }
 
 func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate time.Time) (JournalEntry, error) {
+	return e.ReverseDual(entryID, creatorID, creatorID, reversalDate)
+}
+
+func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reversalDate time.Time) (JournalEntry, error) {
 	original, err := e.repo.GetEntryByID(entryID)
 	if err != nil {
 		return JournalEntry{}, err
@@ -24,6 +28,7 @@ func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate tim
 	}
 
 	reversal := JournalEntry{
+		CompanyID:         original.CompanyID,
 		ID:                uuid.New(),
 		JournalID:         original.JournalID,
 		EntryDate:         reversalDate.UTC(),
@@ -38,8 +43,13 @@ func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate tim
 	}
 	for i, line := range original.Lines {
 		reversal.Lines[i] = JournalEntryLine{
+			CompanyID:      line.CompanyID,
+			ID:             uuid.New(),
 			AccountID:      line.AccountID,
 			PartnerID:      line.PartnerID,
+			CostCenterID:   line.CostCenterID,
+			ProjectID:      line.ProjectID,
+			BusinessUnitID: line.BusinessUnitID,
 			Debit:          line.Credit,
 			Credit:         line.Debit,
 			AmountCurrency: line.AmountCurrency,
@@ -53,7 +63,7 @@ func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate tim
 	if err := e.repo.SaveDraft(reversal); err != nil {
 		return JournalEntry{}, err
 	}
-	if err := e.PostEntry(&reversal, creatorID); err != nil {
+	if err := e.PostEntry(&reversal, posterID); err != nil {
 		return JournalEntry{}, err
 	}
 

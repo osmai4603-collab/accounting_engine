@@ -54,16 +54,16 @@ func defaultTime(value time.Time) time.Time {
 	return value
 }
 
-const accountSelect = `SELECT id, code, name, account_type, normal_balance, currency_id, parent_id,
-	is_reconcilable, is_active, is_cash_equivalent, is_non_cash_adjustment,
+const accountSelect = `SELECT id, company_id, code, name, account_type, normal_balance, currency_id, parent_id,
+	is_reconcilable, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
 	cash_flow_activity, sub_classification, ifrs_category, display_order, created_at, updated_at
 	FROM accounts`
 
 func scanAccount(row pgx.Row) (masterdata.Account, error) {
 	var account masterdata.Account
 	err := row.Scan(
-		&account.ID, &account.Code, &account.Name, &account.AccountType, &account.NormalBalance,
-		&account.CurrencyID, &account.ParentID, &account.IsReconcilable, &account.IsActive,
+		&account.ID, &account.CompanyID, &account.Code, &account.Name, &account.AccountType, &account.NormalBalance,
+		&account.CurrencyID, &account.ParentID, &account.IsReconcilable, &account.IsContraAccount, &account.IsActive,
 		&account.IsCashEquivalent, &account.IsNonCashAdjustment, &account.CashFlowActivity,
 		&account.SubClassification, &account.IFRSCategory, &account.DisplayOrder,
 		&account.CreatedAt, &account.UpdatedAt,
@@ -74,22 +74,23 @@ func scanAccount(row pgx.Row) (masterdata.Account, error) {
 func (d *Driver) CreateAccount(account masterdata.Account) error {
 	_, err := d.pool.Exec(context.Background(),
 		`INSERT INTO accounts (
-			id, code, name, account_type, normal_balance, currency_id, parent_id,
-			is_reconcilable, is_active, is_cash_equivalent, is_non_cash_adjustment,
+			id, company_id, code, name, account_type, normal_balance, currency_id, parent_id,
+			is_reconcilable, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
 			cash_flow_activity, sub_classification, ifrs_category, display_order, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT(id) DO UPDATE SET
-			code=EXCLUDED.code, name=EXCLUDED.name, account_type=EXCLUDED.account_type,
+			company_id=EXCLUDED.company_id, code=EXCLUDED.code, name=EXCLUDED.name, account_type=EXCLUDED.account_type,
 			normal_balance=EXCLUDED.normal_balance, currency_id=EXCLUDED.currency_id,
 			parent_id=EXCLUDED.parent_id, is_reconcilable=EXCLUDED.is_reconcilable,
+			is_contra_account=EXCLUDED.is_contra_account,
 			is_active=EXCLUDED.is_active, is_cash_equivalent=EXCLUDED.is_cash_equivalent,
 			is_non_cash_adjustment=EXCLUDED.is_non_cash_adjustment,
 			cash_flow_activity=EXCLUDED.cash_flow_activity,
 			sub_classification=EXCLUDED.sub_classification, ifrs_category=EXCLUDED.ifrs_category,
 			display_order=EXCLUDED.display_order, updated_at=EXCLUDED.updated_at`,
-		account.ID, account.Code, account.Name, account.AccountType, account.NormalBalance,
+		account.ID, account.CompanyID, account.Code, account.Name, account.AccountType, account.NormalBalance,
 		nullableString(account.CurrencyID, "SAR"), account.ParentID, account.IsReconcilable,
-		account.IsActive, account.IsCashEquivalent, account.IsNonCashAdjustment,
+		account.IsContraAccount, account.IsActive, account.IsCashEquivalent, account.IsNonCashAdjustment,
 		nullableString(account.CashFlowActivity, "unclassified"),
 		nullableString(account.SubClassification, "unclassified"),
 		nullableString(account.IFRSCategory, "operating"), account.DisplayOrder,
@@ -147,9 +148,9 @@ func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.pool.Exec(context.Background(), `INSERT INTO fiscal_years(id,code,year,start_date,end_date,year_data) VALUES($1,$2,$3,$4,$5,$6)
-	 ON CONFLICT(id) DO UPDATE SET code=EXCLUDED.code,year=EXCLUDED.year,start_date=EXCLUDED.start_date,end_date=EXCLUDED.end_date,year_data=EXCLUDED.year_data`,
-		year.ID, year.Name, year.StartDate.UTC().Year(), year.StartDate, year.EndDate, data)
+	_, err = d.pool.Exec(context.Background(), `INSERT INTO fiscal_years(id,company_id,code,year,start_date,end_date,year_data) VALUES($1,$2,$3,$4,$5,$6,$7)
+	 ON CONFLICT(id) DO UPDATE SET company_id=EXCLUDED.company_id,code=EXCLUDED.code,year=EXCLUDED.year,start_date=EXCLUDED.start_date,end_date=EXCLUDED.end_date,year_data=EXCLUDED.year_data`,
+		year.ID, year.CompanyID, year.Name, year.StartDate.UTC().Year(), year.StartDate, year.EndDate, data)
 	return err
 }
 
@@ -166,10 +167,10 @@ func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
 func (d *Driver) GetPeriodByDate(date time.Time) (masterdata.FiscalPeriod, error) {
 	var period masterdata.FiscalPeriod
 	err := d.pool.QueryRow(context.Background(),
-		`SELECT id, year_id, period_number, name, start_date, end_date, state
-		 FROM fiscal_periods WHERE start_date <= $1 AND end_date >= $1 LIMIT 1`, date).Scan(
-		&period.ID, &period.FiscalYearID, &period.Number, &period.Name,
-		&period.StartDate, &period.EndDate, &period.State,
+		`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type
+		 FROM fiscal_periods WHERE start_date <= $1 AND end_date >= $1 AND (period_type = 'normal' OR period_type IS NULL) ORDER BY period_number ASC LIMIT 1`, date).Scan(
+		&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number, &period.Name,
+		&period.StartDate, &period.EndDate, &period.State, &period.Type,
 	)
 	return period, err
 }
@@ -232,9 +233,9 @@ func (d *Driver) saveEntry(ctx context.Context, entry posting.JournalEntry) erro
 		date = entry.Date
 	}
 	_, err = d.pool.Exec(ctx,
-		`INSERT INTO account_moves(id,journal_id,period_id,entry_date,status,entry) VALUES($1,$2,$3,$4,$5,$6)
-		 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,entry_date=EXCLUDED.entry_date,status=EXCLUDED.status,entry=EXCLUDED.entry`,
-		entry.ID, entry.JournalID, entry.PeriodID, date, entry.Status, data)
+		`INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,status,entry) VALUES($1,$2,$3,$4,$5,$6,$7)
+		 ON CONFLICT(id) DO UPDATE SET company_id=EXCLUDED.company_id,journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,entry_date=EXCLUDED.entry_date,status=EXCLUDED.status,entry=EXCLUDED.entry`,
+		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.Status, data)
 	return err
 }
 func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
@@ -243,14 +244,18 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 		return err
 	}
 	defer tx.Rollback(context.Background())
-	var sequence int64
-	if err := tx.QueryRow(context.Background(),
-		`SELECT next_sequence FROM journals WHERE id=$1 FOR UPDATE`, entry.JournalID).Scan(&sequence); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(context.Background(),
-		`UPDATE journals SET next_sequence=next_sequence+1 WHERE id=$1`, entry.JournalID); err != nil {
-		return err
+	if entry.SequenceNumber == 0 {
+		var sequence int64
+		err := tx.QueryRow(context.Background(),
+			`INSERT INTO journals(id, company_id, code, next_sequence)
+			 VALUES($1, $2, $3, 1)
+			 ON CONFLICT(id) DO UPDATE SET next_sequence=journals.next_sequence+1
+			 RETURNING next_sequence`,
+			entry.JournalID, entry.CompanyID, "GEN-"+entry.JournalID.String()).Scan(&sequence)
+		if err != nil {
+			return err
+		}
+		entry.SequenceNumber = sequence
 	}
 	if err := d.saveEntryTx(context.Background(), tx, entry); err != nil {
 		return err
@@ -334,7 +339,7 @@ func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.pool.Exec(context.Background(), `INSERT INTO subledger_events(idempotency_key,event) VALUES($1,$2) ON CONFLICT(idempotency_key) DO UPDATE SET event=EXCLUDED.event`, event.IdempotencyKey, data)
+	_, err = d.pool.Exec(context.Background(), `INSERT INTO subledger_events(company_id,idempotency_key,event) VALUES($1,$2,$3) ON CONFLICT(idempotency_key) DO UPDATE SET company_id=EXCLUDED.company_id,event=EXCLUDED.event`, event.CompanyID, event.IdempotencyKey, data)
 	return err
 }
 func (d *Driver) GetEventByIdempotencyKey(key string) (subledgers.EconomicEvent, bool, error) {
@@ -358,8 +363,8 @@ func (d *Driver) SaveOpenLine(line subledgers.OpenLine) error {
 	if line.PartnerID != nil {
 		partner = *line.PartnerID
 	}
-	_, err = d.pool.Exec(context.Background(), `INSERT INTO subledger_open_lines(id,partner_id,kind,line_data) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET partner_id=EXCLUDED.partner_id,kind=EXCLUDED.kind,line_data=EXCLUDED.line_data`,
-		line.ID, partner, line.Kind, data)
+	_, err = d.pool.Exec(context.Background(), `INSERT INTO subledger_open_lines(id,company_id,partner_id,kind,line_data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET company_id=EXCLUDED.company_id,partner_id=EXCLUDED.partner_id,kind=EXCLUDED.kind,line_data=EXCLUDED.line_data`,
+		line.ID, line.CompanyID, partner, line.Kind, data)
 	return err
 }
 func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
@@ -405,7 +410,7 @@ func (d *Driver) SaveFixedAsset(asset subledgers.FixedAsset) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.pool.Exec(context.Background(), `INSERT INTO fixed_assets(id,asset_data) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET asset_data=EXCLUDED.asset_data`, asset.ID, data)
+	_, err = d.pool.Exec(context.Background(), `INSERT INTO fixed_assets(id,company_id,asset_data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET company_id=EXCLUDED.company_id,asset_data=EXCLUDED.asset_data`, asset.ID, asset.CompanyID, data)
 	return err
 }
 func (d *Driver) GetFixedAsset(id uuid.UUID) (subledgers.FixedAsset, error) {
@@ -446,7 +451,7 @@ func (d *Driver) SaveBankItem(item subledgers.BankItem) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.pool.Exec(context.Background(), `INSERT INTO bank_items(account_id,item_id,item_data) VALUES($1,$2,$3)`, item.AccountID, item.ID, data)
+	_, err = d.pool.Exec(context.Background(), `INSERT INTO bank_items(company_id,account_id,item_id,item_data) VALUES($1,$2,$3,$4)`, item.CompanyID, item.AccountID, item.ID, data)
 	return err
 }
 func (d *Driver) ListBankItems(accountID string) ([]subledgers.BankItem, error) {
@@ -486,27 +491,27 @@ func (d *Driver) GetRateOfType(ctx context.Context, rateType valuation.RateType,
 	return rate, err
 }
 func (d *Driver) AppendAuditLog(ctx context.Context, log governance.FinancialAuditLog) error {
-	_, err := d.pool.Exec(ctx, `INSERT INTO financial_audit_logs(entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		log.EntityType, log.EntityID, log.Action, log.ActorID, log.PayloadBefore, log.PayloadAfter, log.Timestamp, log.PreviousLogHash, log.CurrentLogHash)
+	_, err := d.pool.Exec(ctx, `INSERT INTO financial_audit_logs(company_id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		log.CompanyID, log.EntityType, log.EntityID, log.Action, log.ActorID, log.PayloadBefore, log.PayloadAfter, log.Timestamp, log.PreviousLogHash, log.CurrentLogHash)
 	return err
 }
 func (d *Driver) GetLastAuditLog(ctx context.Context) (*governance.FinancialAuditLog, error) {
 	var log governance.FinancialAuditLog
-	err := d.pool.QueryRow(ctx, `SELECT id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash FROM financial_audit_logs ORDER BY id DESC LIMIT 1`).Scan(&log.ID, &log.EntityType, &log.EntityID, &log.Action, &log.ActorID, &log.PayloadBefore, &log.PayloadAfter, &log.Timestamp, &log.PreviousLogHash, &log.CurrentLogHash)
+	err := d.pool.QueryRow(ctx, `SELECT id,company_id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash FROM financial_audit_logs ORDER BY id DESC LIMIT 1`).Scan(&log.ID, &log.CompanyID, &log.EntityType, &log.EntityID, &log.Action, &log.ActorID, &log.PayloadBefore, &log.PayloadAfter, &log.Timestamp, &log.PreviousLogHash, &log.CurrentLogHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return &log, err
 }
 func (d *Driver) IterateAuditLogs(ctx context.Context, fromID int64, handler governance.AuditLogHandler) error {
-	rows, err := d.pool.Query(ctx, `SELECT id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash FROM financial_audit_logs WHERE id>= $1 ORDER BY id`, fromID)
+	rows, err := d.pool.Query(ctx, `SELECT id,company_id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash FROM financial_audit_logs WHERE id>= $1 ORDER BY id`, fromID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var log governance.FinancialAuditLog
-		if err := rows.Scan(&log.ID, &log.EntityType, &log.EntityID, &log.Action, &log.ActorID, &log.PayloadBefore, &log.PayloadAfter, &log.Timestamp, &log.PreviousLogHash, &log.CurrentLogHash); err != nil {
+		if err := rows.Scan(&log.ID, &log.CompanyID, &log.EntityType, &log.EntityID, &log.Action, &log.ActorID, &log.PayloadBefore, &log.PayloadAfter, &log.Timestamp, &log.PreviousLogHash, &log.CurrentLogHash); err != nil {
 			return err
 		}
 		if err := handler(log); err != nil {

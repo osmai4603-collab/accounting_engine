@@ -144,6 +144,39 @@ func (e *JournalEntry) Validate() error {
 	if !hasDebit || !hasCredit {
 		return ErrMinimumLines
 	}
+	if len(currencies) == 1 {
+		for _, total := range totals {
+			if !total.IsZero() {
+				return financialtypes.ErrUnbalancedMove
+			}
+		}
+		return nil
+	}
+
+	// Multi-currency entry: check if transaction currency lines balance in their functional currency representation
+	amountCurrencyTotals := make(map[string]decimal.Decimal)
+	hasAmountCurrency := false
+	for _, line := range e.Lines {
+		if line.AmountCurrency.Currency() != "" {
+			hasAmountCurrency = true
+			curr := line.AmountCurrency.Currency()
+			if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
+				amountCurrencyTotals[curr] = amountCurrencyTotals[curr].Add(line.AmountCurrency.Amount())
+			} else if line.Credit.Currency() != "" && !line.Credit.Amount().IsZero() {
+				amountCurrencyTotals[curr] = amountCurrencyTotals[curr].Sub(line.AmountCurrency.Amount())
+			}
+		}
+	}
+	if hasAmountCurrency && len(amountCurrencyTotals) == 1 {
+		for _, total := range amountCurrencyTotals {
+			if !total.IsZero() {
+				return financialtypes.ErrUnbalancedMove
+			}
+		}
+		return nil
+	}
+
+	// If individual currency totals are not all zero and no balanced functional currency amount exists
 	for _, total := range totals {
 		if !total.IsZero() {
 			return financialtypes.ErrUnbalancedMove

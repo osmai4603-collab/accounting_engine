@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ type FinancialAuditLog struct {
 
 type AuditChain struct {
 	repository Repository
+	mu         sync.Mutex
 }
 
 func NewAuditChain(repository Repository) *AuditChain {
@@ -56,16 +58,28 @@ func CalculateAuditHash(log FinancialAuditLog) string {
 }
 
 func (c *AuditChain) Append(ctx context.Context, log FinancialAuditLog) error {
-	last, err := c.repository.GetLastAuditLog(ctx)
-	if err != nil {
-		return err
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		last, err := c.repository.GetLastAuditLog(ctx)
+		if err != nil {
+			return err
+		}
+		if last == nil {
+			log.PreviousLogHash = GenesisHash
+		} else {
+			log.PreviousLogHash = last.CurrentLogHash
+		}
+		log.Timestamp = log.Timestamp.UTC()
+		log.CurrentLogHash = CalculateHash(log)
+		if err := c.repository.AppendAuditLog(ctx, log); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+			continue
+		}
+		return nil
 	}
-	if last == nil {
-		log.PreviousLogHash = GenesisHash
-	} else {
-		log.PreviousLogHash = last.CurrentLogHash
-	}
-	log.Timestamp = log.Timestamp.UTC()
-	log.CurrentLogHash = CalculateHash(log)
-	return c.repository.AppendAuditLog(ctx, log)
+	return lastErr
 }

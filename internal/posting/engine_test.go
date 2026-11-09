@@ -1,6 +1,7 @@
 package posting
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -161,5 +162,106 @@ func TestReversal(t *testing.T) {
 	if reversal.Status != EntryPosted || reversal.OriginalEntryID == nil ||
 		*reversal.OriginalEntryID != entry.ID {
 		t.Fatalf("invalid reversal: %#v", reversal)
+	}
+}
+
+func TestMultiCurrencyEntryWithFunctionalBalance(t *testing.T) {
+	repo := NewMockRepository()
+	engine := NewEngine(repo, nil)
+
+	// Case 1: Transaction lines in different currencies (EUR debit, USD credit) balanced by SAR AmountCurrency
+	eurDebit, err := financialtypes.NewMoney(decimal.NewFromInt(100), "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usdCredit, err := financialtypes.NewMoney(decimal.NewFromInt(108), "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sarEquivalent, err := financialtypes.NewMoney(decimal.NewFromInt(405), "SAR")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry := JournalEntry{
+		ID:        uuid.New(),
+		JournalID: uuid.New(),
+		Date:      time.Now().UTC(),
+		Status:    EntryDraft,
+		CreatedBy: "maker",
+		Lines: []JournalEntryLine{
+			{
+				ID:             uuid.New(),
+				AccountID:      uuid.New(),
+				Debit:          eurDebit,
+				AmountCurrency: sarEquivalent,
+			},
+			{
+				ID:             uuid.New(),
+				AccountID:      uuid.New(),
+				Credit:         usdCredit,
+				AmountCurrency: sarEquivalent,
+			},
+		},
+	}
+
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatalf("failed to create multi-currency draft: %v", err)
+	}
+	if err := engine.Post(entry.ID, "checker"); err != nil {
+		t.Fatalf("failed to post multi-currency entry: %v", err)
+	}
+
+	// Case 2: Unbalanced multi-currency entry should be rejected
+	sarUnbalanced, err := financialtypes.NewMoney(decimal.NewFromInt(400), "SAR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbalancedEntry := JournalEntry{
+		ID:        uuid.New(),
+		JournalID: uuid.New(),
+		Date:      time.Now().UTC(),
+		Status:    EntryDraft,
+		CreatedBy: "maker",
+		Lines: []JournalEntryLine{
+			{
+				ID:             uuid.New(),
+				AccountID:      uuid.New(),
+				Debit:          eurDebit,
+				AmountCurrency: sarEquivalent,
+			},
+			{
+				ID:             uuid.New(),
+				AccountID:      uuid.New(),
+				Credit:         usdCredit,
+				AmountCurrency: sarUnbalanced,
+			},
+		},
+	}
+	if err := engine.CreateDraft(unbalancedEntry); !errors.Is(err, financialtypes.ErrUnbalancedMove) {
+		t.Fatalf("expected ErrUnbalancedMove for unbalanced multi-currency, got: %v", err)
+	}
+}
+
+func TestReversalWithMakerCheckerThreshold(t *testing.T) {
+	repo := NewMockRepository()
+	engine := NewEngine(repo, nil)
+	engine.SetMakerCheckerThreshold(decimal.NewFromInt(50))
+
+	entry := balancedEntry(t, "maker")
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(entry.ID, "checker"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reversal should succeed because Reverse creates the entry with system-reversal as creator, posted by checker
+	reversal, err := engine.Reverse(entry.ID, "checker")
+	if err != nil {
+		t.Fatalf("reversal failed under maker-checker: %v", err)
+	}
+	if reversal.Status != EntryPosted {
+		t.Fatalf("expected posted reversal, got %s", reversal.Status)
 	}
 }
