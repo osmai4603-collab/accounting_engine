@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,11 +41,43 @@ func New(ctx context.Context, connectionString string) (*Driver, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := ensureSchema(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := seedCurrencyRegistry(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}
 	return &Driver{pool: pool}, nil
+}
+
+func ensureSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return errors.New("unable to locate postgres schema files")
+	}
+	baseDir := filepath.Dir(file)
+	files := []string{filepath.Join(baseDir, "schema.sql")}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "migrations"))
+	if err == nil {
+		for _, entry := range entries {
+			if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".sql") {
+				files = append(files, filepath.Join(baseDir, "migrations", entry.Name()))
+			}
+		}
+		sort.Strings(files[1:])
+	}
+	for _, path := range files {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if _, err := pool.Exec(ctx, string(content)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func NewWithPool(pool *pgxpool.Pool) *Driver { return &Driver{pool: pool} }
@@ -449,16 +485,22 @@ func (d *Driver) saveEntry(ctx context.Context, entry posting.JournalEntry) erro
 	if err != nil {
 		return err
 	}
+	classification := entry.Classification
+	if classification == "" {
+		classification = posting.EntryClassRegular
+	}
 	date := entry.EntryDate
 	if date.IsZero() {
 		date = entry.Date
 	}
 	_, err = d.pool.Exec(ctx,
-		`INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		`INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,classification,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,
-		 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,entry=EXCLUDED.entry
+		 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
+		 classification=EXCLUDED.classification,entry=EXCLUDED.entry
 		 WHERE account_moves.status='draft'`,
-		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber, entry.Status, data)
+		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
+		entry.Status, classification, data)
 	return err
 }
 func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
@@ -615,6 +657,10 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if err != nil {
 		return err
 	}
+	classification := entry.Classification
+	if classification == "" {
+		classification = posting.EntryClassRegular
+	}
 	date := entry.EntryDate
 	if date.IsZero() {
 		date = entry.Date
@@ -626,10 +672,10 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		}
 		result, err := tx.Exec(ctx,
 			`UPDATE account_moves SET journal_id=$3,period_id=$4,entry_date=$5,entry_number=$6,
-			 status=$7,reversed_move_id=$8,entry=$9
-			 WHERE id=$1 AND company_id=$2 AND status=$10`,
+			 status=$7,classification=$8,reversed_move_id=$9,entry=$10
+			 WHERE id=$1 AND company_id=$2 AND status=$11`,
 			entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
-			entry.Status, entry.ReversedEntryID, data, expectedStatus)
+			entry.Status, classification, entry.ReversedEntryID, data, expectedStatus)
 		if err != nil {
 			return err
 		}
@@ -641,12 +687,13 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
-	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,reversed_move_id,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,classification,reversed_move_id,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,
 	 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
-	 reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry
+	 classification=EXCLUDED.classification,reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry
 	 WHERE account_moves.status='draft'`,
-		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber, entry.Status, entry.ReversedEntryID, data)
+		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
+		entry.Status, classification, entry.ReversedEntryID, data)
 	if err != nil {
 		return err
 	}
@@ -802,6 +849,50 @@ func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
 		return subledgers.ErrAlreadyExists
 	}
 	return nil
+}
+
+func (d *Driver) SaveEventAccountingRule(rule subledgers.EventAccountingRule) error {
+	if err := rule.Validate(); err != nil {
+		return err
+	}
+	if rule.ID == uuid.Nil {
+		rule.ID = uuid.New()
+	}
+	data, err := json.Marshal(rule)
+	if err != nil {
+		return err
+	}
+	_, err = d.pool.Exec(context.Background(),
+		`INSERT INTO event_accounting_rules(id,company_id,event_type,priority,rule_data)
+		 VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT(company_id,event_type,priority) DO UPDATE
+		 SET id=EXCLUDED.id,rule_data=EXCLUDED.rule_data`,
+		rule.ID, rule.CompanyID, rule.EventType, rule.Priority, data)
+	return err
+}
+
+func (d *Driver) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventType string) ([]subledgers.EventAccountingRule, error) {
+	rows, err := d.pool.Query(context.Background(),
+		`SELECT rule_data FROM event_accounting_rules
+		 WHERE company_id=$1 AND event_type=$2 ORDER BY priority DESC, id`,
+		companyID, eventType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	rules := make([]subledgers.EventAccountingRule, 0)
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var rule subledgers.EventAccountingRule
+		if err := json.Unmarshal(data, &rule); err != nil {
+			return nil, err
+		}
+		rules = append(rules, rule)
+	}
+	return rules, rows.Err()
 }
 
 func (d *Driver) SaveEventAndDraft(event subledgers.EconomicEvent, entry posting.JournalEntry) error {
@@ -1605,6 +1696,81 @@ func (d *Driver) GetRateOfType(ctx context.Context, rateType valuation.RateType,
 	}
 	return rate, err
 }
+
+func (d *Driver) GetRateForCompany(ctx context.Context, companyID uuid.UUID, from, to string, date time.Time) (decimal.Decimal, error) {
+	return d.getRateForCompany(ctx, companyID, "", from, to, date)
+}
+
+func (d *Driver) GetRateOfTypeForCompany(
+	ctx context.Context,
+	companyID uuid.UUID,
+	rateType valuation.RateType,
+	from, to string,
+	date time.Time,
+) (decimal.Decimal, error) {
+	return d.getRateForCompany(ctx, companyID, rateType, from, to, date)
+}
+
+func (d *Driver) getRateForCompany(
+	ctx context.Context,
+	companyID uuid.UUID,
+	rateType valuation.RateType,
+	from, to string,
+	date time.Time,
+) (decimal.Decimal, error) {
+	if from == to {
+		return decimal.NewFromInt(1), nil
+	}
+	query := `SELECT rate FROM exchange_rates
+		WHERE company_id=$1 AND lower(from_currency)=lower($2) AND lower(to_currency)=lower($3)
+		  AND effective_date<=$4::date`
+	args := []any{companyID, from, to, date}
+	if rateType != "" {
+		query += ` AND rate_type=$5`
+		args = append(args, rateType)
+	}
+	query += ` ORDER BY effective_date DESC LIMIT 1`
+	var rate decimal.Decimal
+	err := d.pool.QueryRow(ctx, query, args...).Scan(&rate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		query = `SELECT rate FROM exchange_rates
+			WHERE company_id=$1 AND lower(from_currency)=lower($3) AND lower(to_currency)=lower($2)
+			  AND effective_date<=$4::date`
+		args = []any{companyID, from, to, date}
+		if rateType != "" {
+			query += ` AND rate_type=$5`
+			args = append(args, rateType)
+		}
+		query += ` ORDER BY effective_date DESC LIMIT 1`
+		err = d.pool.QueryRow(ctx, query, args...).Scan(&rate)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return decimal.Zero, valuation.ErrRateNotFound
+		}
+		if err == nil {
+			return decimal.NewFromInt(1).DivRound(rate, financialtypes.InternalScale), nil
+		}
+	}
+	return rate, err
+}
+
+func (d *Driver) UpsertExchangeRate(ctx context.Context, companyID uuid.UUID, rate valuation.ExchangeRate) error {
+	if companyID == uuid.Nil {
+		return masterdata.ErrInvalidCompany
+	}
+	if err := rate.Validate(); err != nil {
+		return err
+	}
+	_, err := d.pool.Exec(ctx, `INSERT INTO exchange_rates(
+		company_id,from_currency,to_currency,rate,effective_date,rate_type
+	) VALUES($1,$2,$3,$4,$5,$6)
+	ON CONFLICT(company_id,from_currency,to_currency,effective_date,rate_type)
+	DO UPDATE SET rate=EXCLUDED.rate`,
+		companyID, strings.ToUpper(strings.TrimSpace(rate.FromCurrency)),
+		strings.ToUpper(strings.TrimSpace(rate.ToCurrency)), rate.Rate,
+		rate.EffectiveDate, rate.Type)
+	return err
+}
+
 func (d *Driver) AppendAuditLog(ctx context.Context, log governance.FinancialAuditLog) error {
 	_, err := d.pool.Exec(ctx, `INSERT INTO financial_audit_logs(company_id,entity_type,entity_id,action,actor_id,payload_before,payload_after,timestamp,previous_log_hash,current_log_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		log.CompanyID, log.EntityType, log.EntityID, log.Action, log.ActorID, log.PayloadBefore, log.PayloadAfter, log.Timestamp, log.PreviousLogHash, log.CurrentLogHash)

@@ -394,8 +394,56 @@ func TestClosingAndOpeningMoves(t *testing.T) {
 	if closing.TargetPeriodNumber != 13 || !closing.AdjustmentAuthorized {
 		t.Fatalf("year-end close must target authorized period 13: %+v", closing)
 	}
-	if _, err := NewClosingEngine(repository).GenerateOpeningMove(year, uuid.New(), "USD"); err != ErrOpeningMoveNotRequired {
-		t.Fatalf("GenerateOpeningMove() error = %v, want ErrOpeningMoveNotRequired", err)
+	if opening, err := NewClosingEngine(repository).GenerateOpeningMove(year, uuid.New(), "USD"); err != nil || opening.ID != uuid.Nil {
+		t.Fatalf("GenerateOpeningMove() = %+v, %v; want no opening move without prior balances", opening, err)
+	}
+}
+
+func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
+	cashID, payableID, retainedID, incomeID, expenseID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	repository := &memoryRepository{
+		accounts: []masterdata.Account{
+			reportAccount(cashID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
+			reportAccount(payableID, "2100", "Trade payables", masterdata.AccountTypeLiability, masterdata.SubClassTradePayables),
+			reportAccount(retainedID, "3300", "Retained earnings", masterdata.AccountTypeEquity, masterdata.SubClassRetainedEarnings),
+			reportAccount(incomeID, "4000", "Sales", masterdata.AccountTypeIncome, masterdata.SubClassOperatingRevenue),
+			reportAccount(expenseID, "5000", "Expense", masterdata.AccountTypeExpense, masterdata.SubClassCostOfSales),
+		},
+	}
+	priorDate := time.Date(2026, 12, 31, 12, 0, 0, 0, time.UTC)
+	repository.entries = []posting.JournalEntry{
+		reportEntry(t, priorDate,
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "100", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: incomeID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "100", "USD")},
+		),
+		reportEntry(t, priorDate,
+			posting.JournalEntryLine{AccountID: expenseID, Debit: reportMoney(t, "40", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "40", "USD")},
+		),
+		reportEntry(t, priorDate,
+			posting.JournalEntryLine{AccountID: expenseID, Debit: reportMoney(t, "30", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: payableID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "30", "USD")},
+		),
+	}
+	nextYear := masterdata.GenerateFiscalYear(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+	entry, err := NewClosingEngine(repository).GenerateOpeningMove(nextYear, uuid.New(), "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Classification != posting.EntryClassOpening || len(entry.Lines) != 3 {
+		t.Fatalf("unexpected opening move: %+v", entry)
+	}
+	balanceByAccount := make(map[uuid.UUID]decimal.Decimal)
+	for _, line := range entry.Lines {
+		balanceByAccount[line.AccountID] = line.Debit.Amount().Sub(line.Credit.Amount())
+	}
+	if !balanceByAccount[cashID].Equal(decimal.NewFromInt(60)) ||
+		!balanceByAccount[payableID].Equal(decimal.NewFromInt(-30)) ||
+		!balanceByAccount[retainedID].Equal(decimal.NewFromInt(-30)) {
+		t.Fatalf("opening balances are incorrect: %+v", balanceByAccount)
 	}
 }
 

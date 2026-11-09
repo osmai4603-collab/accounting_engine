@@ -2,7 +2,9 @@ package subledgers
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -32,6 +34,7 @@ var (
 	ErrAtomicEventRequired              = errors.New("atomic event and journal-draft storage is required")
 	ErrEventResultMissing               = errors.New("stored economic event has no result entry")
 	ErrCompanyScopedEventsRequired      = errors.New("company-scoped event storage is required")
+	ErrEventRulesRequired               = errors.New("persistent event accounting rules are required")
 )
 
 type Repository interface {
@@ -77,6 +80,11 @@ func (r *MemoryRepository) SaveEventAndDraft(event EconomicEvent, entry posting.
 
 type CompanyEventRepository interface {
 	GetEventByIdempotencyKeyForCompany(uuid.UUID, string) (EconomicEvent, bool, error)
+}
+
+type EventAccountingRuleRepository interface {
+	SaveEventAccountingRule(EventAccountingRule) error
+	ListEventAccountingRulesForCompany(uuid.UUID, string) ([]EventAccountingRule, error)
 }
 
 type CompanyOpenLineRepository interface {
@@ -126,6 +134,7 @@ type MemoryRepository struct {
 	lines  map[uuid.UUID]OpenLine
 	assets map[uuid.UUID]FixedAsset
 	bank   map[string][]BankItem
+	rules  map[string]EventAccountingRule
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -135,7 +144,43 @@ func NewMemoryRepository() *MemoryRepository {
 		lines:  make(map[uuid.UUID]OpenLine),
 		assets: make(map[uuid.UUID]FixedAsset),
 		bank:   make(map[string][]BankItem),
+		rules:  make(map[string]EventAccountingRule),
 	}
+}
+
+func eventRuleKey(companyID uuid.UUID, eventType string, priority int) string {
+	return companyID.String() + "\x00" + eventType + "\x00" + fmt.Sprint(priority)
+}
+
+func (r *MemoryRepository) SaveEventAccountingRule(rule EventAccountingRule) error {
+	if err := rule.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rule.ID == uuid.Nil {
+		rule.ID = uuid.New()
+	}
+	r.rules[eventRuleKey(rule.CompanyID, rule.EventType, rule.Priority)] = cloneEventAccountingRule(rule)
+	return nil
+}
+
+func (r *MemoryRepository) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventType string) ([]EventAccountingRule, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rules := make([]EventAccountingRule, 0)
+	for _, rule := range r.rules {
+		if rule.CompanyID == companyID && rule.EventType == eventType {
+			rules = append(rules, cloneEventAccountingRule(rule))
+		}
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Priority == rules[j].Priority {
+			return rules[i].RuleName < rules[j].RuleName
+		}
+		return rules[i].Priority > rules[j].Priority
+	})
+	return rules, nil
 }
 
 func (r *MemoryRepository) SaveEvent(event EconomicEvent) error {
@@ -541,6 +586,31 @@ func cloneOpenLine(line OpenLine) OpenLine {
 	line.MatchIDs = append([]uuid.UUID(nil), line.MatchIDs...)
 	line.Matches = append([]OpenLineMatch(nil), line.Matches...)
 	return line
+}
+
+func cloneEventAccountingRule(rule EventAccountingRule) EventAccountingRule {
+	rule.Lines = append([]EventLineTemplate(nil), rule.Lines...)
+	rule.Conditions = cloneStringMap(rule.Conditions)
+	rule.Accounts = make(map[string]uuid.UUID, len(rule.Accounts))
+	for key, id := range rule.Accounts {
+		rule.Accounts[key] = id
+	}
+	return rule
+}
+
+func (r EventAccountingRule) Clone() EventAccountingRule {
+	return cloneEventAccountingRule(r)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func cloneFixedAsset(asset FixedAsset) FixedAsset {

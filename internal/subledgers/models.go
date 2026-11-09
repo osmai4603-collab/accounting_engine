@@ -15,6 +15,8 @@ type EconomicEvent struct {
 	EventType      string
 	Date           time.Time
 	Amount         financialtypes.Money
+	Values         map[string]financialtypes.Money
+	Attributes     map[string]string
 	PartnerID      *uuid.UUID
 	Reference      string
 	ResultEntryID  uuid.UUID
@@ -26,23 +28,75 @@ func (e EconomicEvent) Validate() error {
 		e.Amount.Currency() == "" || e.Amount.IsNegative() {
 		return ErrInvalidEvent
 	}
+	for key, amount := range e.Values {
+		if strings.TrimSpace(key) == "" || amount.Currency() != e.Amount.Currency() || amount.IsNegative() {
+			return ErrInvalidEvent
+		}
+	}
+	return nil
+}
+
+type EventLineSide string
+
+const (
+	EventLineDebit  EventLineSide = "debit"
+	EventLineCredit EventLineSide = "credit"
+)
+
+type EventLineTemplate struct {
+	AccountLookupKey string
+	AccountID        uuid.UUID
+	Side             EventLineSide
+	AmountFormula    string
+	Description      string
+}
+
+type EventAccountingRule struct {
+	ID         uuid.UUID
+	CompanyID  uuid.UUID
+	EventType  string
+	RuleName   string
+	JournalID  uuid.UUID
+	Priority   int
+	Conditions map[string]string
+	Accounts   map[string]uuid.UUID
+	Lines      []EventLineTemplate
+}
+
+func (r EventAccountingRule) Validate() error {
+	if r.CompanyID == uuid.Nil || strings.TrimSpace(r.EventType) == "" ||
+		strings.TrimSpace(r.RuleName) == "" || r.JournalID == uuid.Nil || len(r.Lines) < 2 {
+		return ErrMappingNotFound
+	}
+	for _, line := range r.Lines {
+		if (line.AccountID == uuid.Nil && strings.TrimSpace(line.AccountLookupKey) == "") ||
+			(line.Side != EventLineDebit && line.Side != EventLineCredit) ||
+			strings.TrimSpace(line.AmountFormula) == "" {
+			return ErrMappingNotFound
+		}
+		if line.AccountID == uuid.Nil && r.Accounts[line.AccountLookupKey] == uuid.Nil {
+			return ErrMappingNotFound
+		}
+	}
 	return nil
 }
 
 type OpenLine struct {
-	CompanyID      uuid.UUID
-	ID             uuid.UUID
-	PartnerID      *uuid.UUID
-	Kind           LineKind
-	OriginalAmount financialtypes.Money
-	ResidualAmount financialtypes.Money
-	DueDate        time.Time
-	DocumentDate   time.Time
-	Reference      string
-	MatchingNumber string
-	MatchIDs       []uuid.UUID
-	Matches        []OpenLineMatch
-	Closed         bool
+	CompanyID        uuid.UUID
+	ID               uuid.UUID
+	PartnerID        *uuid.UUID
+	ControlAccountID uuid.UUID
+	JournalEntryID   uuid.UUID
+	Kind             LineKind
+	OriginalAmount   financialtypes.Money
+	ResidualAmount   financialtypes.Money
+	DueDate          time.Time
+	DocumentDate     time.Time
+	Reference        string
+	MatchingNumber   string
+	MatchIDs         []uuid.UUID
+	Matches          []OpenLineMatch
+	Closed           bool
 }
 
 type OpenLineMatch struct {
@@ -145,4 +199,23 @@ type FixedAsset struct {
 	DisposalCashAccountID          uuid.UUID
 	DisposedAt                     *time.Time
 	AppliedEntryIDs                []uuid.UUID
+	Components                     []AssetComponent
+	RevaluationAdjustment          financialtypes.Money
+	RevaluationSurplus             financialtypes.Money
+	RevaluationSurplusAccountID    uuid.UUID
+	RevaluationLossAccountID       uuid.UUID
+}
+
+type AssetComponent struct {
+	ID                      uuid.UUID
+	Name                    string
+	Cost                    financialtypes.Money
+	SalvageValue            financialtypes.Money
+	UsefulLifeMonths        int
+	Method                  DepreciationMethod
+	InServiceDate           time.Time
+	DecliningRate           decimal.Decimal
+	ExpenseAccountID        uuid.UUID
+	AccumulatedAccountID    uuid.UUID
+	AccumulatedDepreciation financialtypes.Money
 }

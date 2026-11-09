@@ -14,6 +14,8 @@ import (
 var (
 	ErrFiscalYearAlreadyClosed = errors.New("fiscal year is already closed")
 	ErrOpeningMoveNotRequired  = errors.New("opening balance moves are not supported by the perpetual general ledger")
+	ErrInvalidOpeningYear      = errors.New("opening balance year is invalid")
+	ErrClosingMoveNotPosted    = errors.New("closing move must be posted before the fiscal year can be closed")
 )
 
 type ClosingEngine struct{ repository Repository }
@@ -60,8 +62,131 @@ func (e *ClosingEngine) GenerateClosingMove(year masterdata.FiscalYear, journalI
 	return entry, netIncome, nil
 }
 
-func (e *ClosingEngine) GenerateOpeningMove(_ masterdata.FiscalYear, _ uuid.UUID, _ string) (posting.JournalEntry, error) {
-	return posting.JournalEntry{}, ErrOpeningMoveNotRequired
+func (e *ClosingEngine) GenerateOpeningMove(year masterdata.FiscalYear, journalID uuid.UUID, currency string) (posting.JournalEntry, error) {
+	if year.StartDate.IsZero() || journalID == uuid.Nil || currency == "" {
+		return posting.JournalEntry{}, ErrInvalidOpeningYear
+	}
+	repository := e.repository
+	if year.CompanyID != uuid.Nil {
+		var err error
+		repository, err = newCompanyReportingRepository(repository, year.CompanyID)
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+	}
+	accounts, err := listAccounts(repository)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	balances, err := accountBalances(repository, time.Time{}, year.StartDate.Add(-time.Nanosecond), currency)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	lines := make([]posting.JournalEntryLine, 0)
+	netIncome := decimal.Zero
+	var retainedEarningsID uuid.UUID
+	for _, account := range accounts {
+		side := balances[account.ID]
+		netBalance := side.debit.Sub(side.credit)
+		if netBalance.IsZero() {
+			continue
+		}
+		switch account.AccountType {
+		case masterdata.AccountTypeAsset, masterdata.AccountTypeLiability, masterdata.AccountTypeEquity:
+			line, err := singleAmountLine(account.ID, netBalance.Abs(), currency, netBalance.IsPositive())
+			if err != nil {
+				return posting.JournalEntry{}, err
+			}
+			lines = append(lines, line)
+			if account.SubClassification == masterdata.SubClassRetainedEarnings {
+				retainedEarningsID = account.ID
+			}
+		case masterdata.AccountTypeIncome, masterdata.AccountTypeExpense:
+			netIncome = netIncome.Sub(netBalance)
+			if account.SubClassification == masterdata.SubClassRetainedEarnings {
+				retainedEarningsID = account.ID
+			}
+		}
+	}
+	if !netIncome.IsZero() {
+		if retainedEarningsID == uuid.Nil {
+			retainedEarningsID, err = FindRetainedEarningsAccount(accounts)
+			if err != nil {
+				return posting.JournalEntry{}, err
+			}
+		}
+		line, err := retainedEarningsLine(retainedEarningsID, netIncome, currency)
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) < 2 {
+		return posting.JournalEntry{}, nil
+	}
+	entry, err := posting.NewJournalEntry(journalID, year.StartDate, "opening-balance-engine", lines)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entry.DocumentReference = "YEAR-OPENING BALANCES"
+	entry.Classification = posting.EntryClassOpening
+	entry.TargetPeriodNumber = 1
+	entry.CompanyID = year.CompanyID
+	for i := range entry.Lines {
+		entry.Lines[i].CompanyID = year.CompanyID
+	}
+	return entry, nil
+}
+
+func (e *ClosingEngine) ConfirmFiscalYearClose(year masterdata.FiscalYear, postedClosingEntryID uuid.UUID) error {
+	repository, ok := e.repository.(FiscalYearRepository)
+	if !ok {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	entryRepository, ok := e.repository.(interface {
+		GetEntryByID(uuid.UUID) (posting.JournalEntry, error)
+	})
+	if !ok {
+		return ErrClosingMoveNotPosted
+	}
+	entry, err := entryRepository.GetEntryByID(postedClosingEntryID)
+	if err != nil {
+		return err
+	}
+	if entry.Status != posting.EntryPosted || entry.Classification != posting.EntryClassClosing ||
+		entry.DocumentReference != "YEAR-END CLOSING" ||
+		(year.CompanyID != uuid.Nil && entry.CompanyID != year.CompanyID) {
+		return ErrClosingMoveNotPosted
+	}
+	if err := requireMonthlyPeriodsClosed(year); err != nil {
+		return err
+	}
+	period, ok := findFiscalPeriod(year, 13)
+	if !ok {
+		return ErrPeriodsNotHardClosed
+	}
+	switch period.State {
+	case masterdata.PeriodHardClosed:
+		return nil
+	case masterdata.PeriodOpen:
+		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodSoftClosed); err != nil {
+			return err
+		}
+		return repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed)
+	case masterdata.PeriodSoftClosed:
+		return repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed)
+	default:
+		return ErrPeriodsNotHardClosed
+	}
+}
+
+func findFiscalPeriod(year masterdata.FiscalYear, number int) (masterdata.FiscalPeriod, bool) {
+	for _, period := range year.Periods {
+		if period.Number == number {
+			return period, true
+		}
+	}
+	return masterdata.FiscalPeriod{}, false
 }
 
 func (e *ClosingEngine) generateYearMove(date time.Time, journalID, retainedEarningsID uuid.UUID, currency string, accounts []masterdata.Account, balances map[uuid.UUID]accountSide) (posting.JournalEntry, decimal.Decimal, error) {
@@ -105,6 +230,7 @@ func (e *ClosingEngine) generateYearMove(date time.Time, journalID, retainedEarn
 		return posting.JournalEntry{}, decimal.Zero, err
 	}
 	entry.DocumentReference = "YEAR-END CLOSING"
+	entry.Classification = posting.EntryClassClosing
 	return entry, netIncome, nil
 }
 

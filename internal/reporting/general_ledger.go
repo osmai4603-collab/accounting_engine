@@ -69,6 +69,9 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 
 	openingDebit, openingCredit := decimal.Zero, decimal.Zero
 	for _, entry := range entries {
+		if entry.Status != posting.EntryPosted {
+			continue
+		}
 		date := entryEffectiveDate(entry)
 		if !date.Before(start) {
 			continue
@@ -77,7 +80,12 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 			if line.AccountID != accountID {
 				continue
 			}
-			debit, credit := lineAmounts(line, currency)
+			debit, credit, err := translateLineAmounts(
+				line, account.AccountType, currency, rateProvider(e.repository), start, end, date,
+			)
+			if err != nil {
+				return GeneralLedgerAccountReport{}, err
+			}
 			openingDebit = openingDebit.Add(debit)
 			openingCredit = openingCredit.Add(credit)
 		}
@@ -90,6 +98,9 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 		EndingBalance: opening,
 	}
 	for _, entry := range entries {
+		if entry.Status != posting.EntryPosted {
+			continue
+		}
 		date := entryEffectiveDate(entry)
 		if date.Before(start) || (!end.IsZero() && date.After(end)) {
 			continue
@@ -98,7 +109,12 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 			if line.AccountID != accountID {
 				continue
 			}
-			debit, credit := lineAmounts(line, currency)
+			debit, credit, err := translateLineAmounts(
+				line, account.AccountType, currency, rateProvider(e.repository), start, end, date,
+			)
+			if err != nil {
+				return GeneralLedgerAccountReport{}, err
+			}
 			movement := signedAccountBalance(debit.Sub(credit), account.NormalBalance)
 			report.EndingBalance = report.EndingBalance.Add(movement)
 			report.Lines = append(report.Lines, GeneralLedgerLine{

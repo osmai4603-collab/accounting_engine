@@ -7,6 +7,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/valuation"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -78,10 +79,6 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 	if err != nil {
 		return TrialBalance{}, err
 	}
-	entries, err := listPostedEntries(e.repository, startDate, endDate)
-	if err != nil {
-		return TrialBalance{}, err
-	}
 
 	started := make(map[uuid.UUID][2]decimal.Decimal)
 	period := make(map[uuid.UUID][2]decimal.Decimal)
@@ -95,12 +92,22 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 		return TrialBalance{}, err
 	}
 	for _, entry := range allEntries {
-		if entry.Status != posting.EntryPosted {
+		if entry.Status != posting.EntryPosted ||
+			(!adjusted && postingClassification(entry) == posting.EntryClassAdjusting) {
 			continue
 		}
 		entryDate := entryEffectiveDate(entry)
 		for _, line := range entry.Lines {
-			debit, credit := lineAmounts(line, currency)
+			_, ok := accountMap[line.AccountID]
+			if !ok {
+				return TrialBalance{}, ErrReportingAccountNotFound
+			}
+			debit, credit, err := translateLineAmountsUsingRate(
+				line, currency, rateProvider(e.repository), valuation.SpotRate, entryDate,
+			)
+			if err != nil {
+				return TrialBalance{}, err
+			}
 			if entryDate.Before(startDate) {
 				values := started[line.AccountID]
 				values[0] = values[0].Add(debit)
@@ -136,7 +143,6 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 	if !result.Balanced {
 		return result, ErrUnbalancedTrialBalance
 	}
-	_ = entries
 	return result, nil
 }
 
@@ -166,38 +172,11 @@ func entryEffectiveDate(entry posting.JournalEntry) time.Time {
 	return entry.Date
 }
 
-func lineAmounts(line posting.JournalEntryLine, currency string) (decimal.Decimal, decimal.Decimal) {
-	if line.FunctionalDebit.Currency() != "" || line.FunctionalCredit.Currency() != "" {
-		functionalCurrency := line.FunctionalDebit.Currency()
-		if functionalCurrency == "" {
-			functionalCurrency = line.FunctionalCredit.Currency()
-		}
-		if currency == "" || functionalCurrency == currency {
-			return line.FunctionalDebit.Amount(), line.FunctionalCredit.Amount()
-		}
-		return decimal.Zero, decimal.Zero
+func postingClassification(entry posting.JournalEntry) posting.EntryClassification {
+	if entry.Classification == "" {
+		return posting.EntryClassRegular
 	}
-	if line.AmountCurrency.Currency() != "" {
-		if currency == "" || line.AmountCurrency.Currency() == currency {
-			if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
-				return line.AmountCurrency.Amount(), decimal.Zero
-			}
-			return decimal.Zero, line.AmountCurrency.Amount()
-		}
-		return decimal.Zero, decimal.Zero
-	}
-	debit, credit := decimal.Zero, decimal.Zero
-	if line.Debit.Currency() == "" || (currency != "" && line.Debit.Currency() != currency) {
-		if line.Credit.Currency() != "" && (currency == "" || line.Credit.Currency() == currency) {
-			credit = line.Credit.Amount()
-		}
-	} else {
-		debit = line.Debit.Amount()
-	}
-	if line.Credit.Currency() != "" && (currency == "" || line.Credit.Currency() == currency) {
-		credit = line.Credit.Amount()
-	}
-	return debit, credit
+	return entry.Classification
 }
 
 func listAccounts(repository Repository) ([]masterdata.Account, error) {

@@ -24,32 +24,51 @@ func NewReceivableLedgerForCompany(repo Repository, companyID uuid.UUID) *Receiv
 
 func (l *ReceivableLedger) AddInvoice(partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if l.companyID == uuid.Nil {
-		return l.addInvoice(uuid.Nil, partnerID, amount, documentDate, dueDate, reference)
+		return l.addInvoice(uuid.Nil, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
 	}
-	return l.AddInvoiceForCompany(l.companyID, partnerID, amount, documentDate, dueDate, reference)
+	return l.addInvoice(l.companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
+}
+
+func (l *ReceivableLedger) AddInvoiceWithControl(partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if controlAccountID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	if l.companyID == uuid.Nil {
+		return l.addInvoice(uuid.Nil, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+	}
+	return l.AddInvoiceForCompanyWithControl(l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
 }
 
 func (l *ReceivableLedger) AddInvoiceForCompany(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if companyID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
-	return l.addInvoice(companyID, partnerID, amount, documentDate, dueDate, reference)
+	return l.addInvoice(companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
 }
 
-func (l *ReceivableLedger) addInvoice(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+func (l *ReceivableLedger) AddInvoiceForCompanyWithControl(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if companyID == uuid.Nil || controlAccountID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	return l.addInvoice(companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *ReceivableLedger) addInvoice(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if partnerID == uuid.Nil || amount.Currency() == "" || amount.IsNegative() {
 		return OpenLine{}, ErrInvalidAmount
 	}
 	line := OpenLine{
-		CompanyID:      companyID,
-		ID:             l.newLineID(),
-		PartnerID:      &partnerID,
-		Kind:           LineReceivable,
-		OriginalAmount: amount,
-		ResidualAmount: amount,
-		DocumentDate:   documentDate,
-		DueDate:        dueDate,
-		Reference:      reference,
+		CompanyID:        companyID,
+		ID:               l.newLineID(),
+		PartnerID:        &partnerID,
+		ControlAccountID: controlAccountID,
+		JournalEntryID:   journalEntryID,
+		Kind:             LineReceivable,
+		OriginalAmount:   amount,
+		ResidualAmount:   amount,
+		DocumentDate:     documentDate,
+		DueDate:          dueDate,
+		Reference:        reference,
 	}
 	if err := l.repo.SaveOpenLine(line); err != nil {
 		return OpenLine{}, err

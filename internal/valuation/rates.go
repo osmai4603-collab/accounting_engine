@@ -71,7 +71,6 @@ func (r *RateRegistry) Register(rate ExchangeRate) error {
 	}
 	rate.FromCurrency = strings.ToUpper(strings.TrimSpace(rate.FromCurrency))
 	rate.ToCurrency = strings.ToUpper(strings.TrimSpace(rate.ToCurrency))
-	rate.Rate = rate.Rate.Round(6)
 	rate.EffectiveDate = dateOnly(rate.EffectiveDate)
 	for i, current := range r.rates {
 		if sameRateKey(current, rate) {
@@ -126,7 +125,7 @@ func (r *RateRegistry) GetRate(ctx context.Context, from, to string, date time.T
 		return candidates[i].EffectiveDate.After(candidates[j].EffectiveDate)
 	})
 	if len(candidates) > 0 && !candidates[0].Rate.IsZero() {
-		return decimal.NewFromInt(1).DivRound(candidates[0].Rate, 6), nil
+		return decimal.NewFromInt(1).DivRound(candidates[0].Rate, financialtypes.InternalScale), nil
 	}
 	return decimal.Zero, ErrRateNotFound
 }
@@ -159,7 +158,7 @@ func (r *RateRegistry) GetRateOfType(ctx context.Context, rateType RateType, fro
 	}
 	sort.Slice(inverse, func(i, j int) bool { return inverse[i].EffectiveDate.After(inverse[j].EffectiveDate) })
 	if len(inverse) > 0 && !inverse[0].Rate.IsZero() {
-		return decimal.NewFromInt(1).DivRound(inverse[0].Rate, 6), nil
+		return decimal.NewFromInt(1).DivRound(inverse[0].Rate, financialtypes.InternalScale), nil
 	}
 	return decimal.Zero, ErrRateNotFound
 }

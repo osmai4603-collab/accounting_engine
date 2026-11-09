@@ -1,13 +1,16 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"time"
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/subledgers"
+	"accounting_engine/internal/valuation"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // Repository is intentionally left as an open SPI. Ledger implementations can
@@ -85,4 +88,35 @@ func (r companyReportingRepository) ListOpenLines(partnerID string) ([]subledger
 		return nil, ErrCompanyScopeRequired
 	}
 	return r.subledger.ListOpenLinesForCompany(r.companyID, partnerID)
+}
+
+func (r companyReportingRepository) GetRate(ctx context.Context, from, to string, date time.Time) (decimal.Decimal, error) {
+	if provider, ok := r.ledger.(interface {
+		GetRateForCompany(context.Context, uuid.UUID, string, string, time.Time) (decimal.Decimal, error)
+	}); ok {
+		return provider.GetRateForCompany(ctx, r.companyID, from, to, date)
+	}
+	if provider, ok := r.ledger.(valuation.RateProviderSPI); ok {
+		return provider.GetRate(ctx, from, to, date)
+	}
+	return decimal.Zero, valuation.ErrRateNotFound
+}
+
+func (r companyReportingRepository) GetRateOfType(
+	ctx context.Context,
+	rateType valuation.RateType,
+	from, to string,
+	date time.Time,
+) (decimal.Decimal, error) {
+	if provider, ok := r.ledger.(interface {
+		GetRateOfTypeForCompany(context.Context, uuid.UUID, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
+	}); ok {
+		return provider.GetRateOfTypeForCompany(ctx, r.companyID, rateType, from, to, date)
+	}
+	if provider, ok := r.ledger.(interface {
+		GetRateOfType(context.Context, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
+	}); ok {
+		return provider.GetRateOfType(ctx, rateType, from, to, date)
+	}
+	return r.GetRate(ctx, from, to, date)
 }

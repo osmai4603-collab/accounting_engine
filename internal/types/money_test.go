@@ -76,6 +76,27 @@ func TestScaleAndBankersRounding(t *testing.T) {
 	}
 }
 
+func TestDivideKeepsInternalPrecisionUntilPosting(t *testing.T) {
+	installment, err := mustMoney(t, "1000", "SAR").Divide(decimal.NewFromInt(360))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installment.Amount().StringFixed(InternalScale); got != "2.777777777778" {
+		t.Fatalf("internal division precision = %s, want 2.777777777778", got)
+	}
+	total := decimal.Zero
+	for range 360 {
+		total = total.Add(installment.Amount())
+	}
+	totalMoney, err := NewMoney(total, "SAR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := totalMoney.RoundForPosting().Amount().StringFixed(FinancialScale); got != "1000.0000" {
+		t.Fatalf("posted installment total = %s, want 1000.0000", got)
+	}
+}
+
 func TestMinorUnitsUseCurrencyPrecisionAndBankersRounding(t *testing.T) {
 	for _, test := range []struct {
 		amount   string

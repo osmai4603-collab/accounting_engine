@@ -28,6 +28,7 @@ type Driver struct {
 	journalSeq map[uuid.UUID]int64
 	entries    map[uuid.UUID]posting.JournalEntry
 	events     map[string]subledgers.EconomicEvent
+	eventRules map[string][]subledgers.EventAccountingRule
 	lines      map[uuid.UUID]subledgers.OpenLine
 	assets     map[uuid.UUID]subledgers.FixedAsset
 	bank       map[string][]subledgers.BankItem
@@ -44,6 +45,7 @@ func New() *Driver {
 		journalSeq: make(map[uuid.UUID]int64),
 		entries:    make(map[uuid.UUID]posting.JournalEntry),
 		events:     make(map[string]subledgers.EconomicEvent),
+		eventRules: make(map[string][]subledgers.EventAccountingRule),
 		lines:      make(map[uuid.UUID]subledgers.OpenLine),
 		assets:     make(map[uuid.UUID]subledgers.FixedAsset),
 		bank:       make(map[string][]subledgers.BankItem),
@@ -465,6 +467,42 @@ func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
 	}
 	d.events[key] = event
 	return nil
+}
+
+func (d *Driver) SaveEventAccountingRule(rule subledgers.EventAccountingRule) error {
+	if err := rule.Validate(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if rule.ID == uuid.Nil {
+		rule.ID = uuid.New()
+	}
+	key := rule.CompanyID.String() + "\x00" + rule.EventType
+	rules := d.eventRules[key]
+	for i := range rules {
+		if rules[i].Priority == rule.Priority {
+			rules[i] = rule.Clone()
+			d.eventRules[key] = rules
+			return nil
+		}
+	}
+	d.eventRules[key] = append(rules, rule.Clone())
+	sort.Slice(d.eventRules[key], func(i, j int) bool {
+		return d.eventRules[key][i].Priority > d.eventRules[key][j].Priority
+	})
+	return nil
+}
+
+func (d *Driver) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventType string) ([]subledgers.EventAccountingRule, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rules := d.eventRules[companyID.String()+"\x00"+eventType]
+	result := make([]subledgers.EventAccountingRule, len(rules))
+	for i := range rules {
+		result[i] = rules[i].Clone()
+	}
+	return result, nil
 }
 
 func (d *Driver) SaveEventAndDraft(event subledgers.EconomicEvent, entry posting.JournalEntry) error {

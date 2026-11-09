@@ -22,10 +22,20 @@ var (
 
 type EntryStatus string
 
+type EntryClassification string
+
 const (
 	EntryDraft    EntryStatus = "draft"
 	EntryPosted   EntryStatus = "posted"
 	EntryReversed EntryStatus = "reversed"
+)
+
+const (
+	EntryClassRegular   EntryClassification = "regular"
+	EntryClassAdjusting EntryClassification = "adjusting"
+	EntryClassClosing   EntryClassification = "closing"
+	EntryClassOpening   EntryClassification = "opening"
+	EntryClassReversing EntryClassification = "reversing"
 )
 
 const (
@@ -184,19 +194,21 @@ type JournalEntry struct {
 	OriginalEntryID      *uuid.UUID
 	TargetPeriodNumber   int
 	AdjustmentAuthorized bool
+	Classification       EntryClassification
 	Lines                []JournalEntryLine
 }
 
 func NewJournalEntry(journalID uuid.UUID, date time.Time, createdBy string, lines []JournalEntryLine) (JournalEntry, error) {
 	entry := JournalEntry{
-		ID:        uuid.New(),
-		JournalID: journalID,
-		EntryDate: date.UTC(),
-		Date:      date.UTC(),
-		Status:    EntryDraft,
-		CreatedBy: createdBy,
-		CreatedAt: time.Now().UTC(),
-		Lines:     append([]JournalEntryLine(nil), lines...),
+		ID:             uuid.New(),
+		JournalID:      journalID,
+		EntryDate:      date.UTC(),
+		Date:           date.UTC(),
+		Status:         EntryDraft,
+		CreatedBy:      createdBy,
+		CreatedAt:      time.Now().UTC(),
+		Classification: EntryClassRegular,
+		Lines:          append([]JournalEntryLine(nil), lines...),
 	}
 	if err := entry.Validate(); err != nil {
 		return JournalEntry{}, err
@@ -207,6 +219,13 @@ func NewJournalEntry(journalID uuid.UUID, date time.Time, createdBy string, line
 func (e *JournalEntry) Validate() error {
 	if len(e.Lines) < 2 {
 		return ErrMinimumLines
+	}
+	if e.Classification != "" {
+		switch e.Classification {
+		case EntryClassRegular, EntryClassAdjusting, EntryClassClosing, EntryClassOpening, EntryClassReversing:
+		default:
+			return ErrInvalidEntry
+		}
 	}
 
 	totals := make(map[string]decimal.Decimal)
@@ -340,6 +359,7 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 		saved.CreatedBy != candidate.CreatedBy ||
 		saved.DocumentReference != candidate.DocumentReference ||
 		saved.Reference != candidate.Reference ||
+		normalizedEntryClassification(saved.Classification) != normalizedEntryClassification(candidate.Classification) ||
 		len(saved.Lines) != len(candidate.Lines) {
 		return false
 	}
@@ -349,4 +369,11 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 		}
 	}
 	return true
+}
+
+func normalizedEntryClassification(classification EntryClassification) EntryClassification {
+	if classification == "" {
+		return EntryClassRegular
+	}
+	return classification
 }

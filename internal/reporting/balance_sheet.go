@@ -23,6 +23,7 @@ type BalanceSheet struct {
 	NonCurrentLiabilities     decimal.Decimal
 	TotalLiabilities          decimal.Decimal
 	Equity                    decimal.Decimal
+	TranslationReserve        decimal.Decimal
 	TotalLiabilitiesAndEquity decimal.Decimal
 	Balanced                  bool
 }
@@ -67,6 +68,7 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 		return BalanceSheet{}, err
 	}
 	report.Equity = report.Equity.Add(income.NetProfit).Add(income.OCI)
+	report.TranslationReserve = income.TranslationReserve
 	report.TotalAssets = report.CurrentAssets.Add(report.NonCurrentAssets)
 	report.TotalLiabilities = report.CurrentLiabilities.Add(report.NonCurrentLiabilities)
 	report.TotalLiabilitiesAndEquity = report.TotalLiabilities.Add(report.Equity)
@@ -74,6 +76,7 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 	if !report.Balanced {
 		return report, ErrUnbalancedBalanceSheet
 	}
+
 	return report, nil
 }
 

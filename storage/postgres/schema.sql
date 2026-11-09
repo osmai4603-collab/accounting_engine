@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS account_moves (
     entry_date timestamptz NOT NULL,
     entry_number bigint NOT NULL DEFAULT 0,
     status varchar(16) NOT NULL,
+    classification varchar(16) NOT NULL DEFAULT 'regular',
     name varchar(64),
     ref varchar(255),
     reversed_move_id uuid REFERENCES account_moves(id) ON DELETE RESTRICT,
@@ -131,6 +132,7 @@ CREATE TABLE IF NOT EXISTS account_moves (
     updated_at timestamptz NOT NULL DEFAULT NOW(),
     entry jsonb NOT NULL,
     CONSTRAINT chk_move_status CHECK (status IN ('draft', 'posted', 'reversed')),
+    CONSTRAINT chk_move_classification CHECK (classification IN ('regular', 'adjusting', 'closing', 'opening', 'reversing')),
     UNIQUE (company_id, id),
     FOREIGN KEY (company_id, journal_id) REFERENCES journals(company_id, id) ON DELETE RESTRICT,
     FOREIGN KEY (company_id, period_id) REFERENCES fiscal_periods(company_id, id) ON DELETE RESTRICT,
@@ -339,6 +341,18 @@ CREATE TABLE IF NOT EXISTS subledger_mappings (
     FOREIGN KEY (company_id, credit_account_id) REFERENCES accounts(company_id, id) ON DELETE RESTRICT,
     FOREIGN KEY (company_id, journal_id) REFERENCES journals(company_id, id) ON DELETE RESTRICT
 );
+
+CREATE TABLE IF NOT EXISTS event_accounting_rules (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id uuid NOT NULL REFERENCES companies(id) ON DELETE RESTRICT,
+    event_type varchar(128) NOT NULL,
+    priority int NOT NULL DEFAULT 0,
+    rule_data jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    UNIQUE (company_id, event_type, priority)
+);
+CREATE INDEX IF NOT EXISTS event_accounting_rules_lookup_idx
+    ON event_accounting_rules(company_id, event_type, priority DESC);
 
 CREATE TABLE IF NOT EXISTS subledger_events (
     company_id uuid NOT NULL REFERENCES companies(id) ON DELETE RESTRICT,

@@ -48,6 +48,7 @@ const (
 	SubClassOCIReserves      = "oci_reserves"
 	SubClassRetainedEarnings = "retained_earnings"
 	SubClassTreasuryShares   = "treasury_shares"
+	SubClassDistributions    = "dividends_distributions"
 
 	SubClassOperatingRevenue           = "operating_revenue"
 	SubClassCostOfSales                = "cost_of_sales"
@@ -202,7 +203,8 @@ func validateSubClassification(accType AccountType, sub string) error {
 			SubClassShareCapital: true, SubClassSharePremium: true,
 			SubClassStatutoryReserve: true, SubClassOCIReserves: true,
 			SubClassRetainedEarnings: true, SubClassTreasuryShares: true,
-			"capital": true, "reserve": true, "equity": true,
+			SubClassDistributions: true,
+			"capital":             true, "reserve": true, "equity": true,
 		}
 		if !valid[sub] {
 			return ErrInvalidSubClassificationForType

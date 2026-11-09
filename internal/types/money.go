@@ -9,7 +9,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const FinancialScale = 4
+const (
+	FinancialScale = 4
+	InternalScale  = 12
+)
 const maximumPrecision = 28
 
 type Money struct {
@@ -51,8 +54,6 @@ func newMoney(amount decimal.Decimal, currency string) (Money, error) {
 	}
 	return Money{amount: amount, currency: currency}, nil
 }
-
-func internalScale() int32 { return 12 }
 
 func (m Money) Rounded() (Money, error) {
 	currency, ok := LookupCurrency(m.currency)
@@ -121,7 +122,11 @@ func (m Money) Divide(scalar decimal.Decimal) (Money, error) {
 	if scalar.IsZero() {
 		return Money{}, ErrInvalidAmount
 	}
-	return newMoney(m.amount.DivRound(scalar, FinancialScale), m.currency)
+	return newMoney(m.amount.DivRound(scalar, InternalScale), m.currency)
+}
+
+func (m Money) RoundForPosting() Money {
+	return Money{amount: m.amount.Round(FinancialScale), currency: m.currency}
 }
 
 func (m Money) IsNegative() bool {

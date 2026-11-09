@@ -1,17 +1,31 @@
 package reporting
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	financialtypes "accounting_engine/internal/types"
+	"accounting_engine/internal/valuation"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
+var ErrReportingAccountNotFound = errors.New("posted journal line references an unknown account")
+
 type accountSide struct{ debit, credit decimal.Decimal }
 
 func accountBalances(repository Repository, start, end time.Time, currency string) (map[uuid.UUID]accountSide, error) {
+	accounts, err := listAccounts(repository)
+	if err != nil {
+		return nil, err
+	}
+	accountByID := make(map[uuid.UUID]masterdata.Account, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+	}
 	entries, err := listPostedEntries(repository, start, end)
 	if err != nil {
 		return nil, err
@@ -22,7 +36,16 @@ func accountBalances(repository Repository, start, end time.Time, currency strin
 			continue
 		}
 		for _, line := range entry.Lines {
-			debit, credit := lineAmounts(line, currency)
+			account, ok := accountByID[line.AccountID]
+			if !ok {
+				return nil, ErrReportingAccountNotFound
+			}
+			debit, credit, err := translateLineAmounts(
+				line, account.AccountType, currency, rateProvider(repository), start, end, entryEffectiveDate(entry),
+			)
+			if err != nil {
+				return nil, err
+			}
 			side := balances[line.AccountID]
 			side.debit = side.debit.Add(debit)
 			side.credit = side.credit.Add(credit)
@@ -30,6 +53,103 @@ func accountBalances(repository Repository, start, end time.Time, currency strin
 		}
 	}
 	return balances, nil
+}
+
+func translateLineAmounts(
+	line posting.JournalEntryLine,
+	accountType masterdata.AccountType,
+	currency string,
+	provider valuation.RateProviderSPI,
+	periodStart, periodEnd, entryDate time.Time,
+) (decimal.Decimal, decimal.Decimal, error) {
+	_ = periodStart
+	rateType, rateDate := valuation.ClosingRate, periodEnd
+	switch accountType {
+	case masterdata.AccountTypeEquity:
+		rateType, rateDate = valuation.SpotRate, entryDate
+	case masterdata.AccountTypeIncome, masterdata.AccountTypeExpense:
+		rateType = valuation.AverageRate
+		if rateDate.IsZero() {
+			rateDate = entryDate
+		}
+	default:
+		if rateDate.IsZero() {
+			rateDate = entryDate
+		}
+	}
+	return translateLineAmountsUsingRate(line, currency, provider, rateType, rateDate)
+}
+
+func translateLineAmountsUsingRate(
+	line posting.JournalEntryLine,
+	currency string,
+	provider valuation.RateProviderSPI,
+	rateType valuation.RateType,
+	rateDate time.Time,
+) (decimal.Decimal, decimal.Decimal, error) {
+	debit, credit, sourceCurrency := sourceLineAmounts(line)
+	if currency == "" || sourceCurrency == "" || sourceCurrency == currency {
+		return debit, credit, nil
+	}
+	translator := NewCurrencyTranslator(provider)
+	if !debit.IsZero() {
+		amount, err := financialtypes.NewMoney(debit, sourceCurrency)
+		if err != nil {
+			return decimal.Zero, decimal.Zero, err
+		}
+		translated, err := translator.TranslateAmount(
+			context.Background(), amount, currency, rateDate, rateType,
+		)
+		if err != nil {
+			return decimal.Zero, decimal.Zero, err
+		}
+		debit = translated.Amount()
+	}
+	if !credit.IsZero() {
+		amount, err := financialtypes.NewMoney(credit, sourceCurrency)
+		if err != nil {
+			return decimal.Zero, decimal.Zero, err
+		}
+		translated, err := translator.TranslateAmount(
+			context.Background(), amount, currency, rateDate, rateType,
+		)
+		if err != nil {
+			return decimal.Zero, decimal.Zero, err
+		}
+		credit = translated.Amount()
+	}
+	return debit, credit, nil
+}
+
+func sourceLineAmounts(line posting.JournalEntryLine) (decimal.Decimal, decimal.Decimal, string) {
+	if line.FunctionalDebit.Currency() != "" || line.FunctionalCredit.Currency() != "" {
+		currency := line.FunctionalDebit.Currency()
+		if currency == "" {
+			currency = line.FunctionalCredit.Currency()
+		}
+		return line.FunctionalDebit.Amount(), line.FunctionalCredit.Amount(), currency
+	}
+	if line.AmountCurrency.Currency() != "" {
+		if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
+			return line.AmountCurrency.Amount(), decimal.Zero, line.AmountCurrency.Currency()
+		}
+		return decimal.Zero, line.AmountCurrency.Amount(), line.AmountCurrency.Currency()
+	}
+	if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
+		return line.Debit.Amount(), decimal.Zero, line.Debit.Currency()
+	}
+	if line.Credit.Currency() != "" && !line.Credit.Amount().IsZero() {
+		return decimal.Zero, line.Credit.Amount(), line.Credit.Currency()
+	}
+	if line.Debit.Currency() != "" {
+		return decimal.Zero, decimal.Zero, line.Debit.Currency()
+	}
+	return decimal.Zero, decimal.Zero, line.Credit.Currency()
+}
+
+func rateProvider(repository Repository) valuation.RateProviderSPI {
+	provider, _ := repository.(valuation.RateProviderSPI)
+	return provider
 }
 
 func accountBalance(side accountSide, account masterdata.Account) decimal.Decimal {

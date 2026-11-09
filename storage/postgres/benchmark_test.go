@@ -26,6 +26,13 @@ func getTestPostgresConn() string {
 
 func setupBenchmarkCompany(t *testing.T, driver *postgres.Driver) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
 	ctx := context.Background()
+	migrationSQL, err := os.ReadFile("migrations/202611100002_phase1_entry_classification.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.Pool().Exec(ctx, string(migrationSQL)); err != nil {
+		t.Fatalf("apply phase-1 classification migration: %v", err)
+	}
 	companyID := uuid.New()
 	company := masterdata.Company{
 		ID:                   companyID,
@@ -92,7 +99,7 @@ func setupBenchmarkCompany(t *testing.T, driver *postgres.Driver) (uuid.UUID, uu
 	}
 
 	journalID := uuid.New()
-	_, err := driver.Pool().Exec(ctx,
+	_, err = driver.Pool().Exec(ctx,
 		`INSERT INTO journals(id, company_id, code, name, current_sequence)
 		 VALUES($1, $2, 'GEN', 'General Journal', 0)`,
 		journalID, companyID)

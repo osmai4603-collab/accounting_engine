@@ -34,6 +34,7 @@ func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reve
 		EntryDate:         reversalDate.UTC(),
 		Date:              reversalDate.UTC(),
 		Status:            EntryDraft,
+		Classification:    EntryClassReversing,
 		DocumentReference: original.DocumentReference,
 		Reference:         original.Reference,
 		CreatedBy:         creatorID,

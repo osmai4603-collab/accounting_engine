@@ -36,12 +36,16 @@ type EventBridge struct {
 	repo     Repository
 	creator  JournalCreator
 	mappings map[eventMappingKey]SubledgerEventMapping
+	rules    map[eventMappingKey][]EventAccountingRule
 	mu       sync.Mutex
 	entries  map[eventIdempotencyKey]posting.JournalEntry
 }
 
 func NewEventBridge(repo Repository, creator JournalCreator) *EventBridge {
-	return &EventBridge{repo: repo, creator: creator, mappings: make(map[eventMappingKey]SubledgerEventMapping), entries: make(map[eventIdempotencyKey]posting.JournalEntry)}
+	return &EventBridge{
+		repo: repo, creator: creator, mappings: make(map[eventMappingKey]SubledgerEventMapping),
+		rules: make(map[eventMappingKey][]EventAccountingRule), entries: make(map[eventIdempotencyKey]posting.JournalEntry),
+	}
 }
 
 func (b *EventBridge) RegisterMapping(mapping SubledgerEventMapping) error {
@@ -52,9 +56,50 @@ func (b *EventBridge) RegisterMapping(mapping SubledgerEventMapping) error {
 		mapping.JournalID == uuid.Nil {
 		return ErrMappingNotFound
 	}
+	rule := EventAccountingRule{
+		CompanyID: mapping.CompanyID, EventType: mapping.EventType, RuleName: "default", JournalID: mapping.JournalID,
+		Lines: []EventLineTemplate{
+			{AccountID: mapping.DebitAccountID, Side: EventLineDebit, AmountFormula: "amount"},
+			{AccountID: mapping.CreditAccountID, Side: EventLineCredit, AmountFormula: "amount"},
+		},
+	}
+	if err := b.RegisterRule(rule); err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.mappings[eventMappingKey{companyID: mapping.CompanyID, eventType: mapping.EventType}] = mapping
+	return nil
+}
+
+func (b *EventBridge) RegisterRule(rule EventAccountingRule) error {
+	if rule.ID == uuid.Nil {
+		rule.ID = uuid.New()
+	}
+	if err := rule.Validate(); err != nil {
+		return err
+	}
+	rule.EventType = strings.TrimSpace(rule.EventType)
+	rule.RuleName = strings.TrimSpace(rule.RuleName)
+	key := eventMappingKey{companyID: rule.CompanyID, eventType: rule.EventType}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	repository, ok := b.repo.(EventAccountingRuleRepository)
+	if !ok {
+		return ErrEventRulesRequired
+	}
+	if err := repository.SaveEventAccountingRule(rule); err != nil {
+		return err
+	}
+	rules := b.rules[key]
+	for i := range rules {
+		if rules[i].Priority == rule.Priority {
+			rules[i] = rule.Clone()
+			b.rules[key] = rules
+			return nil
+		}
+	}
+	b.rules[key] = append(rules, rule.Clone())
 	return nil
 }
 
@@ -92,15 +137,18 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 		return posting.JournalEntry{ID: existing.event.ResultEntryID, EntryDate: existing.event.Date, Status: posting.EntryDraft}, nil
 	}
 
-	mapping, ok := b.mappings[eventMappingKey{companyID: event.CompanyID, eventType: event.EventType}]
-	if !ok {
-		return posting.JournalEntry{}, ErrMappingNotFound
+	rule, err := b.matchingRule(event)
+	if err != nil {
+		return posting.JournalEntry{}, err
 	}
-	amount := event.Amount
+	lines, err := translateEventLines(rule, event)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
 	entry := posting.JournalEntry{
 		CompanyID:         event.CompanyID,
 		ID:                uuid.New(),
-		JournalID:         mapping.JournalID,
+		JournalID:         ruleJournalID(rule),
 		EntryDate:         event.Date,
 		Date:              event.Date,
 		Status:            posting.EntryDraft,
@@ -108,10 +156,7 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 		Reference:         event.Reference,
 		CreatedAt:         time.Now().UTC(),
 		UpdatedAt:         time.Now().UTC(),
-		Lines: []posting.JournalEntryLine{
-			{CompanyID: event.CompanyID, ID: uuid.New(), AccountID: mapping.DebitAccountID, PartnerID: event.PartnerID, Debit: amount},
-			{CompanyID: event.CompanyID, ID: uuid.New(), AccountID: mapping.CreditAccountID, PartnerID: event.PartnerID, Credit: amount},
-		},
+		Lines:             lines,
 	}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
@@ -132,6 +177,30 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 	}
 	b.entries[idempotencyKey] = entry
 	return entry, nil
+}
+
+func (b *EventBridge) matchingRule(event EconomicEvent) (EventAccountingRule, error) {
+	key := eventMappingKey{companyID: event.CompanyID, eventType: event.EventType}
+	rules := b.rules[key]
+	if repository, ok := b.repo.(EventAccountingRuleRepository); ok {
+		persisted, err := repository.ListEventAccountingRulesForCompany(event.CompanyID, event.EventType)
+		if err != nil {
+			return EventAccountingRule{}, err
+		}
+		if len(persisted) > 0 {
+			rules = persisted
+		}
+	}
+	for _, rule := range rules {
+		if ruleMatchesEvent(rule, event) {
+			return rule, nil
+		}
+	}
+	return EventAccountingRule{}, ErrMappingNotFound
+}
+
+func ruleJournalID(rule EventAccountingRule) uuid.UUID {
+	return rule.JournalID
 }
 
 type subledgerEvent struct {

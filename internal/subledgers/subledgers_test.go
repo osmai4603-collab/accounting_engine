@@ -89,6 +89,48 @@ func TestEventIdempotencyIsCompanyScoped(t *testing.T) {
 	}
 }
 
+func TestEventBridgeBuildsCompoundEntryFromPersistentRule(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID := uuid.New()
+	receivables, revenue, vat, journal := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	rule := EventAccountingRule{
+		CompanyID: companyID, EventType: "invoice_issued", RuleName: "standard invoice", JournalID: journal,
+		Lines: []EventLineTemplate{
+			{AccountID: receivables, Side: EventLineDebit, AmountFormula: "amount * 1.15"},
+			{AccountID: revenue, Side: EventLineCredit, AmountFormula: "amount"},
+			{AccountID: vat, Side: EventLineCredit, AmountFormula: "amount * 0.15"},
+		},
+	}
+	firstBridge := NewEventBridge(repo, &draftCreator{})
+	if err := firstBridge.RegisterRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	event := EconomicEvent{
+		CompanyID: companyID, IdempotencyKey: "compound-1", EventType: "invoice_issued",
+		Amount: money(t, "100.00"), Date: time.Now(), Reference: "INV-C1",
+	}
+	entry, err := firstBridge.Process(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Lines) != 3 || !entry.Lines[0].Debit.Equal(money(t, "115.00")) ||
+		!entry.Lines[1].Credit.Equal(money(t, "100.00")) ||
+		!entry.Lines[2].Credit.Equal(money(t, "15.00")) {
+		t.Fatalf("unexpected compound journal entry: %+v", entry.Lines)
+	}
+
+	secondBridge := NewEventBridge(repo, &draftCreator{})
+	event.IdempotencyKey = "compound-2"
+	event.Reference = "INV-C2"
+	persistedEntry, err := secondBridge.Process(event)
+	if err != nil {
+		t.Fatalf("new bridge could not load persisted accounting rule: %v", err)
+	}
+	if len(persistedEntry.Lines) != 3 || persistedEntry.JournalID != journal {
+		t.Fatalf("persisted rule produced wrong entry: %+v", persistedEntry)
+	}
+}
+
 func TestEventBridgeRejectsStoredEventWithoutResult(t *testing.T) {
 	repo := NewMemoryRepository()
 	event := EconomicEvent{

@@ -25,6 +25,7 @@ type CashFlow struct {
 	InvestingCashFlow                decimal.Decimal
 	FinancingCashFlow                decimal.Decimal
 	NetChangeInCash                  decimal.Decimal
+	EffectOfExchangeRatesOnCash      decimal.Decimal
 	OpeningCash                      decimal.Decimal
 	ClosingCash                      decimal.Decimal
 	Reconciled                       bool
@@ -112,7 +113,13 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 			report.ClosingCash = report.ClosingCash.Add(signedBalance(closeBalances[account.ID], account))
 		}
 	}
-	report.Reconciled = report.NetChangeInCash.Equal(report.ClosingCash.Sub(report.OpeningCash))
+	if translated, err := entriesRequireTranslation(e.repository, end, currency); err != nil {
+		return CashFlow{}, err
+	} else if translated {
+		report.EffectOfExchangeRatesOnCash = report.ClosingCash.Sub(report.OpeningCash).Sub(report.NetChangeInCash)
+	}
+	report.Reconciled = report.NetChangeInCash.Add(report.EffectOfExchangeRatesOnCash).
+		Equal(report.ClosingCash.Sub(report.OpeningCash))
 	if !report.Reconciled {
 		return report, ErrUnbalancedCashFlow
 	}
@@ -145,12 +152,21 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 		if entry.Status != posting.EntryPosted {
 			continue
 		}
+		entryDate := entryEffectiveDate(entry)
 		for i, cashLine := range entry.Lines {
-			cashAccount := accountByID[cashLine.AccountID]
+			cashAccount, ok := accountByID[cashLine.AccountID]
+			if !ok {
+				return CashFlow{}, ErrReportingAccountNotFound
+			}
 			if !isCashAccount(cashAccount) {
 				continue
 			}
-			cashDebit, cashCredit := lineAmounts(cashLine, currency)
+			cashDebit, cashCredit, err := translateLineAmounts(
+				cashLine, cashAccount.AccountType, currency, rateProvider(e.repository), start, end, entryDate,
+			)
+			if err != nil {
+				return CashFlow{}, err
+			}
 			cashChange := cashDebit.Sub(cashCredit)
 			if cashChange.IsZero() {
 				continue
@@ -161,12 +177,20 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 				if i == j {
 					continue
 				}
-				debit, credit := lineAmounts(other, currency)
+				account, ok := accountByID[other.AccountID]
+				if !ok {
+					return CashFlow{}, ErrReportingAccountNotFound
+				}
+				debit, credit, err := translateLineAmounts(
+					other, account.AccountType, currency, rateProvider(e.repository), start, end, entryDate,
+				)
+				if err != nil {
+					return CashFlow{}, err
+				}
 				amount := debit.Add(credit).Abs()
 				if amount.IsZero() {
 					continue
 				}
-				account := accountByID[other.AccountID]
 				activity, err := cashFlowActivity(account)
 				if err != nil {
 					return CashFlow{}, err
@@ -206,7 +230,13 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 		}
 	}
 	report.NetChangeInCash = report.OperatingCashFlow.Add(report.InvestingCashFlow).Add(report.FinancingCashFlow)
-	report.Reconciled = report.NetChangeInCash.Equal(report.ClosingCash.Sub(report.OpeningCash))
+	if translated, err := entriesRequireTranslation(e.repository, end, currency); err != nil {
+		return CashFlow{}, err
+	} else if translated {
+		report.EffectOfExchangeRatesOnCash = report.ClosingCash.Sub(report.OpeningCash).Sub(report.NetChangeInCash)
+	}
+	report.Reconciled = report.NetChangeInCash.Add(report.EffectOfExchangeRatesOnCash).
+		Equal(report.ClosingCash.Sub(report.OpeningCash))
 	if !report.Reconciled {
 		return report, ErrUnbalancedCashFlow
 	}

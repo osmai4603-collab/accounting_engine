@@ -52,9 +52,18 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 	if err != nil {
 		return FinancialRatios{}, err
 	}
-	balances, err := accountBalances(e.repository, start, end, currency)
+	endingBalances, err := accountBalances(e.repository, time.Time{}, end, currency)
 	if err != nil {
 		return FinancialRatios{}, err
+	}
+	var openingBalances map[uuid.UUID]accountSide
+	if !start.IsZero() {
+		openingBalances, err = accountBalances(e.repository, time.Time{}, start.Add(-time.Nanosecond), currency)
+		if err != nil {
+			return FinancialRatios{}, err
+		}
+	} else {
+		openingBalances = make(map[uuid.UUID]accountSide)
 	}
 	income, err := NewIncomeStatementEngine(e.repository).Generate(start, end, currency)
 	if err != nil {
@@ -65,9 +74,17 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 		return FinancialRatios{}, err
 	}
 
-	var cash, receivables, inventory, currentAssets, currentLiabilities decimal.Decimal
+	openingTotals, err := ratioBalanceTotals(e.repository, accounts, openingBalances, start, currency)
+	if err != nil {
+		return FinancialRatios{}, err
+	}
+	endingTotals := ratioTotals{
+		assets: sheet.TotalAssets,
+		equity: sheet.Equity,
+	}
+	var cash, endingReceivables, endingInventory decimal.Decimal
 	for _, account := range accounts {
-		amount := adjustedAccountBalance(balances[account.ID], account)
+		amount := adjustedAccountBalance(endingBalances[account.ID], account)
 		classification := normalizeClassification(account.SubClassification)
 		switch account.AccountType {
 		case masterdata.AccountTypeAsset:
@@ -76,44 +93,35 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 			}
 			if classification == masterdata.SubClassTradeReceivables ||
 				classification == masterdata.SubClassAccountsReceivable {
-				receivables = receivables.Add(amount)
+				endingReceivables = endingReceivables.Add(amount)
 			}
 			if classification == masterdata.SubClassInventories {
-				inventory = inventory.Add(amount)
-			}
-			if account.IsCurrentAsset() || account.EffectiveIsCashEquivalent() {
-				currentAssets = currentAssets.Add(amount)
-			}
-		case masterdata.AccountTypeLiability:
-			if account.IsCurrent() {
-				currentLiabilities = currentLiabilities.Add(amount)
+				endingInventory = endingInventory.Add(amount)
 			}
 		}
 	}
-	if sheet.CurrentAssets.Sign() != 0 {
-		currentAssets = sheet.CurrentAssets
-	}
-	if sheet.CurrentLiabilities.Sign() != 0 {
-		currentLiabilities = sheet.CurrentLiabilities
-	}
+	averageAssets := openingTotals.assets.Add(endingTotals.assets).Div(decimal.NewFromInt(2))
+	averageEquity := openingTotals.equity.Add(endingTotals.equity).Div(decimal.NewFromInt(2))
+	averageReceivables := openingTotals.receivables.Add(endingReceivables).Div(decimal.NewFromInt(2))
+	averageInventory := openingTotals.inventory.Add(endingInventory).Div(decimal.NewFromInt(2))
 
 	return FinancialRatios{
 		Liquidity: LiquidityRatios{
-			CurrentRatio: safeDiv(currentAssets, currentLiabilities),
-			QuickRatio:   safeDiv(cash.Add(receivables), currentLiabilities),
-			CashRatio:    safeDiv(cash, currentLiabilities),
+			CurrentRatio: safeDiv(sheet.CurrentAssets, sheet.CurrentLiabilities),
+			QuickRatio:   safeDiv(cash.Add(endingReceivables), sheet.CurrentLiabilities),
+			CashRatio:    safeDiv(cash, sheet.CurrentLiabilities),
 		},
 		Profitability: ProfitabilityRatios{
 			GrossMargin:     safePct(income.GrossProfit, income.Revenue),
 			OperatingMargin: safePct(income.OperatingProfit, income.Revenue),
 			NetMargin:       safePct(income.NetProfit, income.Revenue),
-			ROA:             safePct(income.NetProfit, sheet.TotalAssets),
-			ROE:             safePct(income.NetProfit, sheet.Equity),
+			ROA:             safePct(income.NetProfit, averageAssets),
+			ROE:             safePct(income.NetProfit, averageEquity),
 		},
 		Activity: ActivityRatios{
-			AssetTurnover:       safeDiv(income.Revenue, sheet.TotalAssets),
-			ReceivablesTurnover: safeDiv(income.Revenue, receivables),
-			InventoryTurnover:   safeDiv(income.CostOfSales, inventory),
+			AssetTurnover:       safeDiv(income.Revenue, averageAssets),
+			ReceivablesTurnover: safeDiv(income.Revenue, averageReceivables),
+			InventoryTurnover:   safeDiv(income.CostOfSales, averageInventory),
 		},
 		Solvency: SolvencyRatios{
 			DebtToEquity:     safeDiv(sheet.TotalLiabilities, sheet.Equity),
@@ -121,6 +129,48 @@ func (e *RatiosEngine) Generate(start, end time.Time, currency string) (Financia
 			InterestCoverage: safeDiv(income.OperatingProfit, income.FinanceCosts.Abs()),
 		},
 	}, nil
+}
+
+type ratioTotals struct {
+	assets      decimal.Decimal
+	equity      decimal.Decimal
+	receivables decimal.Decimal
+	inventory   decimal.Decimal
+}
+
+func ratioBalanceTotals(
+	repository Repository,
+	accounts []masterdata.Account,
+	balances map[uuid.UUID]accountSide,
+	asOf time.Time,
+	currency string,
+) (ratioTotals, error) {
+	totals := ratioTotals{}
+	for _, account := range accounts {
+		amount := adjustedAccountBalance(balances[account.ID], account)
+		switch account.AccountType {
+		case masterdata.AccountTypeAsset:
+			totals.assets = totals.assets.Add(amount)
+			classification := normalizeClassification(account.SubClassification)
+			if classification == masterdata.SubClassTradeReceivables ||
+				classification == masterdata.SubClassAccountsReceivable {
+				totals.receivables = totals.receivables.Add(amount)
+			}
+			if classification == masterdata.SubClassInventories {
+				totals.inventory = totals.inventory.Add(amount)
+			}
+		case masterdata.AccountTypeEquity:
+			totals.equity = totals.equity.Add(amount)
+		}
+	}
+	if !asOf.IsZero() {
+		income, err := NewIncomeStatementEngine(repository).Generate(time.Time{}, asOf, currency)
+		if err != nil {
+			return ratioTotals{}, err
+		}
+		totals.equity = totals.equity.Add(income.NetProfit).Add(income.OCI)
+	}
+	return totals, nil
 }
 
 func (e *RatiosEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (FinancialRatios, error) {
