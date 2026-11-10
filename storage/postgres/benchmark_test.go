@@ -176,6 +176,9 @@ func TestPostgresBatchPostingPerformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			entry.ID = entryID
+			entry.CompanyID = companyID
+			entry.PeriodID = periodID
+			entry.Reference = fmt.Sprintf("BENCH-RETRY-%06d", i)
 			if err := driver.SaveDraft(ctx, entry); err != nil {
 				t.Fatalf("SaveDraft retry: %v", err)
 			}
