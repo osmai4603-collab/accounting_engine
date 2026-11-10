@@ -41,6 +41,7 @@ var (
 	ErrEventRulesRequired               = errors.New("persistent event accounting rules are required")
 	ErrWriteOffPending                  = errors.New("subledger open line already has a pending write-off")
 	ErrNoPendingWriteOff                = errors.New("subledger open line has no pending write-off")
+	ErrCompanyScopeRequired             = errors.New("company scope is required")
 )
 
 type Repository interface {
@@ -58,6 +59,7 @@ type Repository interface {
 	AtomicPostedOpenLineRepository
 	FixedAssetRepository
 	AtomicFixedAssetDraftRepository
+	AtomicFixedAssetOperationDraftRepository
 	AtomicFixedAssetConfirmationRepository
 	BankItemRepository
 	CompanyBankItemRepository
@@ -164,6 +166,10 @@ type AtomicEconomicEventRepository interface {
 
 type AtomicFixedAssetDraftRepository interface {
 	SaveFixedAssetDraft(context.Context, FixedAsset, posting.JournalEntry) error
+}
+
+type AtomicFixedAssetOperationDraftRepository interface {
+	SaveFixedAssetOperationDraft(context.Context, FixedAsset, FixedAsset, posting.JournalEntry) error
 }
 
 type AtomicFixedAssetConfirmationRepository interface {
@@ -503,6 +509,25 @@ func (r *MemoryRepository) SaveFixedAsset(ctx context.Context, asset FixedAsset)
 }
 
 func (r *MemoryRepository) SaveFixedAssetDraft(ctx context.Context, expected FixedAsset, entry posting.JournalEntry) error {
+	return r.saveFixedAssetDraft(ctx, expected, expected, entry)
+}
+
+func (r *MemoryRepository) SaveFixedAssetOperationDraft(
+	ctx context.Context,
+	expected, updated FixedAsset,
+	entry posting.JournalEntry,
+) error {
+	if err := ValidateFixedAssetOperationDraft(expected, updated, entry); err != nil {
+		return err
+	}
+	return r.saveFixedAssetDraft(ctx, expected, updated, entry)
+}
+
+func (r *MemoryRepository) saveFixedAssetDraft(
+	ctx context.Context,
+	expected, updated FixedAsset,
+	entry posting.JournalEntry,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -522,11 +547,15 @@ func (r *MemoryRepository) SaveFixedAssetDraft(ctx context.Context, expected Fix
 	if !reflect.DeepEqual(currentAsset, expected) {
 		return ErrConcurrentAssetUpdate
 	}
+	if expected.PendingOperation != "" || updated.PendingOperation != "" &&
+		(updated.PendingOperationEntryID != entry.ID ||
+			(updated.PendingOperation != "DISPOSAL" && updated.PendingOperation != "IMPAIRMENT")) {
+		return ErrAlreadyExists
+	}
 	if _, exists := r.drafts[entry.ID]; exists {
 		return ErrAlreadyExists
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
-		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:") {
 		for _, current := range r.drafts {
 			if current.DocumentReference == entry.DocumentReference &&
 				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {
@@ -536,6 +565,9 @@ func (r *MemoryRepository) SaveFixedAssetDraft(ctx context.Context, expected Fix
 	}
 	entry.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
 	r.drafts[entry.ID] = entry
+	if updated.PendingOperation != "" {
+		r.assets[updated.ID] = cloneFixedAsset(updated)
+	}
 	return nil
 }
 
@@ -555,6 +587,11 @@ func (r *MemoryRepository) ConfirmFixedAssetMutation(ctx context.Context, expect
 		return ErrNotFound
 	}
 	if !reflect.DeepEqual(currentAsset, expected) {
+		return ErrConcurrentAssetUpdate
+	}
+	if expected.PendingOperation != "" &&
+		(expected.PendingOperationEntryID != expectedEntry.ID ||
+			updated.PendingOperation != "" || updated.PendingOperationEntryID != uuid.Nil) {
 		return ErrConcurrentAssetUpdate
 	}
 	entry, exists := r.drafts[expectedEntry.ID]

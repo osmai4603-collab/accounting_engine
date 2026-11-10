@@ -39,7 +39,10 @@ func (l *TreasuryLedger) RecordItem(accountID uuid.UUID, date time.Time, amount 
 
 func (l *TreasuryLedger) RecordItemForCompany(companyID, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	if companyID == uuid.Nil {
-		return BankItem{}, ErrInvalidOpenLine
+		return BankItem{}, ErrCompanyScopeRequired
+	}
+	if l.companyID != uuid.Nil && l.companyID != companyID {
+		return BankItem{}, ErrCompanyMismatch
 	}
 	return l.recordItem(companyID, accountID, uuid.Nil, date, amount, reference, status)
 }

@@ -26,6 +26,25 @@ func (d *Driver) SaveFixedAsset(ctx context.Context, asset subledgers.FixedAsset
 }
 
 func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+	return d.saveFixedAssetDraft(ctx, expected, expected, entry)
+}
+
+func (d *Driver) SaveFixedAssetOperationDraft(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+	entry posting.JournalEntry,
+) error {
+	if err := subledgers.ValidateFixedAssetOperationDraft(expected, updated, entry); err != nil {
+		return err
+	}
+	return d.saveFixedAssetDraft(ctx, expected, updated, entry)
+}
+
+func (d *Driver) saveFixedAssetDraft(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+	entry posting.JournalEntry,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -45,11 +64,15 @@ func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.Fi
 	if !reflect.DeepEqual(currentAsset, expected) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
+	if expected.PendingOperation != "" || (updated.PendingOperation != "" &&
+		(updated.PendingOperationEntryID != entry.ID ||
+			(updated.PendingOperation != "DISPOSAL" && updated.PendingOperation != "IMPAIRMENT"))) {
+		return subledgers.ErrAlreadyExists
+	}
 	if _, exists := d.entries[entry.ID]; exists {
 		return subledgers.ErrAlreadyExists
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
-		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:") {
 		for _, current := range d.entries {
 			if current.DocumentReference == entry.DocumentReference &&
 				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {
@@ -68,6 +91,9 @@ func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.Fi
 		entry.Lines[i].CompanyID = entry.CompanyID
 	}
 	d.entries[entry.ID] = cloneEntry(entry)
+	if updated.PendingOperation != "" {
+		d.assets[updated.ID] = cloneFixedAsset(updated)
+	}
 	return nil
 }
 
@@ -87,6 +113,11 @@ func (d *Driver) ConfirmFixedAssetMutation(ctx context.Context, expected, update
 		return subledgers.ErrNotFound
 	}
 	if !reflect.DeepEqual(currentAsset, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+	if expected.PendingOperation != "" &&
+		(expected.PendingOperationEntryID != expectedEntry.ID ||
+			updated.PendingOperation != "" || updated.PendingOperationEntryID != uuid.Nil) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
 	actualEntry, exists := d.entries[expectedEntry.ID]

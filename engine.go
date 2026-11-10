@@ -82,6 +82,13 @@ func (e *AccountingEngine) StatementBundle(start, end time.Time, currency string
 	return e.Reporting.Bundle.Generate(start, end, currency)
 }
 
+func (e *AccountingEngine) ForCompany(companyID uuid.UUID) *subledgers.CompanySubledgerService {
+	if e == nil || e.Subledgers == nil {
+		return nil
+	}
+	return e.Subledgers.ForCompany(companyID)
+}
+
 func (e *AccountingEngine) DimensionProfitAndLossForCompanyContext(
 	ctx context.Context,
 	companyID uuid.UUID,
@@ -150,6 +157,11 @@ func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(driver))
 	postingEngine := posting.NewEngine(driver, masterService)
 	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(driver))
+	governanceEngine := governance.NewEngine(driver)
+	postingEngine.SetApprovalGate(governanceEngine.ApprovalGate())
+	if policy, ok := driver.(posting.MakerCheckerPolicy); ok {
+		postingEngine.SetMakerCheckerPolicy(policy)
+	}
 	subledgerService := subledgers.NewService(driver, postingEngine)
 	return &AccountingEngine{
 		MasterData: masterService,
@@ -157,7 +169,7 @@ func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 		Subledgers: subledgerService,
 		Valuation:  valuation.NewEngine(driver),
 		Reporting:  reporting.NewEngine(driver),
-		Governance: governance.NewEngine(driver),
+		Governance: governanceEngine,
 		Dimensions: driver,
 		Config:     config,
 	}, nil

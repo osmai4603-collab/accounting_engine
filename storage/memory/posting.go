@@ -305,6 +305,28 @@ func (s *memoryMutationState) SaveFixedAsset(ctx context.Context, asset subledge
 	return nil
 }
 
+func (s *memoryMutationState) ApplyFixedAssetOperation(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+	entry posting.JournalEntry,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := subledgers.ValidateFixedAssetOperationMutation(expected, updated, entry); err != nil {
+		return err
+	}
+	current, ok := s.assets[expected.ID]
+	if !ok {
+		current, ok = s.driver.assets[expected.ID]
+	}
+	if !ok || !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+	s.assets[updated.ID] = cloneFixedAsset(updated)
+	return nil
+}
+
 func (s *memoryMutationState) SaveOpenLine(ctx context.Context, line subledgers.OpenLine) error {
 	if err := ctx.Err(); err != nil {
 		return err

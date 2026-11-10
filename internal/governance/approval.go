@@ -7,20 +7,24 @@ import (
 	"sync"
 	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
 var (
-	ErrApprovalNotFound           = errors.New("approval request not found")
-	ErrApprovalComplete           = errors.New("approval request is already complete")
-	ErrApprovalSequence           = errors.New("approval is not permitted at the current stage")
-	ErrApprovalRoleRequired       = errors.New("approver does not hold the required role")
-	ErrApproverReused             = errors.New("each approval stage requires a different approver")
-	ErrApprovalAuditRequired      = errors.New("approval audit writer is required")
-	ErrApprovalRepositoryRequired = errors.New("approval repository is required")
-	ErrInvalidApprovalRequest     = errors.New("invalid approval request")
+	ErrApprovalNotFound            = errors.New("approval request not found")
+	ErrApprovalComplete            = errors.New("approval request is already complete")
+	ErrApprovalSequence            = errors.New("approval is not permitted at the current stage")
+	ErrApprovalRoleRequired        = errors.New("approver does not hold the required role")
+	ErrApproverReused              = errors.New("each approval stage requires a different approver")
+	ErrApprovalAuditRequired       = errors.New("approval audit writer is required")
+	ErrApprovalRepositoryRequired  = errors.New("approval repository is required")
+	ErrInvalidApprovalRequest      = errors.New("invalid approval request")
+	ErrApprovalAmountMismatch      = errors.New("approval amount does not match the stored entry functional total")
+	ErrApprovalEntrySourceRequired = errors.New("approval entry source is required")
+	ErrApprovalAlreadyExists       = errors.New("approval request already exists for this entry")
 )
 
 type ApprovalStep struct {
@@ -30,21 +34,25 @@ type ApprovalStep struct {
 }
 
 type ApprovalRequest struct {
-	ID          uuid.UUID
-	CompanyID   uuid.UUID
-	EntryID     uuid.UUID
-	JournalType string
-	CreatorID   uuid.UUID
-	Amount      financialtypes.Money
-	CreatedAt   time.Time
-	CompletedAt *time.Time
-	Steps       []ApprovalStep
+	ID               uuid.UUID
+	CompanyID        uuid.UUID
+	EntryID          uuid.UUID
+	JournalType      string
+	CreatorID        uuid.UUID
+	Amount           financialtypes.Money
+	FunctionalAmount financialtypes.Money
+	EntryHash        string
+	CreatedAt        time.Time
+	CompletedAt      *time.Time
+	Steps            []ApprovalStep
 }
 
 func (request ApprovalRequest) Validate() error {
 	if request.ID == uuid.Nil || request.CompanyID == uuid.Nil || request.EntryID == uuid.Nil ||
 		request.CreatorID == uuid.Nil || request.Amount.Currency() == "" || request.Amount.IsNegative() ||
-		request.Amount.Amount().IsZero() || len(request.Steps) == 0 || request.CreatedAt.IsZero() {
+		request.Amount.Amount().IsZero() || len(request.Steps) == 0 || request.CreatedAt.IsZero() ||
+		len(request.EntryHash) != 64 || request.FunctionalAmount.Currency() == "" ||
+		request.FunctionalAmount.IsNegative() || request.FunctionalAmount.Amount().IsZero() {
 		return ErrInvalidApprovalRequest
 	}
 	roles := make(map[Role]struct{}, len(request.Steps))
@@ -83,7 +91,14 @@ func (request ApprovalRequest) Validate() error {
 type ApprovalRepository interface {
 	SaveApproval(ctx context.Context, request ApprovalRequest) error
 	GetApproval(ctx context.Context, companyID, approvalID uuid.UUID) (ApprovalRequest, error)
-	IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID) (bool, error)
+	IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID, entryHash string) (bool, error)
+}
+
+// ApprovalEntryRepository supplies the stored draft that an approval request is
+// bound to. Start and IsApproved use it to derive the functional amount and the
+// content fingerprint instead of trusting caller-provided values.
+type ApprovalEntryRepository interface {
+	GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error)
 }
 
 type AtomicApprovalAuditRepository interface {
@@ -142,13 +157,33 @@ func (e *ApprovalEngine) Start(ctx context.Context, companyID, entryID, creatorI
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	steps, err := e.approvalSteps(amount, journalType)
+	entries, ok := e.repository.(ApprovalEntryRepository)
+	if !ok {
+		return ApprovalRequest{}, ErrApprovalEntrySourceRequired
+	}
+	entry, err := entries.GetEntryByIDForCompanyContext(ctx, companyID, entryID)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	functionalAmount, err := posting.EntryFunctionalTotal(entry)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	if !amount.Equal(functionalAmount) {
+		return ApprovalRequest{}, ErrApprovalAmountMismatch
+	}
+	entryHash, err := posting.EntryContentHash(entry)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	steps, err := e.approvalSteps(functionalAmount, journalType)
 	if err != nil {
 		return ApprovalRequest{}, err
 	}
 	request := ApprovalRequest{
 		ID: uuid.New(), CompanyID: companyID, EntryID: entryID, JournalType: journalType,
-		CreatorID: creatorID, Amount: amount, CreatedAt: at.UTC(), Steps: steps,
+		CreatorID: creatorID, Amount: functionalAmount, FunctionalAmount: functionalAmount,
+		EntryHash: entryHash, CreatedAt: at.UTC(), Steps: steps,
 	}
 	if err := request.Validate(); err != nil {
 		return ApprovalRequest{}, err
@@ -201,7 +236,19 @@ func (e *ApprovalEngine) IsApproved(ctx context.Context, companyID, entryID uuid
 	if e == nil || e.repository == nil {
 		return false, ErrApprovalRepositoryRequired
 	}
-	return e.repository.IsEntryApproved(ctx, companyID, entryID)
+	entries, ok := e.repository.(ApprovalEntryRepository)
+	if !ok {
+		return false, ErrApprovalEntrySourceRequired
+	}
+	entry, err := entries.GetEntryByIDForCompanyContext(ctx, companyID, entryID)
+	if err != nil {
+		return false, err
+	}
+	entryHash, err := posting.EntryContentHash(entry)
+	if err != nil {
+		return false, err
+	}
+	return e.repository.IsEntryApproved(ctx, companyID, entryID, entryHash)
 }
 
 func (e *ApprovalEngine) Approve(ctx context.Context, companyID, approvalID, actorID uuid.UUID, at time.Time) (ApprovalRequest, error) {
@@ -273,11 +320,39 @@ func firstPendingApproval(steps []ApprovalStep) int {
 type MemoryApprovalRepository struct {
 	mu       sync.RWMutex
 	requests map[uuid.UUID]ApprovalRequest
+	entries  map[uuid.UUID]posting.JournalEntry
 	audit    []FinancialAuditLog
 }
 
 func NewMemoryApprovalRepository() *MemoryApprovalRepository {
-	return &MemoryApprovalRepository{requests: make(map[uuid.UUID]ApprovalRequest)}
+	return &MemoryApprovalRepository{
+		requests: make(map[uuid.UUID]ApprovalRequest),
+		entries:  make(map[uuid.UUID]posting.JournalEntry),
+	}
+}
+
+// SaveEntryForApproval registers the draft that approval requests are bound to.
+// It mirrors the stored-entry lookup implemented by persistent repositories.
+func (r *MemoryApprovalRepository) SaveEntryForApproval(entry posting.JournalEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries[entry.ID] = entry
+}
+
+func (r *MemoryApprovalRepository) GetEntryByIDForCompanyContext(
+	ctx context.Context,
+	companyID, entryID uuid.UUID,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.entries[entryID]
+	if !ok || entry.CompanyID != companyID {
+		return posting.JournalEntry{}, posting.ErrEntryNotFound
+	}
+	return entry, nil
 }
 
 func (r *MemoryApprovalRepository) SaveApproval(ctx context.Context, request ApprovalRequest) error {
@@ -382,14 +457,15 @@ func (r *MemoryApprovalRepository) GetApproval(ctx context.Context, companyID, a
 	return cloneApproval(request), nil
 }
 
-func (r *MemoryApprovalRepository) IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID) (bool, error) {
+func (r *MemoryApprovalRepository) IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID, entryHash string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, request := range r.requests {
-		if request.CompanyID == companyID && request.EntryID == entryID && request.CompletedAt != nil {
+		if request.CompanyID == companyID && request.EntryID == entryID &&
+			request.CompletedAt != nil && request.EntryHash == entryHash {
 			return true, nil
 		}
 	}

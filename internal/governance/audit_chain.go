@@ -39,7 +39,9 @@ func NewAuditChain(repository Repository) *AuditChain {
 }
 
 func CalculateHash(log FinancialAuditLog) string {
-	timestamp := log.Timestamp.UTC().Format(time.RFC3339Nano)
+	// PostgreSQL stores timestamptz at microsecond precision; canonicalize here
+	// so a hash computed before insert still matches the persisted row.
+	timestamp := log.Timestamp.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
 	input := log.PreviousLogHash +
 		log.CompanyID.String() +
 		log.EntityType +

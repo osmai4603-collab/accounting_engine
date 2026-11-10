@@ -3,6 +3,7 @@ package subledgers
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,85 @@ func TestEventBridgeIdempotency(t *testing.T) {
 	}
 }
 
+func TestEventBridgeRejectsIdempotencyPayloadConflicts(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID := uuid.New()
+	debitID, creditID, journalID := uuid.New(), uuid.New(), uuid.New()
+	bridge := NewEventBridge(repo, &draftCreator{})
+	if err := bridge.RegisterMapping(SubledgerEventMapping{
+		CompanyID: companyID, EventType: "invoice_issued",
+		DebitAccountID: debitID, CreditAccountID: creditID, JournalID: journalID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	partnerID := uuid.New()
+	original := EconomicEvent{
+		CompanyID: companyID, IdempotencyKey: "payload-conflict", EventType: "invoice_issued",
+		Date:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		Amount: money(t, "100"), Values: map[string]financialtypes.Money{"net": money(t, "100")},
+		Attributes: map[string]string{"source": "billing"}, PartnerID: &partnerID, Reference: "INV-1",
+	}
+	first, err := bridge.Process(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := []struct {
+		name   string
+		mutate func(*EconomicEvent)
+	}{
+		{"amount", func(event *EconomicEvent) { event.Amount = money(t, "101") }},
+		{"currency", func(event *EconomicEvent) {
+			amount, err := financialtypes.NewMoneyFromString("100", "EUR")
+			if err != nil {
+				t.Fatal(err)
+			}
+			event.Amount = amount
+			event.Values["net"] = amount
+		}},
+		{"date", func(event *EconomicEvent) { event.Date = event.Date.AddDate(0, 0, 1) }},
+		{"value", func(event *EconomicEvent) { event.Values["net"] = money(t, "99") }},
+		{"attribute", func(event *EconomicEvent) { event.Attributes["source"] = "manual" }},
+		{"partner", func(event *EconomicEvent) { other := uuid.New(); event.PartnerID = &other }},
+		{"reference", func(event *EconomicEvent) { event.Reference = "INV-2" }},
+		{"account", func(*EconomicEvent) {
+			if err := bridge.RegisterMapping(SubledgerEventMapping{
+				CompanyID: companyID, EventType: "invoice_issued",
+				DebitAccountID: uuid.New(), CreditAccountID: creditID, JournalID: journalID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range changed {
+		t.Run(test.name, func(t *testing.T) {
+			event := original
+			event.Values = map[string]financialtypes.Money{"net": original.Values["net"]}
+			event.Attributes = map[string]string{"source": original.Attributes["source"]}
+			test.mutate(&event)
+			if _, err := bridge.Process(event); !errors.Is(err, ErrIdempotencyPayloadConflict) {
+				t.Fatalf("Process() error = %v, want payload conflict", err)
+			}
+		})
+	}
+	event := original
+	newBridge := NewEventBridge(repo, &draftCreator{})
+	if err := newBridge.RegisterMapping(SubledgerEventMapping{
+		CompanyID: companyID, EventType: "invoice_issued",
+		DebitAccountID: debitID, CreditAccountID: creditID, JournalID: journalID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	event.Amount = money(t, "99")
+	if _, err := newBridge.Process(event); !errors.Is(err, ErrIdempotencyPayloadConflict) {
+		t.Fatalf("persistent duplicate Process() error = %v, want payload conflict", err)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.drafts) != 1 || repo.drafts[first.ID].ID != first.ID {
+		t.Fatalf("conflicting duplicate created extra drafts: %d", len(repo.drafts))
+	}
+}
+
 func TestEventIdempotencyIsCompanyScoped(t *testing.T) {
 	repo := NewMemoryRepository()
 	bridge := NewEventBridge(repo, &draftCreator{})
@@ -74,6 +154,7 @@ func TestEventIdempotencyIsCompanyScoped(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+
 	}
 	event := EconomicEvent{CompanyID: companyA, IdempotencyKey: "event-1", EventType: "treasury_transfer", Amount: money(t, "10")}
 	first, err := bridge.Process(event)
@@ -87,6 +168,26 @@ func TestEventIdempotencyIsCompanyScoped(t *testing.T) {
 	}
 	if first.ID == second.ID {
 		t.Fatal("idempotency keys should not collide across companies")
+	}
+}
+
+func TestCompanySubledgerScopeCannotBeOverridden(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyA, companyB := uuid.New(), uuid.New()
+	service := NewService(repo, &draftCreator{}).ForCompany(companyA)
+	if service.Service == nil || service.CompanyID != companyA {
+		t.Fatal("ForCompany did not provide a scoped service")
+	}
+	if _, err := service.Receivables.AddInvoiceForCompany(
+		companyB, uuid.New(), money(t, "10"), time.Now(), time.Now(), "cross-company",
+	); !errors.Is(err, ErrCompanyMismatch) {
+		t.Fatalf("cross-company receivable error = %v, want company mismatch", err)
+	}
+	if err := service.EventBridge.RegisterMapping(SubledgerEventMapping{
+		CompanyID: companyB, EventType: "sale",
+		DebitAccountID: uuid.New(), CreditAccountID: uuid.New(), JournalID: uuid.New(),
+	}); !errors.Is(err, ErrCompanyMismatch) {
+		t.Fatalf("cross-company event mapping error = %v, want company mismatch", err)
 	}
 }
 
@@ -815,6 +916,12 @@ func TestDisposeAssetOnlyUpdatesAfterPosting(t *testing.T) {
 	if unchanged.DisposedAt != nil {
 		t.Fatal("disposal draft marked the asset as disposed")
 	}
+	if unchanged.PendingOperation != FixedAssetOperationDisposal || unchanged.PendingOperationEntryID != entry.ID {
+		t.Fatalf("disposal draft did not reserve the asset operation: %+v", unchanged)
+	}
+	if _, err := ledger.DisposeAsset(asset.ID, disposalDate, money(t, "9000"), uuid.New()); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("second pending disposal error = %v, want ErrAlreadyExists", err)
+	}
 
 	repo.mu.Lock()
 	posted := repo.drafts[entry.ID]
@@ -830,6 +937,71 @@ func TestDisposeAssetOnlyUpdatesAfterPosting(t *testing.T) {
 	}
 	if updated.DisposedAt == nil || !updated.DisposedAt.Equal(disposalDate) {
 		t.Fatalf("posted disposal did not mark the asset disposed: %+v", updated)
+	}
+	if updated.PendingOperation != "" || updated.PendingOperationEntryID != uuid.Nil {
+		t.Fatalf("confirmed disposal left a pending operation: %+v", updated)
+	}
+}
+
+func TestConcurrentDisposalDraftsReserveAssetOnce(t *testing.T) {
+	repo := NewMemoryRepository()
+	ledger := NewFixedAssetLedger(repo, &draftCreator{})
+	disposalDate := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: uuid.New(),
+		HistoricalCost: money(t, "10000"), SalvageValue: money(t, "0"),
+		AccumulatedDepreciation: money(t, "1000"), CurrentBookValue: money(t, "9000"),
+		UsefulLifeMonths: 10, Method: StraightLine, InServiceDate: disposalDate,
+		AssetAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
+		DisposalCashAccountID: uuid.New(),
+	}
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 8
+	proceeds := money(t, "9000")
+	start := make(chan struct{})
+	results := make(chan error, attempts)
+	var workers sync.WaitGroup
+	for range attempts {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			_, err := ledger.DisposeAsset(asset.ID, disposalDate, proceeds, uuid.New())
+			results <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAlreadyExists), errors.Is(err, ErrConcurrentAssetUpdate):
+		default:
+			t.Errorf("concurrent disposal returned unexpected error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful disposal drafts = %d, want exactly one", successes)
+	}
+
+	reserved, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.PendingOperation != FixedAssetOperationDisposal || reserved.PendingOperationEntryID == uuid.Nil {
+		t.Fatalf("asset was not reserved by the winning draft: %+v", reserved)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.drafts) != 1 {
+		t.Fatalf("concurrent disposal created %d drafts, want exactly one", len(repo.drafts))
 	}
 }
 

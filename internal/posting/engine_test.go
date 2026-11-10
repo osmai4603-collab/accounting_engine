@@ -198,12 +198,63 @@ func TestMakerChecker(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
+	if err := engine.Post(entry.CompanyID, entry.ID, ""); !errors.Is(err, financialtypes.ErrMakerCheckerViolation) {
+		t.Fatalf("expected empty poster identity to violate maker-checker, got %v", err)
+	}
 	if err := engine.Post(entry.CompanyID, entry.ID, "maker"); err != financialtypes.ErrMakerCheckerViolation {
 		t.Fatalf("expected maker-checker violation, got %v", err)
 	}
 	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestEntryContentHashIncludesApprovalRelevantContext(t *testing.T) {
+	entry := balancedEntry(t, "maker")
+	entry.CompanyID = uuid.New()
+	baseHash, err := EntryContentHash(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	variants := map[string]func(*JournalEntry){
+		"period":                   func(entry *JournalEntry) { entry.PeriodID = uuid.New() },
+		"adjustment authorization": func(entry *JournalEntry) { entry.AdjustmentAuthorized = true },
+		"original entry": func(entry *JournalEntry) {
+			originalID := uuid.New()
+			entry.OriginalEntryID = &originalID
+		},
+	}
+	for name, mutate := range variants {
+		t.Run(name, func(t *testing.T) {
+			changed := entry
+			mutate(&changed)
+			hash, err := EntryContentHash(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hash == baseHash {
+				t.Fatalf("content hash did not change after modifying %s", name)
+			}
+		})
+	}
+
+	posted := entry
+	posted.Status = EntryPosted
+	posted.SequenceNumber = 42
+	posted.PostedBy = "poster"
+	posted.PostedAt = timePointer(utcDate(t, 2026, 1, 16))
+	hash, err := EntryContentHash(posted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != baseHash {
+		t.Fatal("posting metadata changed the approval content hash")
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }
 
 func TestConcurrentSequences(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shopspring/decimal"
 )
 
 func (d *Driver) HasRole(ctx context.Context, companyID, userID uuid.UUID, role governance.Role) (bool, error) {
@@ -308,13 +310,20 @@ func (d *Driver) SaveApproval(ctx context.Context, request governance.ApprovalRe
 	}
 	return d.WithCompanyTx(ctx, request.CompanyID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO approval_requests(
-			id,company_id,entry_id,journal_type,creator_id,amount,currency,created_at,completed_at
-		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			id,company_id,entry_id,journal_type,creator_id,amount,currency,
+			functional_amount,functional_currency,entry_hash,created_at,completed_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT(company_id,id) DO UPDATE SET
 			completed_at=EXCLUDED.completed_at`,
 			request.ID, request.CompanyID, request.EntryID, request.JournalType, request.CreatorID,
-			request.Amount.Amount(), request.Amount.Currency(), request.CreatedAt, request.CompletedAt)
+			request.Amount.Amount(), request.Amount.Currency(),
+			request.FunctionalAmount.Amount(), request.FunctionalAmount.Currency(), request.EntryHash,
+			request.CreatedAt, request.CompletedAt)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return governance.ErrApprovalAlreadyExists
+			}
 			return err
 		}
 		for i, step := range request.Steps {
@@ -485,13 +494,15 @@ func nullableUUID(id *uuid.UUID) *uuid.UUID {
 func (d *Driver) GetApproval(ctx context.Context, companyID, approvalID uuid.UUID) (governance.ApprovalRequest, error) {
 	var request governance.ApprovalRequest
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
-		var amount string
-		var currency string
-		err := tx.QueryRow(ctx, `SELECT id,company_id,entry_id,journal_type,creator_id,amount::text,currency,created_at,completed_at
+		var amount, functionalAmount string
+		var currency, functionalCurrency string
+		err := tx.QueryRow(ctx, `SELECT id,company_id,entry_id,journal_type,creator_id,amount::text,currency,
+			functional_amount::text,functional_currency,entry_hash,created_at,completed_at
 			FROM approval_requests WHERE company_id=$1 AND id=$2`,
 			companyID, approvalID).Scan(
 			&request.ID, &request.CompanyID, &request.EntryID, &request.JournalType, &request.CreatorID,
-			&amount, &currency, &request.CreatedAt, &request.CompletedAt)
+			&amount, &currency, &functionalAmount, &functionalCurrency, &request.EntryHash,
+			&request.CreatedAt, &request.CompletedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return governance.ErrApprovalNotFound
 		}
@@ -499,6 +510,10 @@ func (d *Driver) GetApproval(ctx context.Context, companyID, approvalID uuid.UUI
 			return err
 		}
 		request.Amount, err = financialtypes.NewMoneyFromString(amount, currency)
+		if err != nil {
+			return err
+		}
+		request.FunctionalAmount, err = financialtypes.NewMoneyFromString(functionalAmount, functionalCurrency)
 		if err != nil {
 			return err
 		}
@@ -521,15 +536,50 @@ func (d *Driver) GetApproval(ctx context.Context, companyID, approvalID uuid.UUI
 	return request, err
 }
 
-func (d *Driver) IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID) (bool, error) {
+func (d *Driver) IsEntryApproved(ctx context.Context, companyID, entryID uuid.UUID, entryHash string) (bool, error) {
 	var approved bool
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM approval_requests
-			WHERE company_id=$1 AND entry_id=$2 AND completed_at IS NOT NULL
-		)`, companyID, entryID).Scan(&approved)
+			WHERE company_id=$1 AND entry_id=$2 AND completed_at IS NOT NULL AND entry_hash=$3
+		)`, companyID, entryID, entryHash).Scan(&approved)
 	})
 	return approved, err
+}
+
+// SetMakerCheckerThreshold configures the company-level maker-checker policy.
+func (d *Driver) SetMakerCheckerThreshold(ctx context.Context, companyID uuid.UUID, threshold decimal.Decimal) error {
+	if companyID == uuid.Nil || threshold.IsNegative() {
+		return governance.ErrInvalidApprovalRequest
+	}
+	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO governance_policies(company_id,maker_checker_threshold,updated_at)
+			VALUES($1,$2,now())
+			ON CONFLICT(company_id) DO UPDATE SET
+				maker_checker_threshold=EXCLUDED.maker_checker_threshold,updated_at=now()`,
+			companyID, threshold)
+		return err
+	})
+}
+
+// MakerCheckerThreshold returns the configured company threshold and whether a
+// policy row exists.
+func (d *Driver) MakerCheckerThreshold(ctx context.Context, companyID uuid.UUID) (decimal.Decimal, bool, error) {
+	var threshold decimal.Decimal
+	configured := false
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `SELECT maker_checker_threshold
+			FROM governance_policies WHERE company_id=$1`, companyID).Scan(&threshold)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		configured = true
+		return nil
+	})
+	return threshold, configured, err
 }
 
 func (d *Driver) RecordApproval(ctx context.Context, companyID, entryID, actorID uuid.UUID, role governance.Role, at time.Time) error {
@@ -759,7 +809,9 @@ func (d *Driver) CheckAccountVersionOverlap(ctx context.Context, version masterd
 
 var _ governance.AuthorizationRepository = (*Driver)(nil)
 var _ governance.ApprovalRepository = (*Driver)(nil)
+var _ governance.ApprovalEntryRepository = (*Driver)(nil)
 var _ governance.ApprovalAuditWriter = (*Driver)(nil)
+var _ posting.MakerCheckerPolicy = (*Driver)(nil)
 var _ governance.AuditExportRepository = (*Driver)(nil)
 var _ masterdata.CostCenterRepository = (*Driver)(nil)
 var _ masterdata.ContextCompanyScopedRepository = (*Driver)(nil)

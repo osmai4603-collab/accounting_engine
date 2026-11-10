@@ -11,10 +11,22 @@ import (
 )
 
 func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue financialtypes.Money, asOf time.Time) (posting.JournalEntry, error) {
+	return l.RevalueAssetContext(context.Background(), assetID, journalID, fairValue, asOf)
+}
+
+func (l *FixedAssetLedger) RevalueAssetContext(
+	ctx context.Context,
+	assetID, journalID uuid.UUID,
+	fairValue financialtypes.Money,
+	asOf time.Time,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -31,7 +43,7 @@ func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue 
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if err := l.saveAssetDraft(asset, entry); err != nil {
+	if err := l.saveAssetDraft(ctx, asset, entry); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	_ = updated
@@ -39,7 +51,19 @@ func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue 
 }
 
 func (l *FixedAssetLedger) ConfirmRevaluation(assetID, postedEntryID uuid.UUID, fairValue financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	return l.ConfirmRevaluationContext(context.Background(), assetID, postedEntryID, fairValue, asOf)
+}
+
+func (l *FixedAssetLedger) ConfirmRevaluationContext(
+	ctx context.Context,
+	assetID, postedEntryID uuid.UUID,
+	fairValue financialtypes.Money,
+	asOf time.Time,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return err
 	}
@@ -52,11 +76,11 @@ func (l *FixedAssetLedger) ConfirmRevaluation(assetID, postedEntryID uuid.UUID, 
 		Status: posting.EntryPosted, DocumentReference: revaluationReference(asset.ID, asOf),
 		Lines: lines,
 	}
-	return l.confirmAssetMutation(asset, updated, expectedEntry)
+	return l.confirmAssetMutation(ctx, asset, updated, expectedEntry)
 }
 
 func revaluationUpdate(asset FixedAsset, fairValue financialtypes.Money, asOf time.Time) (financialtypes.Money, FixedAsset, []posting.JournalEntryLine, error) {
-	if asset.DisposedAt != nil || asset.ID == uuid.Nil || asOf.IsZero() ||
+	if asset.DisposedAt != nil || asset.PendingOperation != "" || asset.ID == uuid.Nil || asOf.IsZero() ||
 		fairValue.Currency() != asset.CurrentBookValue.Currency() || fairValue.IsNegative() ||
 		(!asset.LastRevaluationDate.IsZero() && !asOf.After(asset.LastRevaluationDate)) ||
 		(!asset.LastDepreciationDate.IsZero() && asOf.Before(asset.LastDepreciationDate)) ||

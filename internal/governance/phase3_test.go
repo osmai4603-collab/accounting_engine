@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -27,6 +28,15 @@ func (r *auditExportRepositoryStub) GetDayFinalHash(context.Context, uuid.UUID, 
 
 func (r *auditExportRepositoryStub) VerifyDay(context.Context, uuid.UUID, time.Time) error {
 	return nil
+}
+
+type makerCheckerPolicyStub struct {
+	threshold  decimal.Decimal
+	configured bool
+}
+
+func (s makerCheckerPolicyStub) MakerCheckerThreshold(context.Context, uuid.UUID) (decimal.Decimal, bool, error) {
+	return s.threshold, s.configured, nil
 }
 
 type wormStorageStub struct {
@@ -65,6 +75,16 @@ func TestApprovalHierarchyEnforcesRoleOrderAndSeparation(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := NewMemoryApprovalRepository()
+	entry, err := posting.NewJournalEntry(uuid.New(), time.Now().UTC(), maker.String(), []posting.JournalEntryLine{
+		{ID: uuid.New(), AccountID: uuid.New(), Debit: amount},
+		{ID: uuid.New(), AccountID: uuid.New(), Credit: amount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.ID = entryID
+	entry.CompanyID = companyID
+	repository.SaveEntryForApproval(entry)
 	engine := NewApprovalEngine(repository, NewAuthorizer(authorizations), nil)
 	request, err := engine.Start(ctx, companyID, entryID, maker, "general", amount, time.Time{})
 	if err != nil {
@@ -130,6 +150,16 @@ func TestApprovalHierarchyUsesInclusiveUpperTierBoundary(t *testing.T) {
 	steps, err = engine.approvalSteps(aboveLimit, "general")
 	if err != nil || len(steps) != 3 {
 		t.Fatalf("approval steps above 500000 = %d, %v; want 3", len(steps), err)
+	}
+}
+
+func TestApprovalGateFailsClosedWhenPolicyHasNoApprovalRepository(t *testing.T) {
+	gate := &ApprovalGate{
+		policy: makerCheckerPolicyStub{threshold: decimal.NewFromInt(100), configured: true},
+	}
+	approved, err := gate.IsApproved(context.Background(), uuid.New(), uuid.New())
+	if approved || !errors.Is(err, ErrApprovalRepositoryRequired) {
+		t.Fatalf("approval gate result = %v, %v; want false and missing repository error", approved, err)
 	}
 }
 

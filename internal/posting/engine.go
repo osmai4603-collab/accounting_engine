@@ -35,6 +35,14 @@ type Engine struct {
 	MakerCheckerThreshold decimal.Decimal
 	dimensions            *FinancialDimensionsEngine
 	approvalGate          ApprovalGate
+	makerCheckerPolicy    MakerCheckerPolicy
+}
+
+// MakerCheckerPolicy exposes a company-level maker-checker threshold. The
+// boolean reports whether the company has configured a policy; an unconfigured
+// policy leaves the engine's explicit MakerCheckerThreshold in effect.
+type MakerCheckerPolicy interface {
+	MakerCheckerThreshold(ctx context.Context, companyID uuid.UUID) (decimal.Decimal, bool, error)
 }
 
 func NewEngine(repo Repository, masterData *masterdata.Service) *Engine {
@@ -47,6 +55,10 @@ func (e *Engine) SetFinancialDimensionsEngine(engine *FinancialDimensionsEngine)
 
 func (e *Engine) SetApprovalGate(gate ApprovalGate) {
 	e.approvalGate = gate
+}
+
+func (e *Engine) SetMakerCheckerPolicy(policy MakerCheckerPolicy) {
+	e.makerCheckerPolicy = policy
 }
 
 func (e *Engine) CreateDraft(entry JournalEntry) error {
@@ -340,7 +352,7 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			}
 		}
 	}
-	if err := e.checkMakerChecker(entry, posterID); err != nil {
+	if err := e.checkMakerChecker(ctx, entry, posterID); err != nil {
 		return err
 	}
 	return nil
@@ -366,25 +378,29 @@ func effectiveDate(entry *JournalEntry) time.Time {
 	return entry.Date
 }
 
-func (e *Engine) checkMakerChecker(entry *JournalEntry, posterID string) error {
-	if e.MakerCheckerThreshold.IsZero() || posterID == "" {
-		return nil
-	}
-	total := decimal.Zero
-	currency := ""
-	for _, line := range entry.Lines {
-		if line.Debit.Currency() != "" {
-			currency = line.Debit.Currency()
-			total = total.Add(line.Debit.Amount())
+func (e *Engine) checkMakerChecker(ctx context.Context, entry *JournalEntry, posterID string) error {
+	threshold := e.MakerCheckerThreshold
+	configured := !threshold.IsZero()
+	if e.makerCheckerPolicy != nil {
+		policyThreshold, policyConfigured, err := e.makerCheckerPolicy.MakerCheckerThreshold(ctx, entry.CompanyID)
+		if err != nil {
+			return err
 		}
-		if line.Credit.Currency() != "" && currency == "" {
-			currency = line.Credit.Currency()
+		if policyConfigured {
+			threshold, configured = policyThreshold, true
 		}
 	}
-	if !total.GreaterThan(e.MakerCheckerThreshold) {
+	if !configured {
 		return nil
 	}
-	if entry.CreatedBy == posterID {
+	total, err := EntryFunctionalTotal(*entry)
+	if err != nil {
+		return err
+	}
+	if !total.Amount().GreaterThan(threshold) {
+		return nil
+	}
+	if posterID == "" || entry.CreatedBy == posterID {
 		return financialtypes.ErrMakerCheckerViolation
 	}
 	return nil

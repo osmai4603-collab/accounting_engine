@@ -49,14 +49,17 @@ func (l *ReceivableLedger) AddInvoiceWithControl(partnerID, controlAccountID, jo
 }
 
 func (l *ReceivableLedger) AddInvoiceForCompany(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
-	if companyID == uuid.Nil {
-		return OpenLine{}, ErrInvalidOpenLine
+	if err := l.validateCompany(companyID); err != nil {
+		return OpenLine{}, err
 	}
 	return l.addInvoice(companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
 }
 
 func (l *ReceivableLedger) AddInvoiceForCompanyWithControl(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
-	if companyID == uuid.Nil || controlAccountID == uuid.Nil {
+	if err := l.validateCompany(companyID); err != nil {
+		return OpenLine{}, err
+	}
+	if controlAccountID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
 	return l.addInvoice(companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
@@ -70,7 +73,20 @@ func (l *ReceivableLedger) AddInvoiceFromPostedEntry(partnerID, controlAccountID
 }
 
 func (l *ReceivableLedger) AddInvoiceFromPostedEntryForCompany(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if err := l.validateCompany(companyID); err != nil {
+		return OpenLine{}, err
+	}
 	return addPostedInvoice(l.repo, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LineReceivable)
+}
+
+func (l *ReceivableLedger) validateCompany(companyID uuid.UUID) error {
+	if companyID == uuid.Nil {
+		return ErrCompanyScopeRequired
+	}
+	if l.companyID != uuid.Nil && l.companyID != companyID {
+		return ErrCompanyMismatch
+	}
+	return nil
 }
 
 func (l *ReceivableLedger) PostInvoiceEntry(

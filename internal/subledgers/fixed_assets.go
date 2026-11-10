@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -18,9 +20,15 @@ type FixedAssetLedger struct {
 	companyID uuid.UUID
 }
 
+const (
+	FixedAssetOperationDisposal   = "DISPOSAL"
+	FixedAssetOperationImpairment = "IMPAIRMENT"
+)
+
 type FixedAssetLedgerRepository interface {
 	FixedAssetRepository
 	AtomicFixedAssetDraftRepository
+	AtomicFixedAssetOperationDraftRepository
 	AtomicFixedAssetConfirmationRepository
 }
 
@@ -32,8 +40,18 @@ func NewFixedAssetLedgerForCompany(repo FixedAssetLedgerRepository, _ JournalCre
 	return &FixedAssetLedger{repo: repo, companyID: companyID}
 }
 func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
+	return l.RegisterAssetContext(context.Background(), asset)
+}
+
+func (l *FixedAssetLedger) RegisterAssetContext(ctx context.Context, asset FixedAsset) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if asset.CompanyID == uuid.Nil {
 		return ErrInvalidAsset
+	}
+	if l.companyID != uuid.Nil && asset.CompanyID != l.companyID {
+		return ErrCompanyMismatch
 	}
 	if asset.ID == uuid.Nil {
 		asset.ID = uuid.New()
@@ -146,7 +164,11 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 		}
 		asset.RemainingUsefulLifeMonths = int(months)
 	}
-	return l.repo.SaveFixedAsset(context.Background(), asset)
+	if (asset.PendingOperation == "") != (asset.PendingOperationEntryID == uuid.Nil) ||
+		(asset.PendingOperation != "" && asset.PendingOperation != "DISPOSAL" && asset.PendingOperation != "IMPAIRMENT") {
+		return ErrInvalidAsset
+	}
+	return l.repo.SaveFixedAsset(ctx, asset)
 }
 
 // DepreciationAttachment ينفذ تحديث سجل الأصل الثابت ذرياً
@@ -176,6 +198,111 @@ func (a *DepreciationAttachment) ValidateAttachment(ctx context.Context, entry p
 
 type FixedAssetMemoryStore interface {
 	SaveFixedAsset(ctx context.Context, asset FixedAsset) error
+}
+
+type FixedAssetOperationMemoryStore interface {
+	ApplyFixedAssetOperation(ctx context.Context, expected, updated FixedAsset, entry posting.JournalEntry) error
+}
+
+type fixedAssetOperationAttachment struct {
+	Expected FixedAsset
+	Updated  FixedAsset
+	Entry    posting.JournalEntry
+}
+
+func (a *fixedAssetOperationAttachment) AttachmentKind() string {
+	return "fixed_asset_operation"
+}
+
+func (a *fixedAssetOperationAttachment) ValidateAttachment(_ context.Context, entry posting.JournalEntry) error {
+	return ValidateFixedAssetOperationMutation(a.Expected, a.Updated, entry)
+}
+
+func (a *fixedAssetOperationAttachment) ExecuteAtomicMutation(
+	ctx context.Context,
+	tx posting.AtomicTransaction,
+	entry posting.JournalEntry,
+) error {
+	if entry.Status != posting.EntryPosted {
+		return ErrInvalidAsset
+	}
+	expectedEntry := a.Entry
+	expectedEntry.Status = posting.EntryPosted
+	if !FixedAssetEntryMatches(entry, expectedEntry) {
+		return ErrInvalidAsset
+	}
+	err := tx.CustomMutation(ctx, "memory", func(state any) error {
+		store, ok := state.(FixedAssetOperationMemoryStore)
+		if !ok {
+			return posting.ErrUnsupportedMutationBackend
+		}
+		return store.ApplyFixedAssetOperation(ctx, a.Expected, a.Updated, entry)
+	})
+	if err == nil || !errors.Is(err, posting.ErrUnsupportedMutationBackend) {
+		return err
+	}
+	expectedData, err := json.Marshal(a.Expected)
+	if err != nil {
+		return err
+	}
+	updatedData, err := json.Marshal(a.Updated)
+	if err != nil {
+		return err
+	}
+	var updatedID uuid.UUID
+	err = tx.QueryRow(ctx, `UPDATE fixed_assets SET asset_data=$1::jsonb
+		WHERE company_id=$2 AND id=$3 AND asset_data=$4::jsonb RETURNING id`,
+		updatedData, a.Expected.CompanyID, a.Expected.ID, expectedData).Scan(&updatedID)
+	if err != nil {
+		return errors.Join(ErrConcurrentAssetUpdate, err)
+	}
+	return nil
+}
+
+func ValidateFixedAssetOperationMutation(expected, updated FixedAsset, entry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil ||
+		updated.ID != expected.ID || updated.CompanyID != expected.CompanyID ||
+		expected.PendingOperationEntryID != entry.ID || entry.ID == uuid.Nil ||
+		entry.CompanyID != expected.CompanyID ||
+		(entry.Status != posting.EntryDraft && entry.Status != posting.EntryPosted) ||
+		updated.PendingOperation != "" || updated.PendingOperationEntryID != uuid.Nil {
+		return fmt.Errorf("%w: fixed-asset operation identities or pending state do not match the posted entry", ErrInvalidAsset)
+	}
+	switch expected.PendingOperation {
+	case FixedAssetOperationDisposal:
+		if updated.DisposedAt == nil || !strings.HasPrefix(entry.DocumentReference, disposalReferencePrefix(expected.ID)) {
+			return fmt.Errorf("%w: disposal operation metadata does not match the posted entry", ErrInvalidAsset)
+		}
+	case FixedAssetOperationImpairment:
+		if updated.DisposedAt != nil || !strings.HasPrefix(entry.DocumentReference, impairmentReferencePrefix(expected.ID)) {
+			return fmt.Errorf("%w: impairment operation metadata does not match the posted entry", ErrInvalidAsset)
+		}
+	default:
+		return ErrInvalidAsset
+	}
+	return nil
+}
+
+func ValidateFixedAssetOperationDraft(expected, updated FixedAsset, entry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil ||
+		updated.ID != expected.ID || updated.CompanyID != expected.CompanyID ||
+		expected.PendingOperation != "" || updated.PendingOperationEntryID != entry.ID ||
+		entry.ID == uuid.Nil || entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
+		return ErrInvalidAsset
+	}
+	switch updated.PendingOperation {
+	case FixedAssetOperationDisposal:
+		if !strings.HasPrefix(entry.DocumentReference, disposalReferencePrefix(expected.ID)) {
+			return ErrInvalidAsset
+		}
+	case FixedAssetOperationImpairment:
+		if !strings.HasPrefix(entry.DocumentReference, impairmentReferencePrefix(expected.ID)) {
+			return ErrInvalidAsset
+		}
+	default:
+		return ErrInvalidAsset
+	}
+	return nil
 }
 
 func (a *DepreciationAttachment) ExecuteAtomicMutation(ctx context.Context, tx posting.AtomicTransaction, entry posting.JournalEntry) error {
@@ -262,10 +389,21 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 
 // Deprecated: Use DepreciateAssetAtomic instead.
 func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, financialtypes.Money, error) {
+	return l.MonthlyDepreciationContext(context.Background(), assetID, journalID, asOf)
+}
+
+func (l *FixedAssetLedger) MonthlyDepreciationContext(
+	ctx context.Context,
+	assetID, journalID uuid.UUID,
+	asOf time.Time,
+) (posting.JournalEntry, financialtypes.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, financialtypes.Money{}, err
+	}
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
@@ -297,7 +435,7 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
-	if err := l.saveAssetDraft(asset, entry); err != nil {
+	if err := l.saveAssetDraft(ctx, asset, entry); err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
 	return entry, expense, nil
@@ -305,7 +443,19 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 
 // Deprecated: Use DepreciateAssetAtomic instead.
 func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID, depAmount financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	return l.ConfirmDepreciationContext(context.Background(), assetID, postedEntryID, depAmount, asOf)
+}
+
+func (l *FixedAssetLedger) ConfirmDepreciationContext(
+	ctx context.Context,
+	assetID, postedEntryID uuid.UUID,
+	depAmount financialtypes.Money,
+	asOf time.Time,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return err
 	}
@@ -336,7 +486,7 @@ func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID,
 		Status: posting.EntryPosted, DocumentReference: depreciationReference(asset.ID, asOf),
 		Lines: lines,
 	}
-	return l.confirmAssetMutation(asset, updated, expectedEntry)
+	return l.confirmAssetMutation(ctx, asset, updated, expectedEntry)
 }
 
 func depreciationUpdate(asset FixedAsset, asOf time.Time) (financialtypes.Money, FixedAsset, error) {
@@ -588,7 +738,20 @@ func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) 
 }
 
 func (l *FixedAssetLedger) PostImpairment(assetID uuid.UUID, recoverableAmount financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	return l.PostImpairmentContext(context.Background(), assetID, recoverableAmount, journalID, asOf)
+}
+
+func (l *FixedAssetLedger) PostImpairmentContext(
+	ctx context.Context,
+	assetID uuid.UUID,
+	recoverableAmount financialtypes.Money,
+	journalID uuid.UUID,
+	asOf time.Time,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -603,19 +766,35 @@ func (l *FixedAssetLedger) PostImpairment(assetID uuid.UUID, recoverableAmount f
 	if loss.Amount().IsZero() {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	return l.ImpairAsset(assetID, loss, journalID, asOf)
+	return l.ImpairAssetContext(ctx, assetID, loss, journalID, asOf)
 }
 
 func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
+	return l.ImpairAssetContext(context.Background(), assetID, loss, journalID, asOf)
+}
+
+func (l *FixedAssetLedger) ImpairAssetContext(
+	ctx context.Context,
+	assetID uuid.UUID,
+	loss financialtypes.Money,
+	journalID uuid.UUID,
+	asOf time.Time,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	if asset.DisposedAt != nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	if asset.PendingOperation != "" {
+		return posting.JournalEntry{}, ErrAlreadyExists
 	}
 	if loss.Currency() != asset.CurrentBookValue.Currency() || loss.Amount().IsNegative() || loss.Amount().IsZero() ||
 		loss.GreaterThan(asset.CurrentBookValue) {
@@ -645,7 +824,7 @@ func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Mo
 		EntryDate:         asOf,
 		Date:              asOf,
 		Status:            posting.EntryDraft,
-		DocumentReference: impairmentReference(asset.ID, entryID),
+		DocumentReference: impairmentReference(asset.ID, asOf),
 		CreatedAt:         time.Now().UTC(),
 		Lines: []posting.JournalEntryLine{
 			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: expenseAccount, Debit: loss, Credit: zero},
@@ -658,22 +837,39 @@ func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Mo
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if err := l.saveAssetDraft(asset, entry); err != nil {
+	if err := l.saveAssetOperationDraft(ctx, asset, entry, "IMPAIRMENT"); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	return entry, nil
 }
 
-func impairmentReference(assetID, entryID uuid.UUID) string {
-	return "FIXED_ASSET:IMPAIRMENT:" + assetID.String() + ":" + entryID.String()
+func impairmentReferencePrefix(assetID uuid.UUID) string {
+	return "FIXED_ASSET:IMPAIRMENT:" + assetID.String() + ":"
+}
+
+func impairmentReference(assetID uuid.UUID, asOf time.Time) string {
+	return impairmentReferencePrefix(assetID) + asOf.UTC().Format("2006-01")
 }
 
 func (l *FixedAssetLedger) ConfirmImpairment(assetID, postedEntryID uuid.UUID, loss financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	return l.ConfirmImpairmentContext(context.Background(), assetID, postedEntryID, loss, asOf)
+}
+
+func (l *FixedAssetLedger) ConfirmImpairmentContext(
+	ctx context.Context,
+	assetID, postedEntryID uuid.UUID,
+	loss financialtypes.Money,
+	asOf time.Time,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return err
 	}
-	if asset.DisposedAt != nil || loss.Currency() != asset.CurrentBookValue.Currency() ||
+	if asset.DisposedAt != nil || asset.PendingOperation != "IMPAIRMENT" ||
+		asset.PendingOperationEntryID != postedEntryID || loss.Currency() != asset.CurrentBookValue.Currency() ||
 		loss.Amount().IsNegative() || loss.Amount().IsZero() || loss.GreaterThan(asset.CurrentBookValue) {
 		return ErrInvalidAsset
 	}
@@ -696,19 +892,36 @@ func (l *FixedAssetLedger) ConfirmImpairment(assetID, postedEntryID uuid.UUID, l
 	if err != nil {
 		return err
 	}
-	return l.confirmAssetMutation(asset, updated, expectedEntry)
+	clearPendingAssetOperation(&updated)
+	return l.confirmAssetMutation(ctx, asset, updated, expectedEntry)
 }
 
 func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money, journalID uuid.UUID) (posting.JournalEntry, error) {
+	return l.DisposeAssetContext(context.Background(), assetID, disposalDate, proceeds, journalID)
+}
+
+func (l *FixedAssetLedger) DisposeAssetContext(
+	ctx context.Context,
+	assetID uuid.UUID,
+	disposalDate time.Time,
+	proceeds financialtypes.Money,
+	journalID uuid.UUID,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	if asset.DisposedAt != nil || proceeds.Currency() != asset.HistoricalCost.Currency() || proceeds.IsNegative() {
 		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	if asset.PendingOperation != "" {
+		return posting.JournalEntry{}, ErrAlreadyExists
 	}
 	lines, err := disposalLines(asset, proceeds)
 	if err != nil {
@@ -718,12 +931,12 @@ func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Tim
 	entry := posting.JournalEntry{
 		ID: entryID, CompanyID: asset.CompanyID, JournalID: journalID,
 		EntryDate: disposalDate, Date: disposalDate, Status: posting.EntryDraft,
-		DocumentReference: disposalReference(asset.ID, entryID), CreatedAt: time.Now().UTC(), Lines: lines,
+		DocumentReference: disposalReference(asset.ID, disposalDate), CreatedAt: time.Now().UTC(), Lines: lines,
 	}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if err := l.saveAssetDraft(asset, entry); err != nil {
+	if err := l.saveAssetOperationDraft(ctx, asset, entry, "DISPOSAL"); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	return entry, nil
@@ -781,16 +994,34 @@ func disposalLines(asset FixedAsset, proceeds financialtypes.Money) ([]posting.J
 	return lines, nil
 }
 
-func disposalReference(assetID, entryID uuid.UUID) string {
-	return "FIXED_ASSET:DISPOSAL:" + assetID.String() + ":" + entryID.String()
+func disposalReferencePrefix(assetID uuid.UUID) string {
+	return "FIXED_ASSET:DISPOSAL:" + assetID.String() + ":"
+}
+
+func disposalReference(assetID uuid.UUID, disposalDate time.Time) string {
+	return disposalReferencePrefix(assetID) + disposalDate.UTC().Format("2006-01-02")
 }
 
 func (l *FixedAssetLedger) ConfirmDisposal(assetID, postedEntryID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money) error {
-	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
+	return l.ConfirmDisposalContext(context.Background(), assetID, postedEntryID, disposalDate, proceeds)
+}
+
+func (l *FixedAssetLedger) ConfirmDisposalContext(
+	ctx context.Context,
+	assetID, postedEntryID uuid.UUID,
+	disposalDate time.Time,
+	proceeds financialtypes.Money,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
 	if err != nil {
 		return err
 	}
-	if asset.DisposedAt != nil || proceeds.Currency() != asset.HistoricalCost.Currency() || proceeds.IsNegative() {
+	if asset.DisposedAt != nil || asset.PendingOperation != "DISPOSAL" ||
+		asset.PendingOperationEntryID != postedEntryID ||
+		proceeds.Currency() != asset.HistoricalCost.Currency() || proceeds.IsNegative() {
 		return ErrInvalidAsset
 	}
 	lines, err := disposalLines(asset, proceeds)
@@ -800,11 +1031,129 @@ func (l *FixedAssetLedger) ConfirmDisposal(assetID, postedEntryID uuid.UUID, dis
 	disposedAt := disposalDate.UTC()
 	updated := asset
 	updated.DisposedAt = &disposedAt
+	clearPendingAssetOperation(&updated)
 	expectedEntry := posting.JournalEntry{
 		ID: postedEntryID, CompanyID: asset.CompanyID, EntryDate: disposalDate, Date: disposalDate,
-		Status: posting.EntryPosted, DocumentReference: disposalReference(asset.ID, postedEntryID), Lines: lines,
+		Status: posting.EntryPosted, DocumentReference: disposalReference(asset.ID, disposalDate), Lines: lines,
 	}
-	return l.confirmAssetMutation(asset, updated, expectedEntry)
+	return l.confirmAssetMutation(ctx, asset, updated, expectedEntry)
+}
+
+func (l *FixedAssetLedger) DisposeAssetAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID uuid.UUID,
+	disposalDate time.Time,
+	proceeds financialtypes.Money,
+	journalID uuid.UUID,
+	posterID string,
+) (posting.JournalEntry, error) {
+	entry, err := l.DisposeAssetContext(ctx, assetID, disposalDate, proceeds, journalID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	expected, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return entry, err
+	}
+	updated := expected
+	disposedAt := disposalDate.UTC()
+	updated.DisposedAt = &disposedAt
+	finishFixedAssetOperation(&updated, entry.ID)
+	if err := postFixedAssetOperation(ctx, engine, &entry, expected, updated, posterID); err != nil {
+		return entry, err
+	}
+	return entry, nil
+}
+
+func (l *FixedAssetLedger) ImpairAssetAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID uuid.UUID,
+	loss financialtypes.Money,
+	journalID uuid.UUID,
+	asOf time.Time,
+	posterID string,
+) (posting.JournalEntry, error) {
+	entry, err := l.ImpairAssetContext(ctx, assetID, loss, journalID, asOf)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	expected, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return entry, err
+	}
+	updated := expected
+	updated.CurrentBookValue, err = expected.CurrentBookValue.Subtract(loss)
+	if err != nil {
+		return entry, err
+	}
+	if updated.AccumulatedImpairment.Currency() == "" {
+		updated.AccumulatedImpairment, err = financialtypes.Zero(loss.Currency())
+		if err != nil {
+			return entry, err
+		}
+	}
+	updated.AccumulatedImpairment, err = updated.AccumulatedImpairment.Add(loss)
+	if err != nil {
+		return entry, err
+	}
+	finishFixedAssetOperation(&updated, entry.ID)
+	if err := postFixedAssetOperation(ctx, engine, &entry, expected, updated, posterID); err != nil {
+		return entry, err
+	}
+	return entry, nil
+}
+
+func (l *FixedAssetLedger) PostImpairmentAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID uuid.UUID,
+	recoverableAmount financialtypes.Money,
+	journalID uuid.UUID,
+	asOf time.Time,
+	posterID string,
+) (posting.JournalEntry, error) {
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if asset.DisposedAt != nil || recoverableAmount.Currency() != asset.CurrentBookValue.Currency() ||
+		recoverableAmount.IsNegative() || recoverableAmount.GreaterThan(asset.CurrentBookValue) {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	loss, err := asset.CurrentBookValue.Subtract(recoverableAmount)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if loss.Amount().IsZero() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	return l.ImpairAssetAtomic(ctx, engine, assetID, loss, journalID, asOf, posterID)
+}
+
+func postFixedAssetOperation(
+	ctx context.Context,
+	engine *posting.Engine,
+	entry *posting.JournalEntry,
+	expected, updated FixedAsset,
+	posterID string,
+) error {
+	if engine == nil {
+		return posting.ErrInvalidEntry
+	}
+	attachment := &fixedAssetOperationAttachment{Expected: expected, Updated: updated, Entry: *entry}
+	return engine.PostEntryWithAttachmentContext(ctx, entry, posterID, attachment)
+}
+
+func finishFixedAssetOperation(asset *FixedAsset, entryID uuid.UUID) {
+	clearPendingAssetOperation(asset)
+	asset.AppliedEntryIDs = append(append([]uuid.UUID(nil), asset.AppliedEntryIDs...), entryID)
+}
+
+func clearPendingAssetOperation(asset *FixedAsset) {
+	asset.PendingOperation = ""
+	asset.PendingOperationEntryID = uuid.Nil
 }
 
 func impairmentEntry(asset FixedAsset, entryID uuid.UUID, loss financialtypes.Money, asOf time.Time) (posting.JournalEntry, error) {
@@ -828,7 +1177,7 @@ func impairmentEntry(asset FixedAsset, entryID uuid.UUID, loss financialtypes.Mo
 	}
 	return posting.JournalEntry{
 		CompanyID: asset.CompanyID, ID: entryID, EntryDate: asOf, Date: asOf,
-		Status: posting.EntryPosted, DocumentReference: impairmentReference(asset.ID, entryID),
+		Status: posting.EntryPosted, DocumentReference: impairmentReference(asset.ID, asOf),
 		Lines: []posting.JournalEntryLine{
 			{CompanyID: asset.CompanyID, AccountID: expenseAccount, Debit: loss, Credit: zero},
 			{CompanyID: asset.CompanyID, AccountID: accumulatedAccount, Debit: zero, Credit: loss},
@@ -836,16 +1185,35 @@ func impairmentEntry(asset FixedAsset, entryID uuid.UUID, loss financialtypes.Mo
 	}, nil
 }
 
-func (l *FixedAssetLedger) saveAssetDraft(expected FixedAsset, entry posting.JournalEntry) error {
-	return l.repo.SaveFixedAssetDraft(context.Background(), expected, entry)
+func (l *FixedAssetLedger) saveAssetDraft(ctx context.Context, expected FixedAsset, entry posting.JournalEntry) error {
+	return l.repo.SaveFixedAssetDraft(ctx, expected, entry)
 }
 
-func (l *FixedAssetLedger) confirmAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error {
+func (l *FixedAssetLedger) saveAssetOperationDraft(
+	ctx context.Context,
+	expected FixedAsset,
+	entry posting.JournalEntry,
+	operation string,
+) error {
+	if expected.PendingOperation != "" || (operation != FixedAssetOperationDisposal && operation != FixedAssetOperationImpairment) {
+		return ErrAlreadyExists
+	}
+	updated := expected
+	updated.PendingOperation = operation
+	updated.PendingOperationEntryID = entry.ID
+	return l.repo.SaveFixedAssetOperationDraft(ctx, expected, updated, entry)
+}
+
+func (l *FixedAssetLedger) confirmAssetMutation(
+	ctx context.Context,
+	expected, updated FixedAsset,
+	expectedEntry posting.JournalEntry,
+) error {
 	for _, appliedID := range expected.AppliedEntryIDs {
 		if appliedID == expectedEntry.ID {
 			return ErrAlreadyExists
 		}
 	}
 	updated.AppliedEntryIDs = append(append([]uuid.UUID(nil), expected.AppliedEntryIDs...), expectedEntry.ID)
-	return l.repo.ConfirmFixedAssetMutation(context.Background(), expected, updated, expectedEntry)
+	return l.repo.ConfirmFixedAssetMutation(ctx, expected, updated, expectedEntry)
 }

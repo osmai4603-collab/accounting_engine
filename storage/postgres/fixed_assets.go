@@ -37,6 +37,25 @@ func (d *Driver) SaveFixedAsset(ctx context.Context, asset subledgers.FixedAsset
 }
 
 func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+	return d.saveFixedAssetDraft(ctx, expected, expected, entry)
+}
+
+func (d *Driver) SaveFixedAssetOperationDraft(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+	entry posting.JournalEntry,
+) error {
+	if err := subledgers.ValidateFixedAssetOperationDraft(expected, updated, entry); err != nil {
+		return err
+	}
+	return d.saveFixedAssetDraft(ctx, expected, updated, entry)
+}
+
+func (d *Driver) saveFixedAssetDraft(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+	entry posting.JournalEntry,
+) error {
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
 		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return subledgers.ErrInvalidAsset
@@ -63,9 +82,13 @@ func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.Fi
 	if !reflect.DeepEqual(current, expected) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
-		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
-		var exists bool
+	if expected.PendingOperation != "" || (updated.PendingOperation != "" &&
+		(updated.PendingOperationEntryID != entry.ID ||
+			(updated.PendingOperation != "DISPOSAL" && updated.PendingOperation != "IMPAIRMENT"))) {
+		return subledgers.ErrAlreadyExists
+	}
+	var exists bool
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:") {
 		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (
 				SELECT 1 FROM account_moves
@@ -81,6 +104,21 @@ func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.Fi
 	}
 	if err := d.saveEntryTx(ctx, tx, entry); err != nil {
 		return err
+	}
+	if updated.PendingOperation != "" {
+		updatedData, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE fixed_assets SET asset_data=$3 WHERE company_id=$1 AND id=$2`,
+			updated.CompanyID, updated.ID, updatedData)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return subledgers.ErrConcurrentAssetUpdate
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -112,6 +150,11 @@ func (d *Driver) ConfirmFixedAssetMutation(ctx context.Context, expected, update
 		return err
 	}
 	if !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+	if expected.PendingOperation != "" &&
+		(expected.PendingOperationEntryID != expectedEntry.ID ||
+			updated.PendingOperation != "" || updated.PendingOperationEntryID != uuid.Nil) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
 

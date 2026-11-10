@@ -69,7 +69,8 @@ func scanAccount(row pgx.Row) (masterdata.Account, error) {
 
 func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) error {
 	return d.WithCompanyTx(ctx, account.CompanyID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		var inserted bool
+		err := tx.QueryRow(ctx,
 			`INSERT INTO accounts (
 			id, company_id, code, name, account_type, normal_balance, currency_id, parent_id,
 			is_reconcilable, is_control_account, is_contra_account, is_active, requires_cost_center, is_cash_equivalent, is_non_cash_adjustment,
@@ -86,7 +87,8 @@ func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) 
 			is_non_cash_adjustment=EXCLUDED.is_non_cash_adjustment,
 			cash_flow_activity=EXCLUDED.cash_flow_activity,
 			sub_classification=EXCLUDED.sub_classification, ifrs_category=EXCLUDED.ifrs_category,
-			display_order=EXCLUDED.display_order, updated_at=EXCLUDED.updated_at`,
+			display_order=EXCLUDED.display_order, updated_at=EXCLUDED.updated_at
+		RETURNING (xmax = 0)`,
 			account.ID, account.CompanyID, account.Code, account.Name, account.AccountType, account.NormalBalance,
 			nullableString(account.CurrencyID, "SAR"), account.ParentID, account.IsReconcilable,
 			account.IsControlAccount, account.IsContraAccount, account.IsActive, account.RequiresCostCenter,
@@ -94,8 +96,15 @@ func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) 
 			nullableString(account.CashFlowActivity, "unclassified"),
 			nullableString(account.SubClassification, "unclassified"),
 			nullableString(account.IFRSCategory, "unclassified"), account.DisplayOrder,
-			defaultTime(account.CreatedAt), defaultTime(account.UpdatedAt))
-		return err
+			defaultTime(account.CreatedAt), defaultTime(account.UpdatedAt)).Scan(&inserted)
+		if err != nil {
+			return err
+		}
+		action := "ACCOUNT_UPDATED"
+		if inserted {
+			action = "ACCOUNT_CREATED"
+		}
+		return appendEntityAuditTx(ctx, tx, account.CompanyID, "account", account.ID, action, uuid.Nil, nil, account)
 	})
 }
 
@@ -349,7 +358,15 @@ func (d *Driver) UpdateFiscalYearState(ctx context.Context, companyID, id uuid.U
 			 year_data=jsonb_set(year_data,'{State}',to_jsonb($3::varchar),TRUE)
 			 WHERE company_id=$1 AND id=$2`,
 			companyID, id, state, state == masterdata.FiscalYearHardClosed)
-		return err
+		if err != nil {
+			return err
+		}
+		action := "FISCAL_YEAR_STATE_CHANGED"
+		if state == masterdata.FiscalYearHardClosed {
+			action = "FISCAL_YEAR_CLOSED"
+		}
+		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_year", id, action, uuid.Nil,
+			map[string]any{"state": current}, map[string]any{"state": state})
 	})
 }
 

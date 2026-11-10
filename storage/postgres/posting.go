@@ -388,6 +388,26 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if err := entry.Validate(); err != nil {
 		return err
 	}
+	if entry.PeriodID == uuid.Nil {
+		if entry.Status == posting.EntryPosted {
+			return posting.ErrInvalidEntry
+		}
+		entryDate := entry.EntryDate
+		if entryDate.IsZero() {
+			entryDate = entry.Date
+		}
+		err := tx.QueryRow(ctx, `SELECT id FROM fiscal_periods
+			WHERE company_id=$1 AND start_date <= $2 AND end_date >= $2
+			  AND period_type=$3
+			ORDER BY period_number ASC LIMIT 1`,
+			entry.CompanyID, entryDate, masterdata.FiscalPeriodTypeNormal).Scan(&entry.PeriodID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		if err != nil {
+			return err
+		}
+	}
 	var companyFunctionalCurrency string
 	if err := tx.QueryRow(ctx,
 		`SELECT functional_currency FROM companies WHERE id=$1`, entry.CompanyID,
@@ -423,7 +443,11 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		if result.RowsAffected() != 1 {
 			return posting.ErrEntryNotDraft
 		}
-		return nil
+		action := "POST"
+		if entry.Status == posting.EntryReversed {
+			action = "REVERSE"
+		}
+		return appendEntryAuditTx(ctx, tx, entry, action)
 	}
 	if entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
@@ -662,6 +686,13 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 				return err
 			}
 			return &posting.BulkPostError{Index: posted[0], EntryID: entries[posted[0]].ID, Err: posting.ErrEntryNotDraft}
+		}
+		postedEntries := make([]posting.JournalEntry, len(posted))
+		for k, idx := range posted {
+			postedEntries[k] = entries[idx]
+		}
+		if err := appendEntryAuditBatchTx(ctx, tx, postedEntries, "POST"); err != nil {
+			return &posting.BulkPostError{Index: posted[0], EntryID: entries[posted[0]].ID, Err: err}
 		}
 	}
 

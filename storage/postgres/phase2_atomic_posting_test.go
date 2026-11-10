@@ -335,6 +335,106 @@ func TestT2_1_AtomicAssetDepreciationPostgres(t *testing.T) {
 	}
 }
 
+func TestPhase3_AtomicAssetDisposalAndImpairmentPostgres(t *testing.T) {
+	ctx, driver, _, engine, companyID, journalID, assetAcc, accumAcc := setupPostgresPostingEnv(t)
+	defer driver.Close()
+
+	cost, _ := financialtypes.NewMoneyFromString("10000", "USD")
+	accumulated, _ := financialtypes.NewMoneyFromString("1000", "USD")
+	bookValue, _ := cost.Subtract(accumulated)
+	zero, _ := financialtypes.Zero("USD")
+	asOf := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	ledger := subledgers.NewFixedAssetLedgerForCompany(driver, nil, companyID)
+	disposalAssetID := uuid.New()
+	if err := ledger.RegisterAssetContext(ctx, subledgers.FixedAsset{
+		CompanyID: companyID, ID: disposalAssetID,
+		HistoricalCost: cost, SalvageValue: zero, AccumulatedDepreciation: accumulated,
+		CurrentBookValue: bookValue, UsefulLifeMonths: 24, Method: subledgers.StraightLine,
+		InServiceDate:  asOf.AddDate(-1, 0, 0),
+		AssetAccountID: assetAcc, AccumulatedAccountID: accumAcc,
+		ExpenseAccountID: accumAcc, DisposalCashAccountID: assetAcc,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	disposal, err := ledger.DisposeAssetAtomic(ctx, engine, disposalAssetID, asOf, bookValue, journalID, "poster")
+	if err != nil {
+		t.Fatalf("DisposeAssetAtomic: %v", err)
+	}
+	if disposal.Status != posting.EntryPosted {
+		t.Fatalf("disposal status = %s, want posted", disposal.Status)
+	}
+	disposed, err := driver.GetFixedAsset(ctx, companyID, disposalAssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disposed.DisposedAt == nil || !disposed.DisposedAt.Equal(asOf) ||
+		disposed.PendingOperation != "" || disposed.PendingOperationEntryID != uuid.Nil {
+		t.Fatalf("disposal did not atomically finalize asset: %+v", disposed)
+	}
+
+	impairmentAssetID := uuid.New()
+	if err := ledger.RegisterAssetContext(ctx, subledgers.FixedAsset{
+		CompanyID: companyID, ID: impairmentAssetID,
+		HistoricalCost: cost, SalvageValue: zero, AccumulatedDepreciation: accumulated,
+		CurrentBookValue: bookValue, UsefulLifeMonths: 24, Method: subledgers.StraightLine,
+		InServiceDate:  asOf.AddDate(-1, 0, 0),
+		AssetAccountID: assetAcc, AccumulatedAccountID: accumAcc, ExpenseAccountID: accumAcc,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loss, _ := financialtypes.NewMoneyFromString("500", "USD")
+	impairment, err := ledger.ImpairAssetAtomic(ctx, engine, impairmentAssetID, loss, journalID, asOf, "poster")
+	if err != nil {
+		t.Fatalf("ImpairAssetAtomic: %v", err)
+	}
+	if impairment.Status != posting.EntryPosted {
+		t.Fatalf("impairment status = %s, want posted", impairment.Status)
+	}
+	impaired, err := driver.GetFixedAsset(ctx, companyID, impairmentAssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBook, _ := bookValue.Subtract(loss)
+	if !impaired.CurrentBookValue.Equal(expectedBook) ||
+		!impaired.AccumulatedImpairment.Equal(loss) ||
+		impaired.PendingOperation != "" || impaired.PendingOperationEntryID != uuid.Nil {
+		t.Fatalf("impairment did not atomically update asset: %+v", impaired)
+	}
+}
+
+func TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres(t *testing.T) {
+	ctx, driver, _, _, companyID, journalID, debitAccountID, creditAccountID := setupPostgresPostingEnv(t)
+	defer driver.Close()
+
+	bridge := subledgers.NewEventBridge(driver, nil)
+	if err := bridge.RegisterMapping(subledgers.SubledgerEventMapping{
+		CompanyID: companyID, EventType: "invoice_issued",
+		DebitAccountID: debitAccountID, CreditAccountID: creditAccountID, JournalID: journalID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := financialtypes.NewMoneyFromString("200", "USD")
+	event := subledgers.EconomicEvent{
+		CompanyID: companyID, IdempotencyKey: uuid.NewString(), EventType: "invoice_issued",
+		Date:   time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+		Amount: amount, Reference: "INV-IDEMPOTENT",
+		Attributes: map[string]string{"source": "integration"},
+	}
+	first, err := bridge.ProcessContext(ctx, event)
+	if err != nil {
+		t.Fatalf("process economic event: %v", err)
+	}
+	second, err := bridge.ProcessContext(ctx, event)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("replayed event = %s, %v; want original entry %s", second.ID, err, first.ID)
+	}
+	otherBridge := subledgers.NewEventBridge(driver, nil)
+	event.Amount, _ = financialtypes.NewMoneyFromString("201", "USD")
+	if _, err := otherBridge.ProcessContext(ctx, event); !errors.Is(err, subledgers.ErrIdempotencyPayloadConflict) {
+		t.Fatalf("conflicting persistent replay error = %v, want payload conflict", err)
+	}
+}
+
 func TestT2_2_FailedPostingRollsBackPostgres(t *testing.T) {
 	ctx, driver, _, engine, companyID, journalID, assetAcc, accumAcc := setupPostgresPostingEnv(t)
 	defer driver.Close()

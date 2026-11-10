@@ -118,6 +118,71 @@ func TestT2_1_AtomicAssetDepreciationInMemory(t *testing.T) {
 	}
 }
 
+func TestPhase3_AtomicAssetDisposalAndImpairmentInMemory(t *testing.T) {
+	driver, _, engine, companyID, journalID, assetAcc, accumAcc := setupMemorySubledgerEnv(t)
+	ctx := context.Background()
+	cost, _ := financialtypes.NewMoneyFromString("10000", "USD")
+	accumulated, _ := financialtypes.NewMoneyFromString("1000", "USD")
+	bookValue, _ := cost.Subtract(accumulated)
+	zero, _ := financialtypes.Zero("USD")
+	disposalDate := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+
+	disposalAssetID := uuid.New()
+	disposalAsset := subledgers.FixedAsset{
+		CompanyID: companyID, ID: disposalAssetID, HistoricalCost: cost, SalvageValue: zero,
+		AccumulatedDepreciation: accumulated, CurrentBookValue: bookValue,
+		UsefulLifeMonths: 24, Method: subledgers.StraightLine,
+		InServiceDate:  disposalDate.AddDate(-1, 0, 0),
+		AssetAccountID: assetAcc, AccumulatedAccountID: accumAcc,
+		ExpenseAccountID: accumAcc, DisposalCashAccountID: assetAcc,
+	}
+	ledger := subledgers.NewFixedAssetLedgerForCompany(driver, nil, companyID)
+	if err := ledger.RegisterAssetContext(ctx, disposalAsset); err != nil {
+		t.Fatal(err)
+	}
+	disposal, err := ledger.DisposeAssetAtomic(ctx, engine, disposalAssetID, disposalDate, bookValue, journalID, "poster")
+	if err != nil {
+		t.Fatalf("DisposeAssetAtomic: %v", err)
+	}
+	if disposal.Status != posting.EntryPosted {
+		t.Fatalf("disposal status = %s, want posted", disposal.Status)
+	}
+	disposed, err := driver.GetFixedAsset(ctx, companyID, disposalAssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disposed.DisposedAt == nil || !disposed.DisposedAt.Equal(disposalDate) ||
+		disposed.PendingOperation != "" || disposed.PendingOperationEntryID != uuid.Nil {
+		t.Fatalf("disposal did not atomically finalize asset: %+v", disposed)
+	}
+
+	impairmentAssetID := uuid.New()
+	impairmentAsset := disposalAsset
+	impairmentAsset.ID = impairmentAssetID
+	impairmentAsset.DisposedAt = nil
+	if err := ledger.RegisterAssetContext(ctx, impairmentAsset); err != nil {
+		t.Fatal(err)
+	}
+	loss, _ := financialtypes.NewMoneyFromString("500", "USD")
+	impairment, err := ledger.ImpairAssetAtomic(ctx, engine, impairmentAssetID, loss, journalID, disposalDate, "poster")
+	if err != nil {
+		t.Fatalf("ImpairAssetAtomic: %v", err)
+	}
+	if impairment.Status != posting.EntryPosted {
+		t.Fatalf("impairment status = %s, want posted", impairment.Status)
+	}
+	impaired, err := driver.GetFixedAsset(ctx, companyID, impairmentAssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBook, _ := bookValue.Subtract(loss)
+	if !impaired.CurrentBookValue.Equal(expectedBook) ||
+		!impaired.AccumulatedImpairment.Equal(loss) ||
+		impaired.PendingOperation != "" || impaired.PendingOperationEntryID != uuid.Nil {
+		t.Fatalf("impairment did not atomically update asset: %+v", impaired)
+	}
+}
+
 func TestT2_3_AtomicReceivableWriteOffInMemory(t *testing.T) {
 	driver, _, engine, companyID, journalID, controlAcc, adjAcc := setupMemorySubledgerEnv(t)
 	ctx := context.Background()

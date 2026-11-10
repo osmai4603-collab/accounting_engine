@@ -13,6 +13,7 @@ type EconomicEvent struct {
 	CompanyID      uuid.UUID
 	IdempotencyKey string
 	EventType      string
+	PayloadHash    string
 	Date           time.Time
 	MatchedAt      time.Time
 	Amount         financialtypes.Money
@@ -26,7 +27,8 @@ type EconomicEvent struct {
 func (e EconomicEvent) Validate() error {
 	if e.CompanyID == uuid.Nil || strings.TrimSpace(e.IdempotencyKey) == "" ||
 		strings.TrimSpace(e.EventType) == "" ||
-		e.Amount.Currency() == "" || e.Amount.IsNegative() {
+		e.Amount.Currency() == "" || e.Amount.IsNegative() ||
+		(e.PayloadHash != "" && len(e.PayloadHash) != 64) {
 		return ErrInvalidEvent
 	}
 	for key, amount := range e.Values {
@@ -228,6 +230,8 @@ type FixedAsset struct {
 	DisposalLossAccountID          uuid.UUID
 	DisposalCashAccountID          uuid.UUID
 	DisposedAt                     *time.Time
+	PendingOperation               string
+	PendingOperationEntryID        uuid.UUID
 	AppliedEntryIDs                []uuid.UUID
 	Components                     []AssetComponent
 	RevaluationAdjustment          financialtypes.Money
