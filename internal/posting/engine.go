@@ -158,14 +158,75 @@ func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, post
 	return nil
 }
 
+func (e *Engine) PostEntryWithAttachment(entry *JournalEntry, posterID string, attachments ...LedgerAttachment) error {
+	return e.PostEntryWithAttachmentContext(context.Background(), entry, posterID, attachments...)
+}
+
+func (e *Engine) PostEntryWithAttachmentContext(ctx context.Context, entry *JournalEntry, posterID string, attachments ...LedgerAttachment) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if entry.Status != EntryDraft {
+		if entry.Status == EntryPosted {
+			return financialtypes.ErrMoveAlreadyPosted
+		}
+		return ErrEntryNotDraft
+	}
+	for _, att := range attachments {
+		if att != nil {
+			if err := att.ValidateAttachment(ctx, *entry); err != nil {
+				return err
+			}
+		}
+	}
+	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	original := *entry
+	now := time.Now().UTC()
+	entry.PostedBy = posterID
+	entry.PostedAt = &now
+	entry.Status = EntryPosted
+	entry.UpdatedAt = now
+
+	if repo, ok := e.repo.(ContextAtomicAttachmentRepository); ok {
+		if err := repo.PostWithAttachmentsContext(ctx, entry, attachments); err != nil {
+			*entry = original
+			return err
+		}
+		return nil
+	}
+	if repo, ok := e.repo.(AtomicAttachmentRepository); ok {
+		if err := repo.PostWithAttachments(ctx, entry, attachments); err != nil {
+			*entry = original
+			return err
+		}
+		return nil
+	}
+
+	*entry = original
+	return ErrAtomicPostingOpenLineRequired
+}
+
 func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachment, posterID string) error {
 	return e.PostEntryWithOpenLineContext(context.Background(), entry, line, posterID)
 }
 
 func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *JournalEntry, line OpenLineAttachment, posterID string) error {
-	if err := ctx.Err(); err != nil {
+	attachment := &OpenLineLedgerAttachment{Attachment: line}
+	err := e.PostEntryWithAttachmentContext(ctx, entry, posterID, attachment)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrAtomicPostingOpenLineRequired) {
 		return err
 	}
+
+	// Fallback to legacy ContextAtomicPostingWithOpenLineRepository if repo does not implement AtomicAttachmentRepository
 	if entry.Status != EntryDraft {
 		if entry.Status == EntryPosted {
 			return financialtypes.ErrMoveAlreadyPosted

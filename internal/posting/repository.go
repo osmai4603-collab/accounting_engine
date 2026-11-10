@@ -68,3 +68,12 @@ type BulkRepository interface {
 	Repository
 	PostBulk(context.Context, []JournalEntry) error
 }
+
+type AtomicAttachmentRepository interface {
+	PostWithAttachments(ctx context.Context, entry *JournalEntry, attachments []LedgerAttachment) error
+}
+
+type ContextAtomicAttachmentRepository interface {
+	PostWithAttachmentsContext(ctx context.Context, entry *JournalEntry, attachments []LedgerAttachment) error
+}
+

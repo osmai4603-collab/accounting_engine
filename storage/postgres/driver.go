@@ -606,6 +606,97 @@ func (d *Driver) PostAndSequenceWithOpenLineContext(ctx context.Context, entry p
 	return d.postAndSequenceContext(ctx, entry, &attachment)
 }
 
+type pgxTxAdapter struct {
+	tx pgx.Tx
+}
+
+func (a *pgxTxAdapter) Exec(ctx context.Context, sql string, args ...any) error {
+	_, err := a.tx.Exec(ctx, sql, args...)
+	return err
+}
+
+func (a *pgxTxAdapter) QueryRow(ctx context.Context, sql string, args ...any) posting.Row {
+	return a.tx.QueryRow(ctx, sql, args...)
+}
+
+func (a *pgxTxAdapter) CustomMutation(ctx context.Context, target string, fn func(state any) error) error {
+	return posting.ErrUnsupportedMutationBackend
+}
+
+func (d *Driver) PostWithAttachments(ctx context.Context, entry *posting.JournalEntry, attachments []posting.LedgerAttachment) error {
+	return d.PostWithAttachmentsContext(ctx, entry, attachments)
+}
+
+func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.JournalEntry, attachments []posting.LedgerAttachment) (resultErr error) {
+	tx, err := d.beginCompanyTx(ctx, entry.CompanyID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("rollback posting transaction: %w", rollbackErr))
+		}
+	}()
+
+	if entry.CompanyID == uuid.Nil || entry.JournalID == uuid.Nil {
+		return posting.ErrInvalidEntry
+	}
+
+	var sequence int64
+	if err := tx.QueryRow(ctx,
+		`SELECT current_sequence FROM journals
+		 WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		entry.CompanyID, entry.JournalID).Scan(&sequence); err != nil {
+		return err
+	}
+
+	var status posting.EntryStatus
+	var draftData []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT status, entry FROM account_moves
+		 WHERE company_id=$1 AND id=$2 AND journal_id=$3 FOR UPDATE`,
+		entry.CompanyID, entry.ID, entry.JournalID).Scan(&status, &draftData); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return posting.ErrEntryNotFound
+		}
+		return err
+	}
+
+	var current posting.JournalEntry
+	if err := json.Unmarshal(draftData, &current); err != nil {
+		return err
+	}
+	if status != posting.EntryDraft || current.Status != posting.EntryDraft {
+		return posting.ErrEntryNotDraft
+	}
+	if !posting.DraftContentMatches(current, *entry) {
+		return financialtypes.ErrCannotModifyPostedMove
+	}
+
+	sequence++
+	if _, err := tx.Exec(ctx,
+		`UPDATE journals SET current_sequence=$3 WHERE company_id=$1 AND id=$2`,
+		entry.CompanyID, entry.JournalID, sequence); err != nil {
+		return err
+	}
+
+	entry.SequenceNumber = sequence
+	if err := d.saveEntryTx(ctx, tx, *entry); err != nil {
+		return err
+	}
+
+	txAdapter := &pgxTxAdapter{tx: tx}
+	for _, att := range attachments {
+		if att != nil {
+			if err := att.ExecuteAtomicMutation(ctx, txAdapter, *entry); err != nil {
+				return fmt.Errorf("attachment %s: %w", att.AttachmentKind(), err)
+			}
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (result posting.JournalEntry, resultErr error) {
 	tx, err := d.beginCompanyTx(ctx, entry.CompanyID)
 	if err != nil {

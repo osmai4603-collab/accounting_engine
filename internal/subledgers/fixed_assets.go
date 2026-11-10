@@ -2,10 +2,13 @@ package subledgers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -146,6 +149,118 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 	return l.repo.SaveFixedAsset(context.Background(), asset)
 }
 
+// DepreciationAttachment ينفذ تحديث سجل الأصل الثابت ذرياً
+// مع ترحيل قيد الاستهلاك. يحل محل نمط PrepareDepreciation + ConfirmDepreciation
+// المرجع: IAS 16.43 — الاستهلاك يجب أن يُثبت بالتزامن مع القيد
+type DepreciationAttachment struct {
+	AssetID      uuid.UUID
+	CompanyID    uuid.UUID
+	Amount       financialtypes.Money
+	AsOf         time.Time
+	UpdatedAsset FixedAsset
+}
+
+func (a *DepreciationAttachment) AttachmentKind() string {
+	return "fixed_asset_depreciation"
+}
+
+func (a *DepreciationAttachment) ValidateAttachment(ctx context.Context, entry posting.JournalEntry) error {
+	if a.AssetID == uuid.Nil || a.CompanyID == uuid.Nil {
+		return ErrInvalidAsset
+	}
+	if a.CompanyID != entry.CompanyID {
+		return ErrCompanyMismatch
+	}
+	return nil
+}
+
+type FixedAssetMemoryStore interface {
+	SaveFixedAsset(ctx context.Context, asset FixedAsset) error
+}
+
+func (a *DepreciationAttachment) ExecuteAtomicMutation(ctx context.Context, tx posting.AtomicTransaction, entry posting.JournalEntry) error {
+	err := tx.CustomMutation(ctx, "memory", func(state any) error {
+		store, ok := state.(FixedAssetMemoryStore)
+		if !ok {
+			return posting.ErrUnsupportedMutationBackend
+		}
+		return store.SaveFixedAsset(ctx, a.UpdatedAsset)
+	})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, posting.ErrUnsupportedMutationBackend) {
+		return err
+	}
+
+	data, err := json.Marshal(a.UpdatedAsset)
+	if err != nil {
+		return err
+	}
+	return tx.Exec(ctx,
+		`UPDATE fixed_assets SET asset_data = $1 WHERE company_id = $2 AND id = $3`,
+		data, a.CompanyID, a.AssetID,
+	)
+}
+
+// DepreciateAssetAtomic يولد قيد الاستهلاك ويرفقه بملحق ذري
+// لتحديث سجل الأصل — في معاملة واحدة عبر PostEntryWithAttachment.
+// المرجع: IAS 16.43–62
+func (l *FixedAssetLedger) DepreciateAssetAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID, journalID uuid.UUID,
+	asOf time.Time,
+	posterID string,
+) (posting.JournalEntry, error) {
+	if journalID == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if asset.DisposedAt != nil {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	if !asset.LastDepreciationDate.IsZero() &&
+		asset.LastDepreciationDate.UTC().Format("2006-01") == asOf.UTC().Format("2006-01") {
+		return posting.JournalEntry{}, ErrAlreadyExists
+	}
+	if !asset.LastDepreciationDate.IsZero() && asOf.Before(asset.LastDepreciationDate) {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	expense, updated, err := depreciationUpdate(asset, asOf)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+
+	lines, err := depreciationJournalLines(asset, asOf, expense)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entry := posting.JournalEntry{
+		CompanyID: asset.CompanyID, ID: uuid.New(), JournalID: journalID, EntryDate: asOf, Date: asOf,
+		Status: posting.EntryDraft, CreatedAt: time.Now().UTC(),
+		DocumentReference: depreciationReference(asset.ID, asOf),
+		Lines:             lines,
+	}
+	if err := engine.CreateDraftContext(ctx, entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
+
+	attachment := &DepreciationAttachment{
+		AssetID: assetID, CompanyID: l.companyID,
+		Amount: expense, AsOf: asOf, UpdatedAsset: updated,
+	}
+
+	if err := engine.PostEntryWithAttachmentContext(ctx, &entry, posterID, attachment); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return entry, nil
+}
+
+// Deprecated: Use DepreciateAssetAtomic instead.
 func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, financialtypes.Money, error) {
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
@@ -188,6 +303,7 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 	return entry, expense, nil
 }
 
+// Deprecated: Use DepreciateAssetAtomic instead.
 func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID, depAmount financialtypes.Money, asOf time.Time) error {
 	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {

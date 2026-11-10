@@ -856,6 +856,93 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	return d.PostReversalAtomic(original, reversal)
 }
 
+func (d *Driver) SaveOpenLineFromAttachment(ctx context.Context, attachment posting.OpenLineAttachment, entry posting.JournalEntry) error {
+	account, ok := d.accounts[attachment.ControlAccountID]
+	if !ok || account.CompanyID != entry.CompanyID {
+		return masterdata.ErrAccountNotFound
+	}
+	if _, exists := d.lines[attachment.ID]; exists {
+		return subledgers.ErrAlreadyExists
+	}
+	partnerID := attachment.PartnerID
+	line := subledgers.OpenLine{
+		CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
+		ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
+		Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
+		ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+		DueDate: attachment.DueDate, Reference: attachment.Reference,
+	}
+	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
+		return err
+	}
+	d.lines[line.ID] = line
+	return nil
+}
+
+type memoryRow struct{}
+
+func (r *memoryRow) Scan(dest ...any) error {
+	return nil
+}
+
+type memoryTxAdapter struct {
+	driver *Driver
+}
+
+func (a *memoryTxAdapter) Exec(ctx context.Context, sql string, args ...any) error {
+	return posting.ErrUnsupportedMutationBackend
+}
+
+func (a *memoryTxAdapter) QueryRow(ctx context.Context, sql string, args ...any) posting.Row {
+	return &memoryRow{}
+}
+
+func (a *memoryTxAdapter) CustomMutation(ctx context.Context, target string, fn func(state any) error) error {
+	if target != "memory" {
+		return posting.ErrUnsupportedMutationBackend
+	}
+	return fn(a.driver)
+}
+
+func (d *Driver) PostWithAttachments(ctx context.Context, entry *posting.JournalEntry, attachments []posting.LedgerAttachment) error {
+	return d.PostWithAttachmentsContext(ctx, entry, attachments)
+}
+
+func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.JournalEntry, attachments []posting.LedgerAttachment) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	current, ok := d.entries[entry.ID]
+	if !ok {
+		return posting.ErrEntryNotFound
+	}
+	if current.Status != posting.EntryDraft || entry.Status != posting.EntryPosted {
+		return posting.ErrEntryNotDraft
+	}
+	if !posting.DraftContentMatches(current, *entry) {
+		return financialtypes.ErrCannotModifyPostedMove
+	}
+
+	memAdapter := &memoryTxAdapter{driver: d}
+	for _, att := range attachments {
+		if att != nil {
+			if err := att.ExecuteAtomicMutation(ctx, memAdapter, *entry); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := d.updateAccountBalancesLocked(*entry); err != nil {
+		return err
+	}
+
+	key := sequenceKey(entry.CompanyID, entry.JournalID)
+	d.journalSeq[key]++
+	entry.SequenceNumber = d.journalSeq[key]
+	d.entries[entry.ID] = cloneEntry(*entry)
+	return nil
+}
+
 func (d *Driver) GetNextSequence(id uuid.UUID) (int64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
