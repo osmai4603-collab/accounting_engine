@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -127,7 +128,11 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 }
 
 func (e *CashFlowEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, start, end, currency)
+}
+
+func (e *CashFlowEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return CashFlow{}, err
 	}
@@ -244,7 +249,11 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 }
 
 func (e *CashFlowEngine) GenerateDirectForCompany(companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateDirectForCompanyContext(context.Background(), companyID, start, end, currency)
+}
+
+func (e *CashFlowEngine) GenerateDirectForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time, currency string) (CashFlow, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return CashFlow{}, err
 	}

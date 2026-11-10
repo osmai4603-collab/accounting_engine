@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -10,15 +11,22 @@ import (
 )
 
 type TreasuryLedger struct {
-	repo      Repository
+	repo      TreasuryRepository
 	companyID uuid.UUID
 }
 
-func NewTreasuryLedger(repo Repository) *TreasuryLedger {
+type TreasuryRepository interface {
+	BankItemRepository
+	CompanyBankItemRepository
+	ConditionalBankItemsAndDraftRepository
+	ConditionalBankItemRepository
+}
+
+func NewTreasuryLedger(repo TreasuryRepository) *TreasuryLedger {
 	return &TreasuryLedger{repo: repo}
 }
 
-func NewTreasuryLedgerForCompany(repo Repository, companyID uuid.UUID) *TreasuryLedger {
+func NewTreasuryLedgerForCompany(repo TreasuryRepository, companyID uuid.UUID) *TreasuryLedger {
 	return &TreasuryLedger{repo: repo, companyID: companyID}
 }
 
@@ -52,7 +60,7 @@ func (l *TreasuryLedger) recordItem(companyID, accountID, journalEntryID uuid.UU
 		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, JournalEntryID: journalEntryID,
 		Date: date, Amount: amount, Reference: reference, Status: status,
 	}
-	if err := l.repo.SaveBankItem(item); err != nil {
+	if err := l.repo.SaveBankItem(context.Background(), item); err != nil {
 		return BankItem{}, err
 	}
 	return item, nil
@@ -187,22 +195,14 @@ func (l *TreasuryLedger) ReconcileMultiLine(
 		if err := draft.Validate(); err != nil {
 			return BankReconciliationMatch{}, nil, err
 		}
-		repository, ok := l.repo.(ConditionalBankItemsAndDraftRepository)
-		if !ok {
-			return BankReconciliationMatch{}, nil, ErrAtomicBankReconciliationRequired
-		}
-		if err := repository.CompareAndSaveBankItemsAndDraft(expected, updated, draft); err != nil {
+		if err := l.repo.CompareAndSaveBankItemsAndDraft(context.Background(), expected, updated, draft); err != nil {
 			return BankReconciliationMatch{}, nil, err
 		}
 		match.BankFeesAmount = fee
 		match.Difference = decimal.Zero
 		return match, &draft, nil
 	}
-	repository, ok := l.repo.(ConditionalBankItemRepository)
-	if !ok {
-		return BankReconciliationMatch{}, nil, ErrAtomicBankReconciliationRequired
-	}
-	if err := repository.CompareAndSaveBankItems(expected, updated); err != nil {
+	if err := l.repo.CompareAndSaveBankItems(context.Background(), expected, updated); err != nil {
 		return BankReconciliationMatch{}, nil, err
 	}
 	return match, nil, nil
@@ -323,11 +323,7 @@ func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement [
 		}
 	}
 	if len(expectedMatched) != 0 {
-		repository, ok := l.repo.(ConditionalBankItemRepository)
-		if !ok {
-			return nil, nil, nil, ErrAtomicBankReconciliationRequired
-		}
-		if err := repository.CompareAndSaveBankItems(expectedMatched, updatedMatched); err != nil {
+		if err := l.repo.CompareAndSaveBankItems(context.Background(), expectedMatched, updatedMatched); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -341,13 +337,9 @@ func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement [
 
 func (l *TreasuryLedger) listBankItems(accountID string) ([]BankItem, error) {
 	if l.companyID == uuid.Nil {
-		return l.repo.ListBankItems(accountID)
+		return l.repo.ListBankItems(context.Background(), accountID)
 	}
-	repository, ok := l.repo.(CompanyBankItemRepository)
-	if !ok {
-		return nil, ErrCompanyScopedBankItemsRequired
-	}
-	return repository.ListBankItemsForCompany(l.companyID, accountID)
+	return l.repo.ListBankItemsForCompany(context.Background(), l.companyID, accountID)
 }
 
 func sameDay(a, b time.Time) bool {
@@ -413,11 +405,7 @@ func (l *TreasuryLedger) ProcessBankFeeAtomic(item BankItem, params BankFeeParam
 	if err := draft.Validate(); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}
-	repository, ok := l.repo.(ConditionalBankItemsAndDraftRepository)
-	if !ok {
-		return BankItem{}, posting.JournalEntry{}, ErrAtomicBankReconciliationRequired
-	}
-	if err := repository.CompareAndSaveBankItemsAndDraft([]BankItem{expected}, []BankItem{updated}, draft); err != nil {
+	if err := l.repo.CompareAndSaveBankItemsAndDraft(context.Background(), []BankItem{expected}, []BankItem{updated}, draft); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}
 	return updated, draft, nil

@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/subledgers"
 	financialtypes "accounting_engine/internal/types"
+	"accounting_engine/internal/valuation"
 	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -18,6 +20,32 @@ type memoryRepository struct {
 	entries  []posting.JournalEntry
 }
 
+func TestDimensionProfitAndLossGroupsByAnalyticalIds(t *testing.T) {
+	revenue := reportAccount(uuid.New(), "4000", "Revenue", masterdata.AccountTypeIncome, "operating_revenue")
+	costCenterID, projectID := uuid.New(), uuid.New()
+	amount := reportMoney(t, "100", "USD")
+	zero := reportMoney(t, "0", "USD")
+	date := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	repository := &memoryRepository{
+		accounts: []masterdata.Account{revenue},
+		entries: []posting.JournalEntry{{
+			Status: posting.EntryPosted, EntryDate: date,
+			Lines: []posting.JournalEntryLine{{
+				AccountID: revenue.ID, Debit: zero, Credit: amount,
+				CostCenterID: &costCenterID, ProjectID: &projectID,
+			}},
+		}},
+	}
+	report, err := NewEngine(repository).GenerateDimensionProfitAndLoss(date, date, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Lines) != 1 || report.Lines[0].Amount.String() != "100" ||
+		report.Lines[0].Key.CostCenterID != costCenterID || report.Lines[0].Key.ProjectID != projectID {
+		t.Fatalf("dimension report = %+v", report.Lines)
+	}
+}
+
 func TestTrialBalanceReportingIsCompanyScoped(t *testing.T) {
 	repository := memory.New()
 	companyA, companyB := uuid.New(), uuid.New()
@@ -25,10 +53,10 @@ func TestTrialBalanceReportingIsCompanyScoped(t *testing.T) {
 	accountA.CompanyID = companyA
 	accountB := reportAccount(uuid.New(), "1000", "Cash B", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents)
 	accountB.CompanyID = companyB
-	if err := repository.CreateAccount(accountA); err != nil {
+	if err := repository.CreateAccount(context.Background(), accountA); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateAccount(accountB); err != nil {
+	if err := repository.CreateAccount(context.Background(), accountB); err != nil {
 		t.Fatal(err)
 	}
 
@@ -44,11 +72,67 @@ func TestTrialBalanceReportingIsCompanyScoped(t *testing.T) {
 	}
 }
 
-func (r *memoryRepository) ListAccounts() ([]masterdata.Account, error) {
+func TestCompanyTrialBalanceUsesEffectiveAccountVersionAtPeriodEnd(t *testing.T) {
+	repository := memory.New()
+	companyID, accountID := uuid.New(), uuid.New()
+	account := reportAccount(accountID, "4000", "Current label", masterdata.AccountTypeExpense, masterdata.SubClassOtherOperatingExpense)
+	account.CompanyID = companyID
+	if err := repository.CreateAccount(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	versions := []masterdata.AccountVersion{
+		{
+			CompanyID: companyID, AccountID: accountID, Name: "Historical revenue",
+			AccountType: masterdata.AccountTypeIncome, IFRSCategory: masterdata.IFRSCategoryOperating,
+			EffectiveFrom: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			EffectiveTo:   timePtr(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+		},
+		{
+			CompanyID: companyID, AccountID: accountID, Name: "Current expense",
+			AccountType: masterdata.AccountTypeExpense, IFRSCategory: masterdata.IFRSCategoryOperating,
+			EffectiveFrom: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, version := range versions {
+		if err := repository.SaveAccountVersion(context.Background(), version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	engine := NewTrialBalanceEngine(repository)
+	historical, err := engine.GenerateForCompanyContext(
+		context.Background(), companyID,
+		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC), "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := engine.GenerateForCompanyContext(
+		context.Background(), companyID,
+		time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC), "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := historical.Lines[0]; got.AccountName != "Historical revenue" || got.AccountType != masterdata.AccountTypeIncome {
+		t.Fatalf("historical account version = %+v", got)
+	}
+	if got := current.Lines[0]; got.AccountName != "Current expense" || got.AccountType != masterdata.AccountTypeExpense {
+		t.Fatalf("current account version = %+v", got)
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func (r *memoryRepository) ListAccounts(context.Context) ([]masterdata.Account, error) {
 	return append([]masterdata.Account(nil), r.accounts...), nil
 }
 
-func (r *memoryRepository) ListPostedEntries(start, end time.Time) ([]posting.JournalEntry, error) {
+func (r *memoryRepository) ListPostedEntries(_ context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
 	result := make([]posting.JournalEntry, 0)
 	for _, entry := range r.entries {
 		date := entryEffectiveDate(entry)
@@ -61,6 +145,95 @@ func (r *memoryRepository) ListPostedEntries(start, end time.Time) ([]posting.Jo
 		result = append(result, entry)
 	}
 	return result, nil
+}
+
+func (r *memoryRepository) ListAccountsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	accounts := make([]masterdata.Account, 0)
+	for _, account := range r.accounts {
+		if account.CompanyID == companyID {
+			accounts = append(accounts, account)
+		}
+	}
+	return accounts, nil
+}
+
+func (r *memoryRepository) ListAccountsForCompanyAsOfContext(ctx context.Context, companyID uuid.UUID, _ time.Time) ([]masterdata.Account, error) {
+	return r.ListAccountsForCompanyContext(ctx, companyID)
+}
+
+func (r *memoryRepository) ListEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries := make([]posting.JournalEntry, 0)
+	for _, entry := range r.entries {
+		date := entryEffectiveDate(entry)
+		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted &&
+			(start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+
+func (r *memoryRepository) ListFixedAssets(context.Context) ([]subledgers.FixedAsset, error) {
+	return nil, nil
+}
+
+func (r *memoryRepository) ListOpenLines(context.Context, string) ([]subledgers.OpenLine, error) {
+	return nil, nil
+}
+
+func (r *memoryRepository) ListFixedAssetsForCompanyContext(ctx context.Context, _ uuid.UUID) ([]subledgers.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return r.ListFixedAssets(ctx)
+}
+
+func (r *memoryRepository) ListOpenLinesForCompanyContext(ctx context.Context, _ uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return r.ListOpenLines(ctx, partnerID)
+}
+
+func (r *memoryRepository) GetRateForCompany(context.Context, uuid.UUID, string, string, time.Time) (decimal.Decimal, error) {
+	return decimal.Zero, valuation.ErrRateNotFound
+}
+
+func (r *memoryRepository) GetRateOfTypeForCompany(context.Context, uuid.UUID, valuation.RateType, string, string, time.Time) (decimal.Decimal, error) {
+	return decimal.Zero, valuation.ErrRateNotFound
+}
+
+func (r *memoryRepository) GetFiscalYearForCompanyContext(ctx context.Context, companyID, yearID uuid.UUID) (masterdata.FiscalYear, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalYear{}, err
+	}
+	return masterdata.FiscalYear{}, masterdata.ErrFiscalYearNotFound
+}
+
+func (r *memoryRepository) UpdatePeriodStateForCompanyContext(ctx context.Context, _, _ uuid.UUID, _ masterdata.PeriodState) error {
+	return ctx.Err()
+}
+
+func (r *memoryRepository) UpdateFiscalYearStateForCompanyContext(ctx context.Context, _, _ uuid.UUID, _ masterdata.FiscalYearState) error {
+	return ctx.Err()
+}
+
+func (r *memoryRepository) GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	for _, entry := range r.entries {
+		if entry.ID == entryID && entry.CompanyID == companyID {
+			return entry, nil
+		}
+	}
+	return posting.JournalEntry{}, posting.ErrEntryNotFound
 }
 
 func reportMoney(t *testing.T, amount, currency string) financialtypes.Money {
@@ -498,17 +671,18 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	companyID := uuid.New()
 	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	year.CompanyID = companyID
-	if err := repository.CreateFiscalYear(year); err != nil {
+	ctx := context.Background()
+	if err := repository.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
 	}
 	for _, period := range year.Periods {
 		if period.Number > 12 {
 			continue
 		}
-		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodSoftClosed); err != nil {
+		if err := repository.UpdatePeriodState(ctx, companyID, period.ID, masterdata.PeriodSoftClosed); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed); err != nil {
+		if err := repository.UpdatePeriodState(ctx, companyID, period.ID, masterdata.PeriodHardClosed); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -534,7 +708,7 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	if err := NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
 		t.Fatal(err)
 	}
-	closedYear, err := repository.GetFiscalYear(year.ID)
+	closedYear, err := repository.GetFiscalYear(ctx, year.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +716,7 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 		t.Fatalf("fiscal year state = %s, want hard closed", closedYear.State)
 	}
 	for _, number := range []int{13, 14} {
-		period, err := repository.GetPeriodByNumberForCompany(companyID, year.ID, number)
+		period, err := repository.GetPeriodByNumberForCompany(ctx, companyID, year.ID, number)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -701,11 +875,11 @@ type fullBundleMemoryRepository struct {
 	lines  []subledgers.OpenLine
 }
 
-func (r *fullBundleMemoryRepository) ListFixedAssets() ([]subledgers.FixedAsset, error) {
+func (r *fullBundleMemoryRepository) ListFixedAssets(context.Context) ([]subledgers.FixedAsset, error) {
 	return append([]subledgers.FixedAsset(nil), r.assets...), nil
 }
 
-func (r *fullBundleMemoryRepository) ListOpenLines(status string) ([]subledgers.OpenLine, error) {
+func (r *fullBundleMemoryRepository) ListOpenLines(_ context.Context, status string) ([]subledgers.OpenLine, error) {
 	return append([]subledgers.OpenLine(nil), r.lines...), nil
 }
 

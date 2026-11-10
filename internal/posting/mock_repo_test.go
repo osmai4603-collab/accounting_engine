@@ -1,6 +1,8 @@
 package posting
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"time"
@@ -118,4 +120,64 @@ func (r *MockRepository) PostBulk(entries []JournalEntry) error {
 		r.entries[entry.ID] = cloneEntry(entry)
 	}
 	return nil
+}
+
+func (r *MockRepository) SaveDraftContext(ctx context.Context, entry JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.SaveDraft(entry)
+}
+
+func (r *MockRepository) GetEntryByIDForCompany(ctx context.Context, companyID, entryID uuid.UUID) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	entry, err := r.GetEntryByID(entryID)
+	if err != nil {
+		return JournalEntry{}, err
+	}
+	if entry.CompanyID != companyID {
+		return JournalEntry{}, ErrEntryNotFound
+	}
+	return entry, nil
+}
+
+func (r *MockRepository) PostAtomicContext(ctx context.Context, entry JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.PostAtomic(entry)
+}
+
+func (r *MockRepository) GetNextSequenceForCompanyContext(ctx context.Context, companyID, journalID uuid.UUID) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.GetNextSequence(journalID)
+}
+
+func (r *MockRepository) PostAndSequenceContext(ctx context.Context, entry JournalEntry) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	return r.PostAndSequence(entry)
+}
+
+func (r *MockRepository) PostAndSequenceWithOpenLine(ctx context.Context, entry JournalEntry, attachment OpenLineAttachment) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	return JournalEntry{}, errors.New("open-line posting is not implemented by the test repository")
+}
+
+func (r *MockRepository) PostAndSequenceWithOpenLineContext(ctx context.Context, entry JournalEntry, attachment OpenLineAttachment) (JournalEntry, error) {
+	return r.PostAndSequenceWithOpenLine(ctx, entry, attachment)
+}
+
+func (r *MockRepository) PostReversalAtomicContext(ctx context.Context, original, reversal JournalEntry) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	return r.PostReversalAtomic(original, reversal)
 }

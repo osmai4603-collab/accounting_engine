@@ -115,7 +115,7 @@ func TestCompanyScopedPostingRejectsCrossCompanyAccount(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(entry.ID, "checker"); !errors.Is(err, masterdata.ErrAccountNotFound) {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); !errors.Is(err, masterdata.ErrAccountNotFound) {
 		t.Fatalf("Post() error = %v, want cross-company account rejection", err)
 	}
 }
@@ -178,7 +178,7 @@ func TestPostedEntryCannotBeModified(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(entry.ID, "checker"); err != nil {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ := repo.GetEntryByID(entry.ID)
@@ -198,10 +198,10 @@ func TestMakerChecker(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(entry.ID, "maker"); err != financialtypes.ErrMakerCheckerViolation {
+	if err := engine.Post(entry.CompanyID, entry.ID, "maker"); err != financialtypes.ErrMakerCheckerViolation {
 		t.Fatalf("expected maker-checker violation, got %v", err)
 	}
-	if err := engine.Post(entry.ID, "checker"); err != nil {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -223,7 +223,7 @@ func TestConcurrentSequences(t *testing.T) {
 		wg.Add(1)
 		go func(id uuid.UUID) {
 			defer wg.Done()
-			errs <- engine.Post(id, "checker")
+			errs <- engine.Post(entry.CompanyID, id, "checker")
 		}(entry.ID)
 	}
 	wg.Wait()
@@ -267,7 +267,7 @@ func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
 	if err := engine.CreateDraft(rejected); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(rejected.ID, "maker"); !errors.Is(err, financialtypes.ErrMakerCheckerViolation) {
+	if err := engine.Post(rejected.CompanyID, rejected.ID, "maker"); !errors.Is(err, financialtypes.ErrMakerCheckerViolation) {
 		t.Fatalf("expected maker-checker rejection, got %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
 	if err := engine.CreateDraft(valid); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(valid.ID, "checker"); err != nil {
+	if err := engine.Post(valid.CompanyID, valid.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
 	posted, err := repo.GetEntryByID(valid.ID)
@@ -294,10 +294,10 @@ func TestReversal(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(entry.ID, "checker"); err != nil {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
-	reversal, err := engine.Reverse(entry.ID, "checker")
+	reversal, err := engine.Reverse(entry.CompanyID, entry.ID, "checker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestMultiCurrencyEntryWithFunctionalBalance(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatalf("failed to create multi-currency draft: %v", err)
 	}
-	if err := engine.Post(entry.ID, "checker"); err != nil {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatalf("failed to post multi-currency entry: %v", err)
 	}
 
@@ -402,12 +402,12 @@ func TestReversalWithMakerCheckerThreshold(t *testing.T) {
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Post(entry.ID, "checker"); err != nil {
+	if err := engine.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Reversal should succeed because Reverse creates the entry with system-reversal as creator, posted by checker
-	reversal, err := engine.Reverse(entry.ID, "checker")
+	reversal, err := engine.Reverse(entry.CompanyID, entry.ID, "checker")
 	if err != nil {
 		t.Fatalf("reversal failed under maker-checker: %v", err)
 	}

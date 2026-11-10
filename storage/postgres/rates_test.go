@@ -24,7 +24,7 @@ func TestPostgresExchangeRatesAreCompanyScoped(t *testing.T) {
 
 	companyIDs := []uuid.UUID{uuid.New(), uuid.New()}
 	for _, companyID := range companyIDs {
-		if err := driver.CreateCompany(masterdata.Company{
+		if err := driver.CreateCompany(ctx, masterdata.Company{
 			ID: companyID, Code: fmt.Sprintf("RATE-%s", companyID.String()[:8]),
 			LegalName: "Exchange Rate Test", FunctionalCurrency: "SAR",
 			PresentationCurrency: "USD", Active: true,
@@ -78,7 +78,7 @@ func TestPostgresFiscalYearCloseStatePersists(t *testing.T) {
 	defer driver.Close()
 
 	companyID := uuid.New()
-	if err := driver.CreateCompany(masterdata.Company{
+	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: fmt.Sprintf("FY-%s", companyID.String()[:8]),
 		LegalName: "Fiscal Year Test", FunctionalCurrency: "SAR",
 		PresentationCurrency: "SAR", Active: true,
@@ -87,23 +87,23 @@ func TestPostgresFiscalYearCloseStatePersists(t *testing.T) {
 	}
 	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	year.CompanyID = companyID
-	if err := driver.CreateFiscalYear(year); err != nil {
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearSoftClosed); err != nil {
+	if err := driver.UpdateFiscalYearState(ctx, companyID, year.ID, masterdata.FiscalYearSoftClosed); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearHardClosed); err != nil {
+	if err := driver.UpdateFiscalYearState(ctx, companyID, year.ID, masterdata.FiscalYearHardClosed); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := driver.GetFiscalYearForCompany(companyID, year.ID)
+	stored, err := driver.GetFiscalYearForCompany(ctx, companyID, year.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stored.State != masterdata.FiscalYearHardClosed {
 		t.Fatalf("stored fiscal-year state = %s, want hard closed", stored.State)
 	}
-	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearOpen); err != masterdata.ErrInvalidFiscalYearTransition {
+	if err := driver.UpdateFiscalYearState(ctx, companyID, year.ID, masterdata.FiscalYearOpen); err != masterdata.ErrInvalidFiscalYearTransition {
 		t.Fatalf("invalid fiscal-year transition error = %v", err)
 	}
 }

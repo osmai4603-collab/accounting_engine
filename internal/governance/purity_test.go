@@ -134,4 +134,3 @@ func TestArchitecturalPurity(t *testing.T) {
 			strings.Join(violations, "\n"))
 	}
 }
-

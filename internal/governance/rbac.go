@@ -1,7 +1,9 @@
 package governance
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,7 +35,7 @@ type RoleAssignment struct {
 }
 
 type AuthorizationRepository interface {
-	HasRole(companyID, userID uuid.UUID, role Role) (bool, error)
+	HasRole(ctx context.Context, companyID, userID uuid.UUID, role Role) (bool, error)
 }
 
 type Authorizer struct {
@@ -44,11 +46,11 @@ func NewAuthorizer(repository AuthorizationRepository) *Authorizer {
 	return &Authorizer{repository: repository}
 }
 
-func (a *Authorizer) RequireRole(companyID, userID uuid.UUID, role Role) error {
-	if companyID == uuid.Nil || userID == uuid.Nil || !validRole(role) {
+func (a *Authorizer) RequireRole(ctx context.Context, companyID, userID uuid.UUID, role Role) error {
+	if a == nil || a.repository == nil || companyID == uuid.Nil || userID == uuid.Nil || !validRole(role) {
 		return ErrPermissionDenied
 	}
-	granted, err := a.repository.HasRole(companyID, userID, role)
+	granted, err := a.repository.HasRole(ctx, companyID, userID, role)
 	if err != nil {
 		return err
 	}
@@ -66,4 +68,41 @@ func validRole(role Role) bool {
 	default:
 		return false
 	}
+}
+
+func ValidRole(role Role) bool {
+	return validRole(role)
+}
+
+type MemoryAuthorizationRepository struct {
+	mu    sync.RWMutex
+	roles map[string]map[Role]struct{}
+}
+
+func NewMemoryAuthorizationRepository() *MemoryAuthorizationRepository {
+	return &MemoryAuthorizationRepository{roles: make(map[string]map[Role]struct{})}
+}
+
+func (r *MemoryAuthorizationRepository) GrantRole(assignment RoleAssignment) error {
+	if assignment.CompanyID == uuid.Nil || assignment.UserID == uuid.Nil || !validRole(assignment.Role) {
+		return ErrInvalidRole
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := assignment.CompanyID.String() + ":" + assignment.UserID.String()
+	if r.roles[key] == nil {
+		r.roles[key] = make(map[Role]struct{})
+	}
+	r.roles[key][assignment.Role] = struct{}{}
+	return nil
+}
+
+func (r *MemoryAuthorizationRepository) HasRole(ctx context.Context, companyID, userID uuid.UUID, role Role) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.roles[companyID.String()+":"+userID.String()][role]
+	return ok, nil
 }

@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -237,7 +238,11 @@ func isReserveClassification(classification string) bool {
 }
 
 func (e *EquityStatementEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (EquityStatement, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, start, end, currency)
+}
+
+func (e *EquityStatementEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time, currency string) (EquityStatement, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return EquityStatement{}, err
 	}

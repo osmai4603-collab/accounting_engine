@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -59,7 +60,11 @@ func (e *TrialBalanceEngine) Generate(startDate, endDate time.Time, currency str
 }
 
 func (e *TrialBalanceEngine) GenerateForCompany(companyID uuid.UUID, startDate, endDate time.Time, currency string) (TrialBalance, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, startDate, endDate, currency)
+}
+
+func (e *TrialBalanceEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, startDate, endDate time.Time, currency string) (TrialBalance, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, endDate)
 	if err != nil {
 		return TrialBalance{}, err
 	}
@@ -67,7 +72,11 @@ func (e *TrialBalanceEngine) GenerateForCompany(companyID uuid.UUID, startDate, 
 }
 
 func (e *TrialBalanceEngine) GenerateAdjustedForCompany(companyID uuid.UUID, startDate, endDate time.Time, currency string, adjusted bool) (TrialBalance, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateAdjustedForCompanyContext(context.Background(), companyID, startDate, endDate, currency, adjusted)
+}
+
+func (e *TrialBalanceEngine) GenerateAdjustedForCompanyContext(ctx context.Context, companyID uuid.UUID, startDate, endDate time.Time, currency string, adjusted bool) (TrialBalance, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, endDate)
 	if err != nil {
 		return TrialBalance{}, err
 	}
@@ -180,33 +189,11 @@ func postingClassification(entry posting.JournalEntry) posting.EntryClassificati
 }
 
 func listAccounts(repository Repository) ([]masterdata.Account, error) {
-	if repo, ok := repository.(AccountRepository); ok {
-		return repo.ListAccounts()
-	}
-	if repo, ok := repository.(interface {
-		GetAccounts() ([]masterdata.Account, error)
-	}); ok {
-		return repo.GetAccounts()
-	}
-	return nil, errors.New("repository does not provide accounts")
+	return repository.ListAccounts(context.Background())
 }
 
 func listPostedEntries(repository Repository, start, end time.Time) ([]posting.JournalEntry, error) {
-	var (
-		entries []posting.JournalEntry
-		err     error
-	)
-	if repo, ok := repository.(LedgerRepository); ok {
-		entries, err = repo.ListPostedEntries(start, end)
-	} else if repo, ok := repository.(EntryDateRepository); ok {
-		entries, err = repo.ListEntries(start, end)
-	} else if repo, ok := repository.(interface {
-		ListJournalEntries(time.Time, time.Time) ([]posting.JournalEntry, error)
-	}); ok {
-		entries, err = repo.ListJournalEntries(start, end)
-	} else {
-		return nil, errors.New("repository does not provide posted ledger entries")
-	}
+	entries, err := repository.ListPostedEntries(context.Background(), start, end)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -25,6 +26,10 @@ func NewClosingEngine(repository Repository) *ClosingEngine {
 }
 
 func (e *ClosingEngine) GenerateClosingMove(year masterdata.FiscalYear, journalID, retainedEarningsID uuid.UUID, currency string) (posting.JournalEntry, decimal.Decimal, error) {
+	return e.GenerateClosingMoveContext(context.Background(), year, journalID, retainedEarningsID, currency)
+}
+
+func (e *ClosingEngine) GenerateClosingMoveContext(ctx context.Context, year masterdata.FiscalYear, journalID, retainedEarningsID uuid.UUID, currency string) (posting.JournalEntry, decimal.Decimal, error) {
 	if year.State == masterdata.FiscalYearHardClosed {
 		return posting.JournalEntry{}, decimal.Zero, ErrFiscalYearAlreadyClosed
 	}
@@ -37,7 +42,7 @@ func (e *ClosingEngine) GenerateClosingMove(year masterdata.FiscalYear, journalI
 	repository := e.repository
 	if year.CompanyID != uuid.Nil {
 		var err error
-		repository, err = newCompanyReportingRepository(repository, year.CompanyID)
+		repository, err = newCompanyReportingRepository(ctx, repository, year.CompanyID, year.EndDate)
 		if err != nil {
 			return posting.JournalEntry{}, decimal.Zero, err
 		}
@@ -66,13 +71,17 @@ func (e *ClosingEngine) GenerateClosingMove(year masterdata.FiscalYear, journalI
 }
 
 func (e *ClosingEngine) GenerateOpeningMove(year masterdata.FiscalYear, journalID uuid.UUID, currency string) (posting.JournalEntry, error) {
+	return e.GenerateOpeningMoveContext(context.Background(), year, journalID, currency)
+}
+
+func (e *ClosingEngine) GenerateOpeningMoveContext(ctx context.Context, year masterdata.FiscalYear, journalID uuid.UUID, currency string) (posting.JournalEntry, error) {
 	if year.StartDate.IsZero() || journalID == uuid.Nil || currency == "" {
 		return posting.JournalEntry{}, ErrInvalidOpeningYear
 	}
 	repository := e.repository
 	if year.CompanyID != uuid.Nil {
 		var err error
-		repository, err = newCompanyReportingRepository(repository, year.CompanyID)
+		repository, err = newCompanyReportingRepository(ctx, repository, year.CompanyID, year.StartDate.Add(-time.Nanosecond))
 		if err != nil {
 			return posting.JournalEntry{}, err
 		}
@@ -154,28 +163,25 @@ func openingAccountBalances(repository Repository, end time.Time, currency strin
 }
 
 func (e *ClosingEngine) ConfirmFiscalYearClose(year masterdata.FiscalYear, postedClosingEntryID uuid.UUID) error {
-	repository, ok := e.repository.(FiscalYearRepository)
-	if !ok {
-		return masterdata.ErrFiscalYearNotFound
-	}
+	return e.ConfirmFiscalYearCloseContext(context.Background(), year, postedClosingEntryID)
+}
+
+func (e *ClosingEngine) ConfirmFiscalYearCloseContext(ctx context.Context, year masterdata.FiscalYear, postedClosingEntryID uuid.UUID) error {
 	if year.ID == uuid.Nil {
 		return masterdata.ErrFiscalYearNotFound
 	}
-	storedYear, err := repository.GetFiscalYear(year.ID)
+	if year.CompanyID == uuid.Nil {
+		return ErrCompanyScopeRequired
+	}
+	storedYear, err := e.repository.GetFiscalYearForCompanyContext(ctx, year.CompanyID, year.ID)
 	if err != nil {
 		return err
 	}
-	if year.CompanyID != uuid.Nil && storedYear.CompanyID != year.CompanyID {
+	if storedYear.CompanyID != year.CompanyID {
 		return masterdata.ErrFiscalYearNotFound
 	}
 	year = storedYear
-	entryRepository, ok := e.repository.(interface {
-		GetEntryByID(uuid.UUID) (posting.JournalEntry, error)
-	})
-	if !ok {
-		return ErrClosingMoveNotPosted
-	}
-	entry, err := entryRepository.GetEntryByID(postedClosingEntryID)
+	entry, err := e.repository.GetEntryByIDForCompanyContext(ctx, year.CompanyID, postedClosingEntryID)
 	if err != nil {
 		return err
 	}
@@ -202,11 +208,11 @@ func (e *ClosingEngine) ConfirmFiscalYearClose(year masterdata.FiscalYear, poste
 	if entry.PeriodID != period.ID {
 		return ErrClosingMoveNotPosted
 	}
-	if err := hardCloseFiscalPeriod(repository, period); err != nil {
+	if err := hardCloseFiscalPeriod(ctx, e.repository, year.CompanyID, period); err != nil {
 		return err
 	}
 	if auditPeriod, exists := findFiscalPeriod(year, 14); exists {
-		if err := hardCloseFiscalPeriod(repository, auditPeriod); err != nil {
+		if err := hardCloseFiscalPeriod(ctx, e.repository, year.CompanyID, auditPeriod); err != nil {
 			return err
 		}
 	}
@@ -214,28 +220,28 @@ func (e *ClosingEngine) ConfirmFiscalYearClose(year masterdata.FiscalYear, poste
 	case masterdata.FiscalYearHardClosed:
 		return nil
 	case masterdata.FiscalYearOpen:
-		if err := repository.UpdateFiscalYearState(year.ID, masterdata.FiscalYearSoftClosed); err != nil {
+		if err := e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearSoftClosed); err != nil {
 			return err
 		}
-		return repository.UpdateFiscalYearState(year.ID, masterdata.FiscalYearHardClosed)
+		return e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed)
 	case masterdata.FiscalYearSoftClosed:
-		return repository.UpdateFiscalYearState(year.ID, masterdata.FiscalYearHardClosed)
+		return e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed)
 	default:
 		return ErrPeriodsNotHardClosed
 	}
 }
 
-func hardCloseFiscalPeriod(repository FiscalYearRepository, period masterdata.FiscalPeriod) error {
+func hardCloseFiscalPeriod(ctx context.Context, repository FiscalYearRepository, companyID uuid.UUID, period masterdata.FiscalPeriod) error {
 	switch period.State {
 	case masterdata.PeriodHardClosed:
 		return nil
 	case masterdata.PeriodOpen:
-		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodSoftClosed); err != nil {
+		if err := repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodSoftClosed); err != nil {
 			return err
 		}
-		return repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed)
+		return repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodHardClosed)
 	case masterdata.PeriodSoftClosed:
-		return repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed)
+		return repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodHardClosed)
 	default:
 		return ErrPeriodsNotHardClosed
 	}

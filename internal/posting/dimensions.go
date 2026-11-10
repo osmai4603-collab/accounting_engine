@@ -8,11 +8,19 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrCostCenterRequired = errors.New("cost center is required for this account")
+var (
+	ErrCostCenterRequired         = errors.New("cost center is required for this account")
+	ErrDimensionPolicyUnavailable = errors.New("financial dimension policy is required")
+)
 
 type FinancialDimensionPolicy interface {
 	RequiresCostCenter(ctx context.Context, companyID, accountID uuid.UUID) (bool, error)
 	ValidateCostCenter(ctx context.Context, companyID, costCenterID uuid.UUID) error
+	ValidateAnalyticalDimension(ctx context.Context, companyID uuid.UUID, kind masterdata.AnalyticalDimensionKind, dimensionID uuid.UUID) error
+}
+
+type ApprovalGate interface {
+	IsApproved(ctx context.Context, companyID, entryID uuid.UUID) (bool, error)
 }
 
 type FinancialDimensionsEngine struct {
@@ -24,6 +32,9 @@ func NewFinancialDimensionsEngine(policy FinancialDimensionPolicy) *FinancialDim
 }
 
 func (e *FinancialDimensionsEngine) ValidateEntry(ctx context.Context, entry JournalEntry) error {
+	if e == nil || e.policy == nil {
+		return ErrDimensionPolicyUnavailable
+	}
 	if entry.CompanyID == uuid.Nil {
 		return masterdata.ErrCompanyScopeRequired
 	}
@@ -32,14 +43,28 @@ func (e *FinancialDimensionsEngine) ValidateEntry(ctx context.Context, entry Jou
 		if err != nil {
 			return err
 		}
-		if !required && line.CostCenterID == nil {
-			continue
-		}
-		if line.CostCenterID == nil {
+		if required && line.CostCenterID == nil {
 			return ErrCostCenterRequired
 		}
-		if err := e.policy.ValidateCostCenter(ctx, entry.CompanyID, *line.CostCenterID); err != nil {
-			return err
+		if line.CostCenterID != nil {
+			if err := e.policy.ValidateCostCenter(ctx, entry.CompanyID, *line.CostCenterID); err != nil {
+				return err
+			}
+		}
+		for _, dimension := range []struct {
+			kind masterdata.AnalyticalDimensionKind
+			id   *uuid.UUID
+		}{
+			{kind: masterdata.DimensionProject, id: line.ProjectID},
+			{kind: masterdata.DimensionSegment, id: line.SegmentID},
+			{kind: masterdata.DimensionBusinessUnit, id: line.BusinessUnitID},
+		} {
+			if dimension.id == nil {
+				continue
+			}
+			if err := e.policy.ValidateAnalyticalDimension(ctx, entry.CompanyID, dimension.kind, *dimension.id); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

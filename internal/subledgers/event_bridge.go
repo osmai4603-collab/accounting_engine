@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ type eventIdempotencyKey struct {
 }
 
 type EventBridge struct {
-	repo     Repository
+	repo     EventBridgeRepository
 	creator  JournalCreator
 	mappings map[eventMappingKey]SubledgerEventMapping
 	rules    map[eventMappingKey][]EventAccountingRule
@@ -41,7 +42,13 @@ type EventBridge struct {
 	entries  map[eventIdempotencyKey]posting.JournalEntry
 }
 
-func NewEventBridge(repo Repository, creator JournalCreator) *EventBridge {
+type EventBridgeRepository interface {
+	EventAccountingRuleRepository
+	CompanyEventRepository
+	AtomicEconomicEventRepository
+}
+
+func NewEventBridge(repo EventBridgeRepository, creator JournalCreator) *EventBridge {
 	return &EventBridge{
 		repo: repo, creator: creator, mappings: make(map[eventMappingKey]SubledgerEventMapping),
 		rules: make(map[eventMappingKey][]EventAccountingRule), entries: make(map[eventIdempotencyKey]posting.JournalEntry),
@@ -84,11 +91,7 @@ func (b *EventBridge) RegisterRule(rule EventAccountingRule) error {
 	key := eventMappingKey{companyID: rule.CompanyID, eventType: rule.EventType}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	repository, ok := b.repo.(EventAccountingRuleRepository)
-	if !ok {
-		return ErrEventRulesRequired
-	}
-	if err := repository.SaveEventAccountingRule(rule); err != nil {
+	if err := b.repo.SaveEventAccountingRule(context.Background(), rule); err != nil {
 		return err
 	}
 	rules := b.rules[key]
@@ -109,20 +112,12 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 	if err := event.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	atomicRepository, atomic := b.repo.(AtomicEconomicEventRepository)
-	if !atomic {
-		return posting.JournalEntry{}, ErrAtomicEventRequired
-	}
 	idempotencyKey := eventIdempotencyKey{companyID: event.CompanyID, key: event.IdempotencyKey}
 	if entry, ok := b.entries[idempotencyKey]; ok {
 		return entry, nil
 	}
 	var existing subledgerEvent
-	repository, ok := b.repo.(CompanyEventRepository)
-	if !ok {
-		return posting.JournalEntry{}, ErrCompanyScopedEventsRequired
-	}
-	storedEvent, found, err := repository.GetEventByIdempotencyKeyForCompany(event.CompanyID, event.IdempotencyKey)
+	storedEvent, found, err := b.repo.GetEventByIdempotencyKeyForCompany(context.Background(), event.CompanyID, event.IdempotencyKey)
 	existing = subledgerEvent{event: storedEvent, found: found, err: err}
 	if existing.err != nil {
 		return posting.JournalEntry{}, existing.err
@@ -162,11 +157,11 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 		return posting.JournalEntry{}, err
 	}
 	event.ResultEntryID = entry.ID
-	if err := atomicRepository.SaveEventAndDraft(event, entry); err != nil {
+	if err := b.repo.SaveEventAndDraft(context.Background(), event, entry); err != nil {
 		if !errors.Is(err, ErrAlreadyExists) {
 			return posting.JournalEntry{}, err
 		}
-		stored, found, lookupErr := repository.GetEventByIdempotencyKeyForCompany(event.CompanyID, event.IdempotencyKey)
+		stored, found, lookupErr := b.repo.GetEventByIdempotencyKeyForCompany(context.Background(), event.CompanyID, event.IdempotencyKey)
 		if lookupErr != nil {
 			return posting.JournalEntry{}, lookupErr
 		}
@@ -182,14 +177,12 @@ func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error)
 func (b *EventBridge) matchingRule(event EconomicEvent) (EventAccountingRule, error) {
 	key := eventMappingKey{companyID: event.CompanyID, eventType: event.EventType}
 	rules := b.rules[key]
-	if repository, ok := b.repo.(EventAccountingRuleRepository); ok {
-		persisted, err := repository.ListEventAccountingRulesForCompany(event.CompanyID, event.EventType)
-		if err != nil {
-			return EventAccountingRule{}, err
-		}
-		if len(persisted) > 0 {
-			rules = persisted
-		}
+	persisted, err := b.repo.ListEventAccountingRulesForCompany(context.Background(), event.CompanyID, event.EventType)
+	if err != nil {
+		return EventAccountingRule{}, err
+	}
+	if len(persisted) > 0 {
+		rules = persisted
 	}
 	for _, rule := range rules {
 		if ruleMatchesEvent(rule, event) {

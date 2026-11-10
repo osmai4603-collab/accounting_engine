@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -11,15 +12,22 @@ import (
 )
 
 type ReceivableLedger struct {
-	repo      Repository
+	repo      ReceivableRepository
 	companyID uuid.UUID
 }
 
-func NewReceivableLedger(repo Repository) *ReceivableLedger {
+type ReceivableRepository interface {
+	OpenLineRepository
+	CompanyOpenLineRepository
+	PostedInvoiceRepository
+	WriteOffRepository
+}
+
+func NewReceivableLedger(repo ReceivableRepository) *ReceivableLedger {
 	return &ReceivableLedger{repo: repo}
 }
 
-func NewReceivableLedgerForCompany(repo Repository, companyID uuid.UUID) *ReceivableLedger {
+func NewReceivableLedgerForCompany(repo ReceivableRepository, companyID uuid.UUID) *ReceivableLedger {
 	return &ReceivableLedger{repo: repo, companyID: companyID}
 }
 
@@ -96,7 +104,7 @@ func (l *ReceivableLedger) addInvoice(companyID, partnerID, controlAccountID, jo
 		DueDate:          dueDate,
 		Reference:        reference,
 	}
-	if err := l.repo.SaveOpenLine(line); err != nil {
+	if err := l.repo.SaveOpenLine(context.Background(), line); err != nil {
 		return OpenLine{}, err
 	}
 	return line, nil
@@ -138,13 +146,9 @@ func (l *ReceivableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSch
 
 func (l *ReceivableLedger) listOpenLines(partnerID string) ([]OpenLine, error) {
 	if l.companyID == uuid.Nil {
-		return l.repo.ListOpenLines(partnerID)
+		return l.repo.ListOpenLines(context.Background(), partnerID)
 	}
-	repository, ok := l.repo.(CompanyOpenLineRepository)
-	if !ok {
-		return nil, ErrCompanyScopedOpenLinesRequired
-	}
-	return repository.ListOpenLinesForCompany(l.companyID, partnerID)
+	return l.repo.ListOpenLinesForCompanyContext(context.Background(), l.companyID, partnerID)
 }
 
 func agingBucket(asOf, dueDate time.Time) AgingBucket {
@@ -193,12 +197,12 @@ func (l *ReceivableLedger) CalculateECL(asOf time.Time, partnerID *uuid.UUID, pr
 }
 
 func (l *ReceivableLedger) CloseOpenLine(lineID uuid.UUID) error {
-	line, err := l.repo.GetOpenLine(lineID)
+	line, err := l.repo.GetOpenLine(context.Background(), l.companyID, lineID)
 	if err != nil {
 		return err
 	}
 	line.Closed = true
-	return l.repo.SaveOpenLine(line)
+	return l.repo.SaveOpenLine(context.Background(), line)
 }
 
 type ReceivableMatrix map[AgingBucket]decimal.Decimal

@@ -115,7 +115,7 @@ func TestReceivableWriteOffRequiresPostedEntryAndSupportsPartialSettlement(t *te
 		JournalEntryID: uuid.New(), Kind: LineReceivable,
 		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
 	}
-	if err := repo.SaveOpenLine(line); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), line); err != nil {
 		t.Fatal(err)
 	}
 	ledger := NewReceivableLedgerForCompany(repo, companyID)
@@ -124,7 +124,7 @@ func TestReceivableWriteOffRequiresPostedEntryAndSupportsPartialSettlement(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := repo.GetOpenLine(line.ID)
+	unchanged, err := repo.GetOpenLine(context.Background(), uuid.Nil, line.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestReceivableWriteOffRequiresPostedEntryAndSupportsPartialSettlement(t *te
 	if err := ledger.ConfirmWriteOff(line.ID, draft.ID); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := repo.GetOpenLine(line.ID)
+	updated, err := repo.GetOpenLine(context.Background(), uuid.Nil, line.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestReceivableWriteOffRequiresPostedEntryAndSupportsPartialSettlement(t *te
 	if err := ledger.ConfirmWriteOff(line.ID, fullDraft.ID); err != nil {
 		t.Fatal(err)
 	}
-	closed, err := repo.GetOpenLine(line.ID)
+	closed, err := repo.GetOpenLine(context.Background(), uuid.Nil, line.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

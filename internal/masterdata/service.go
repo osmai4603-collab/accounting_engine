@@ -1,6 +1,7 @@
 package masterdata
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -150,6 +151,17 @@ func (s *Service) GetCompanyByID(companyID uuid.UUID) (Company, error) {
 	return repository.GetCompanyByID(companyID)
 }
 
+func (s *Service) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID) (Company, error) {
+	if err := ctx.Err(); err != nil {
+		return Company{}, err
+	}
+	repository, ok := s.repo.(ContextCompanyScopedRepository)
+	if !ok {
+		return Company{}, ErrCompanyScopeRequired
+	}
+	return repository.GetCompanyByIDContext(ctx, companyID)
+}
+
 func (s *Service) ValidateCanPostToAccountForCompany(companyID, accountID uuid.UUID) error {
 	repository, ok := s.repo.(CompanyScopedRepository)
 	if !ok {
@@ -160,6 +172,31 @@ func (s *Service) ValidateCanPostToAccountForCompany(companyID, accountID uuid.U
 		return err
 	}
 	return validatePostableAccount(s.repo, accountID, account)
+}
+
+func (s *Service) ValidateCanPostToAccountForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	repository, ok := s.repo.(ContextCompanyScopedRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	account, err := repository.GetAccountByIDForCompanyContext(ctx, companyID, accountID)
+	if err != nil {
+		return err
+	}
+	if account.IsHeader {
+		return errors.New("cannot post to header account")
+	}
+	hasChildren, err := repository.HasChildrenForCompanyContext(ctx, companyID, accountID)
+	if err != nil {
+		return err
+	}
+	if hasChildren {
+		return errors.New("cannot post to parent account with children")
+	}
+	return nil
 }
 
 func validatePostableAccount(repository Repository, accountID uuid.UUID, account Account) error {
@@ -193,6 +230,24 @@ func (s *Service) GetOpenPeriodForCompanyDate(companyID uuid.UUID, date time.Tim
 		return FiscalPeriod{}, ErrCompanyScopeRequired
 	}
 	period, err := repository.GetPeriodByDateForCompany(companyID, date)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	if period.State != PeriodOpen {
+		return FiscalPeriod{}, ErrFiscalPeriodClosed
+	}
+	return period, nil
+}
+
+func (s *Service) GetOpenPeriodForCompanyDateContext(ctx context.Context, companyID uuid.UUID, date time.Time) (FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	repository, ok := s.repo.(ContextCompanyScopedRepository)
+	if !ok {
+		return FiscalPeriod{}, ErrCompanyScopeRequired
+	}
+	period, err := repository.GetPeriodByDateForCompanyContext(ctx, companyID, date)
 	if err != nil {
 		return FiscalPeriod{}, err
 	}
@@ -266,6 +321,38 @@ func (s *Service) GetOpenAdjustmentPeriodForCompanyDate(companyID uuid.UUID, dat
 		return FiscalPeriod{}, err
 	}
 	period, err := repository.GetPeriodByNumberForCompany(companyID, regularPeriod.FiscalYearID, periodNumber)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	expectedType := FiscalPeriodTypeYearEndAdjustment
+	if periodNumber == 14 {
+		expectedType = FiscalPeriodTypeAuditAdjustment
+	}
+	if period.Type != expectedType {
+		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	if period.State != PeriodOpen {
+		return FiscalPeriod{}, ErrFiscalPeriodClosed
+	}
+	return period, nil
+}
+
+func (s *Service) GetOpenAdjustmentPeriodForCompanyDateContext(ctx context.Context, companyID uuid.UUID, date time.Time, periodNumber int) (FiscalPeriod, error) {
+	if periodNumber != 13 && periodNumber != 14 {
+		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	repository, ok := s.repo.(ContextCompanyScopedRepository)
+	if !ok {
+		return FiscalPeriod{}, ErrCompanyScopeRequired
+	}
+	regularPeriod, err := repository.GetPeriodByDateForCompanyContext(ctx, companyID, date)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	period, err := repository.GetPeriodByNumberForCompanyContext(ctx, companyID, regularPeriod.FiscalYearID, periodNumber)
 	if err != nil {
 		return FiscalPeriod{}, err
 	}

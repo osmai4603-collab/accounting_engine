@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -57,14 +58,6 @@ type StatementBundle struct {
 
 type BundleEngine struct{ repository Repository }
 
-type fixedAssetRepository interface {
-	ListFixedAssets() ([]subledgers.FixedAsset, error)
-}
-
-type openLineRepository interface {
-	ListOpenLines(string) ([]subledgers.OpenLine, error)
-}
-
 func NewBundleEngine(repository Repository) *BundleEngine {
 	return &BundleEngine{repository: repository}
 }
@@ -113,7 +106,11 @@ func (e *BundleEngine) Generate(start, end time.Time, currency string) (Statemen
 }
 
 func (e *BundleEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (StatementBundle, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, start, end, currency)
+}
+
+func (e *BundleEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time, currency string) (StatementBundle, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return StatementBundle{}, err
 	}
@@ -130,11 +127,7 @@ func (e *BundleEngine) ppeReport(start, end time.Time, currency string, sheet Ba
 		EndingBalance:      decimal.Zero,
 		Assets:             make([]subledgers.FixedAsset, 0),
 	}
-	repository, ok := e.repository.(fixedAssetRepository)
-	if !ok {
-		return report, nil
-	}
-	assets, err := repository.ListFixedAssets()
+	assets, err := e.repository.ListFixedAssets(context.Background())
 	if err != nil {
 		return report, fmt.Errorf("list fixed assets: %w", err)
 	}
@@ -173,11 +166,7 @@ func (e *BundleEngine) ppeReport(start, end time.Time, currency string, sheet Ba
 
 func (e *BundleEngine) receivablesReport(asOf time.Time, currency string) (AgedReceivablesReport, error) {
 	report := AgedReceivablesReport{Currency: currency, Lines: make([]AgedReceivableLine, 0)}
-	repository, ok := e.repository.(openLineRepository)
-	if !ok {
-		return report, nil
-	}
-	lines, err := repository.ListOpenLines("")
+	lines, err := e.repository.ListOpenLines(context.Background(), "")
 	if err != nil {
 		return report, fmt.Errorf("list open lines: %w", err)
 	}

@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -13,15 +14,21 @@ import (
 var ErrInvalidControlAccount = errors.New("subledger: account is not a valid control account for this ledger")
 
 type ControlAccountReader interface {
-	GetAccountByIDForCompany(companyID, accountID uuid.UUID) (masterdata.Account, error)
+	GetAccountByIDForCompany(context.Context, uuid.UUID, uuid.UUID) (masterdata.Account, error)
 }
 
 type PostedJournalEntryReader interface {
-	GetEntryByID(uuid.UUID) (posting.JournalEntry, error)
+	GetEntryByIDForCompany(context.Context, uuid.UUID, uuid.UUID) (posting.JournalEntry, error)
 }
 
 type AtomicPostedOpenLineRepository interface {
-	SaveOpenLineForPostedEntry(OpenLine) error
+	SaveOpenLineForPostedEntry(context.Context, OpenLine) error
+}
+
+type PostedInvoiceRepository interface {
+	ControlAccountReader
+	PostedJournalEntryReader
+	AtomicPostedOpenLineRepository
 }
 
 func NewPostingOpenLineAttachment(line OpenLine) (posting.OpenLineAttachment, error) {
@@ -135,7 +142,7 @@ func postedControlAmount(entry posting.JournalEntry, line OpenLine) (financialty
 }
 
 func addPostedInvoice(
-	repo Repository,
+	repo PostedInvoiceRepository,
 	companyID, partnerID, controlAccountID, journalEntryID uuid.UUID,
 	amount financialtypes.Money,
 	documentDate, dueDate time.Time,
@@ -146,23 +153,12 @@ func addPostedInvoice(
 		amount.Currency() == "" || amount.IsNegative() || amount.Amount().IsZero() {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
-	accounts, ok := repo.(ControlAccountReader)
-	if !ok {
-		return OpenLine{}, ErrInvalidControlAccount
-	}
-	entries, ok := repo.(PostedJournalEntryReader)
-	if !ok {
-		return OpenLine{}, posting.ErrEntryNotFound
-	}
-	lines, ok := repo.(AtomicPostedOpenLineRepository)
-	if !ok {
-		return OpenLine{}, ErrAtomicMatchRequired
-	}
-	account, err := accounts.GetAccountByIDForCompany(companyID, controlAccountID)
+	ctx := context.Background()
+	account, err := repo.GetAccountByIDForCompany(ctx, companyID, controlAccountID)
 	if err != nil {
 		return OpenLine{}, err
 	}
-	entry, err := entries.GetEntryByID(journalEntryID)
+	entry, err := repo.GetEntryByIDForCompany(ctx, companyID, journalEntryID)
 	if err != nil {
 		return OpenLine{}, err
 	}
@@ -176,7 +172,7 @@ func addPostedInvoice(
 	if err := ValidatePostedOpenLine(line, account, entry); err != nil {
 		return OpenLine{}, err
 	}
-	if err := lines.SaveOpenLineForPostedEntry(line); err != nil {
+	if err := repo.SaveOpenLineForPostedEntry(ctx, line); err != nil {
 		return OpenLine{}, err
 	}
 	return line, nil

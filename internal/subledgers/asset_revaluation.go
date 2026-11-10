@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -13,7 +14,7 @@ func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue 
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -38,7 +39,7 @@ func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue 
 }
 
 func (l *FixedAssetLedger) ConfirmRevaluation(assetID, postedEntryID uuid.UUID, fairValue financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return err
 	}

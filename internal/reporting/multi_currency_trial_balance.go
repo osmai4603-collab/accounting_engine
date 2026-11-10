@@ -177,7 +177,16 @@ func (e *TrialBalanceEngine) GenerateMultiCurrencyForCompany(
 	startDate, endDate time.Time,
 	functionalCurrency string,
 ) (MultiCurrencyTrialBalance, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateMultiCurrencyForCompanyContext(context.Background(), companyID, startDate, endDate, functionalCurrency)
+}
+
+func (e *TrialBalanceEngine) GenerateMultiCurrencyForCompanyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	startDate, endDate time.Time,
+	functionalCurrency string,
+) (MultiCurrencyTrialBalance, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, endDate)
 	if err != nil {
 		return MultiCurrencyTrialBalance{}, err
 	}

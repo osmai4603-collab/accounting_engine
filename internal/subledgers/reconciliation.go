@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -13,11 +14,22 @@ import (
 )
 
 type MatchingEngine struct {
-	repo Repository
+	repo      MatchingRepository
+	companyID uuid.UUID
 }
 
-func NewMatchingEngine(repo Repository) *MatchingEngine {
+type MatchingRepository interface {
+	OpenLineRepository
+	ConditionalOpenLineRepository
+	ConditionalOpenLinesAndDraftRepository
+}
+
+func NewMatchingEngine(repo MatchingRepository) *MatchingEngine {
 	return &MatchingEngine{repo: repo}
+}
+
+func NewMatchingEngineForCompany(repo MatchingRepository, companyID uuid.UUID) *MatchingEngine {
+	return &MatchingEngine{repo: repo, companyID: companyID}
 }
 
 func (m *MatchingEngine) Match(lineID, counterpartID uuid.UUID, amount financialtypes.Money) (string, error) {
@@ -29,11 +41,11 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 	if lineID == counterpartID {
 		return "", nil, ErrUnmatchedLine
 	}
-	line, err := m.repo.GetOpenLine(lineID)
+	line, err := m.repo.GetOpenLine(context.Background(), m.companyID, lineID)
 	if err != nil {
 		return "", nil, err
 	}
-	counterpart, err := m.repo.GetOpenLine(counterpartID)
+	counterpart, err := m.repo.GetOpenLine(context.Background(), m.companyID, counterpartID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -146,11 +158,7 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 				return "", nil, err
 			}
 
-			repository, ok := m.repo.(ConditionalOpenLinesAndDraftRepository)
-			if !ok {
-				return "", nil, ErrAtomicMatchRequired
-			}
-			if err := repository.CompareAndSaveOpenLinesAndDraft(
+			if err := m.repo.CompareAndSaveOpenLinesAndDraft(context.Background(),
 				[]OpenLine{expectedLine, expectedCounterpart},
 				[]OpenLine{line, counterpart},
 				fxEntry,
@@ -161,11 +169,7 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 		}
 	}
 
-	repository, ok := m.repo.(ConditionalOpenLineRepository)
-	if !ok {
-		return "", nil, ErrAtomicMatchRequired
-	}
-	if err := repository.CompareAndSaveOpenLines(
+	if err := m.repo.CompareAndSaveOpenLines(context.Background(),
 		[]OpenLine{expectedLine, expectedCounterpart},
 		[]OpenLine{line, counterpart},
 	); err != nil {
@@ -199,7 +203,7 @@ func applyMatch(line, counterpart *OpenLine, amount financialtypes.Money) error 
 }
 
 func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
-	line, err := m.repo.GetOpenLine(lineID)
+	line, err := m.repo.GetOpenLine(context.Background(), m.companyID, lineID)
 	if err != nil {
 		return err
 	}
@@ -219,7 +223,7 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 	for _, match := range matches {
 		counterpart, ok := updated[match.CounterpartID]
 		if !ok {
-			counterpart, err = m.repo.GetOpenLine(match.CounterpartID)
+			counterpart, err = m.repo.GetOpenLine(context.Background(), line.CompanyID, match.CounterpartID)
 			if err != nil {
 				return err
 			}
@@ -278,11 +282,7 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 	sort.Slice(toSaveUpdated, func(i, j int) bool {
 		return toSaveUpdated[i].ID.String() < toSaveUpdated[j].ID.String()
 	})
-	repository, ok := m.repo.(ConditionalOpenLineRepository)
-	if !ok {
-		return ErrAtomicMatchRequired
-	}
-	return repository.CompareAndSaveOpenLines(toSaveExpected, toSaveUpdated)
+	return m.repo.CompareAndSaveOpenLines(context.Background(), toSaveExpected, toSaveUpdated)
 }
 
 func openLineMatches(line OpenLine) ([]OpenLineMatch, error) {

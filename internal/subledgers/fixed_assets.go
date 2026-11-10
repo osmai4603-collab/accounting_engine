@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -10,13 +11,23 @@ import (
 )
 
 type FixedAssetLedger struct {
-	repo Repository
+	repo      FixedAssetLedgerRepository
+	companyID uuid.UUID
 }
 
-func NewFixedAssetLedger(repo Repository, _ JournalCreator) *FixedAssetLedger {
+type FixedAssetLedgerRepository interface {
+	FixedAssetRepository
+	AtomicFixedAssetDraftRepository
+	AtomicFixedAssetConfirmationRepository
+}
+
+func NewFixedAssetLedger(repo FixedAssetLedgerRepository, _ JournalCreator) *FixedAssetLedger {
 	return &FixedAssetLedger{repo: repo}
 }
 
+func NewFixedAssetLedgerForCompany(repo FixedAssetLedgerRepository, _ JournalCreator, companyID uuid.UUID) *FixedAssetLedger {
+	return &FixedAssetLedger{repo: repo, companyID: companyID}
+}
 func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 	if asset.CompanyID == uuid.Nil {
 		return ErrInvalidAsset
@@ -132,14 +143,14 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 		}
 		asset.RemainingUsefulLifeMonths = int(months)
 	}
-	return l.repo.SaveFixedAsset(asset)
+	return l.repo.SaveFixedAsset(context.Background(), asset)
 }
 
 func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, financialtypes.Money, error) {
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
@@ -178,7 +189,7 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 }
 
 func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID, depAmount financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return err
 	}
@@ -461,7 +472,7 @@ func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) 
 }
 
 func (l *FixedAssetLedger) PostImpairment(assetID uuid.UUID, recoverableAmount financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -483,7 +494,7 @@ func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Mo
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -542,7 +553,7 @@ func impairmentReference(assetID, entryID uuid.UUID) string {
 }
 
 func (l *FixedAssetLedger) ConfirmImpairment(assetID, postedEntryID uuid.UUID, loss financialtypes.Money, asOf time.Time) error {
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return err
 	}
@@ -576,7 +587,7 @@ func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Tim
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -659,7 +670,7 @@ func disposalReference(assetID, entryID uuid.UUID) string {
 }
 
 func (l *FixedAssetLedger) ConfirmDisposal(assetID, postedEntryID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money) error {
-	asset, err := l.repo.GetFixedAsset(assetID)
+	asset, err := l.repo.GetFixedAsset(context.Background(), l.companyID, assetID)
 	if err != nil {
 		return err
 	}
@@ -710,11 +721,7 @@ func impairmentEntry(asset FixedAsset, entryID uuid.UUID, loss financialtypes.Mo
 }
 
 func (l *FixedAssetLedger) saveAssetDraft(expected FixedAsset, entry posting.JournalEntry) error {
-	repository, ok := l.repo.(AtomicFixedAssetDraftRepository)
-	if !ok {
-		return ErrAtomicFixedAssetRequired
-	}
-	return repository.SaveFixedAssetDraft(expected, entry)
+	return l.repo.SaveFixedAssetDraft(context.Background(), expected, entry)
 }
 
 func (l *FixedAssetLedger) confirmAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error {
@@ -724,9 +731,5 @@ func (l *FixedAssetLedger) confirmAssetMutation(expected, updated FixedAsset, ex
 		}
 	}
 	updated.AppliedEntryIDs = append(append([]uuid.UUID(nil), expected.AppliedEntryIDs...), expectedEntry.ID)
-	repository, ok := l.repo.(AtomicFixedAssetConfirmationRepository)
-	if !ok {
-		return ErrFixedAssetConfirmationRequired
-	}
-	return repository.ConfirmFixedAssetMutation(expected, updated, expectedEntry)
+	return l.repo.ConfirmFixedAssetMutation(context.Background(), expected, updated, expectedEntry)
 }

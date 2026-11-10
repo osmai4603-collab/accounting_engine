@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	"github.com/google/uuid"
 )
@@ -42,21 +44,54 @@ var (
 )
 
 type Repository interface {
-	SaveEvent(EconomicEvent) error
-	GetEventByIdempotencyKey(string) (EconomicEvent, bool, error)
-
-	SaveOpenLine(OpenLine) error
-	GetOpenLine(uuid.UUID) (OpenLine, error)
-	ListOpenLines(string) ([]OpenLine, error)
-
-	SaveFixedAsset(FixedAsset) error
-	GetFixedAsset(uuid.UUID) (FixedAsset, error)
-
-	SaveBankItem(BankItem) error
-	ListBankItems(string) ([]BankItem, error)
+	EventRepository
+	EventAccountingRuleRepository
+	AtomicEconomicEventRepository
+	CompanyEventRepository
+	OpenLineRepository
+	CompanyOpenLineRepository
+	AtomicOpenLineRepository
+	ConditionalOpenLineRepository
+	ConditionalOpenLinesAndDraftRepository
+	AtomicOpenLineWriteOffConfirmationRepository
+	PostedJournalEntryReader
+	AtomicPostedOpenLineRepository
+	FixedAssetRepository
+	AtomicFixedAssetDraftRepository
+	AtomicFixedAssetConfirmationRepository
+	BankItemRepository
+	CompanyBankItemRepository
+	ConditionalBankItemRepository
+	ConditionalBankItemsAndDraftRepository
+	ControlAccountReader
 }
 
-func (r *MemoryRepository) SaveEventAndDraft(event EconomicEvent, entry posting.JournalEntry) error {
+type EventRepository interface {
+	SaveEvent(context.Context, EconomicEvent) error
+	GetEventByIdempotencyKey(context.Context, string) (EconomicEvent, bool, error)
+}
+
+type OpenLineRepository interface {
+	SaveOpenLine(context.Context, OpenLine) error
+	GetOpenLine(context.Context, uuid.UUID, uuid.UUID) (OpenLine, error)
+	ListOpenLines(context.Context, string) ([]OpenLine, error)
+}
+
+type FixedAssetRepository interface {
+	SaveFixedAsset(context.Context, FixedAsset) error
+	GetFixedAsset(context.Context, uuid.UUID, uuid.UUID) (FixedAsset, error)
+	ListFixedAssets(context.Context) ([]FixedAsset, error)
+}
+
+type BankItemRepository interface {
+	SaveBankItem(context.Context, BankItem) error
+	ListBankItems(context.Context, string) ([]BankItem, error)
+}
+
+func (r *MemoryRepository) SaveEventAndDraft(ctx context.Context, event EconomicEvent, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -83,56 +118,56 @@ func (r *MemoryRepository) SaveEventAndDraft(event EconomicEvent, entry posting.
 }
 
 type CompanyEventRepository interface {
-	GetEventByIdempotencyKeyForCompany(uuid.UUID, string) (EconomicEvent, bool, error)
+	GetEventByIdempotencyKeyForCompany(context.Context, uuid.UUID, string) (EconomicEvent, bool, error)
 }
 
 type EventAccountingRuleRepository interface {
-	SaveEventAccountingRule(EventAccountingRule) error
-	ListEventAccountingRulesForCompany(uuid.UUID, string) ([]EventAccountingRule, error)
+	SaveEventAccountingRule(context.Context, EventAccountingRule) error
+	ListEventAccountingRulesForCompany(context.Context, uuid.UUID, string) ([]EventAccountingRule, error)
 }
 
 type CompanyOpenLineRepository interface {
-	ListOpenLinesForCompany(uuid.UUID, string) ([]OpenLine, error)
+	ListOpenLinesForCompanyContext(context.Context, uuid.UUID, string) ([]OpenLine, error)
 }
 
 type CompanyBankItemRepository interface {
-	ListBankItemsForCompany(uuid.UUID, string) ([]BankItem, error)
+	ListBankItemsForCompany(context.Context, uuid.UUID, string) ([]BankItem, error)
 }
 
 type ConditionalBankItemRepository interface {
-	CompareAndSaveBankItems(expected, updated []BankItem) error
+	CompareAndSaveBankItems(context.Context, []BankItem, []BankItem) error
 }
 
 type AtomicOpenLineRepository interface {
-	SaveOpenLines([]OpenLine) error
+	SaveOpenLines(context.Context, []OpenLine) error
 }
 
 type ConditionalOpenLineRepository interface {
-	CompareAndSaveOpenLines(expected, updated []OpenLine) error
+	CompareAndSaveOpenLines(context.Context, []OpenLine, []OpenLine) error
 }
 
 type ConditionalOpenLinesAndDraftRepository interface {
-	CompareAndSaveOpenLinesAndDraft(expected, updated []OpenLine, draft posting.JournalEntry) error
+	CompareAndSaveOpenLinesAndDraft(context.Context, []OpenLine, []OpenLine, posting.JournalEntry) error
 }
 
 type AtomicOpenLineWriteOffConfirmationRepository interface {
-	ConfirmOpenLineWriteOff(expected, updated OpenLine, postedEntry posting.JournalEntry) error
+	ConfirmOpenLineWriteOff(context.Context, OpenLine, OpenLine, posting.JournalEntry) error
 }
 
 type ConditionalBankItemsAndDraftRepository interface {
-	CompareAndSaveBankItemsAndDraft(expected, updated []BankItem, draft posting.JournalEntry) error
+	CompareAndSaveBankItemsAndDraft(context.Context, []BankItem, []BankItem, posting.JournalEntry) error
 }
 
 type AtomicEconomicEventRepository interface {
-	SaveEventAndDraft(EconomicEvent, posting.JournalEntry) error
+	SaveEventAndDraft(context.Context, EconomicEvent, posting.JournalEntry) error
 }
 
 type AtomicFixedAssetDraftRepository interface {
-	SaveFixedAssetDraft(expected FixedAsset, entry posting.JournalEntry) error
+	SaveFixedAssetDraft(context.Context, FixedAsset, posting.JournalEntry) error
 }
 
 type AtomicFixedAssetConfirmationRepository interface {
-	ConfirmFixedAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error
+	ConfirmFixedAssetMutation(context.Context, FixedAsset, FixedAsset, posting.JournalEntry) error
 }
 
 type MemoryRepository struct {
@@ -160,7 +195,10 @@ func eventRuleKey(companyID uuid.UUID, eventType string, priority int) string {
 	return companyID.String() + "\x00" + eventType + "\x00" + fmt.Sprint(priority)
 }
 
-func (r *MemoryRepository) SaveEventAccountingRule(rule EventAccountingRule) error {
+func (r *MemoryRepository) SaveEventAccountingRule(ctx context.Context, rule EventAccountingRule) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := rule.Validate(); err != nil {
 		return err
 	}
@@ -173,7 +211,10 @@ func (r *MemoryRepository) SaveEventAccountingRule(rule EventAccountingRule) err
 	return nil
 }
 
-func (r *MemoryRepository) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventType string) ([]EventAccountingRule, error) {
+func (r *MemoryRepository) ListEventAccountingRulesForCompany(ctx context.Context, companyID uuid.UUID, eventType string) ([]EventAccountingRule, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rules := make([]EventAccountingRule, 0)
@@ -191,7 +232,10 @@ func (r *MemoryRepository) ListEventAccountingRulesForCompany(companyID uuid.UUI
 	return rules, nil
 }
 
-func (r *MemoryRepository) SaveEvent(event EconomicEvent) error {
+func (r *MemoryRepository) SaveEvent(ctx context.Context, event EconomicEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := companyEventKey(event.CompanyID, event.IdempotencyKey)
@@ -206,7 +250,10 @@ func (r *MemoryRepository) SaveEvent(event EconomicEvent) error {
 	return nil
 }
 
-func (r *MemoryRepository) GetEventByIdempotencyKey(key string) (EconomicEvent, bool, error) {
+func (r *MemoryRepository) GetEventByIdempotencyKey(ctx context.Context, key string) (EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return EconomicEvent{}, false, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var event EconomicEvent
@@ -222,7 +269,10 @@ func (r *MemoryRepository) GetEventByIdempotencyKey(key string) (EconomicEvent, 
 	return event, ok, nil
 }
 
-func (r *MemoryRepository) GetEventByIdempotencyKeyForCompany(companyID uuid.UUID, key string) (EconomicEvent, bool, error) {
+func (r *MemoryRepository) GetEventByIdempotencyKeyForCompany(ctx context.Context, companyID uuid.UUID, key string) (EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return EconomicEvent{}, false, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	event, ok := r.events[companyEventKey(companyID, key)]
@@ -233,7 +283,10 @@ func companyEventKey(companyID uuid.UUID, key string) string {
 	return companyID.String() + "\x00" + key
 }
 
-func (r *MemoryRepository) SaveOpenLine(line OpenLine) error {
+func (r *MemoryRepository) SaveOpenLine(ctx context.Context, line OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.lines[line.ID]; ok && existing.CompanyID != line.CompanyID {
@@ -243,7 +296,24 @@ func (r *MemoryRepository) SaveOpenLine(line OpenLine) error {
 	return nil
 }
 
-func (r *MemoryRepository) SaveOpenLines(lines []OpenLine) error {
+func (r *MemoryRepository) SaveOpenLineForPostedEntry(ctx context.Context, line OpenLine) error {
+	return r.SaveOpenLine(ctx, line)
+}
+
+func (r *MemoryRepository) GetAccountByIDForCompany(
+	ctx context.Context,
+	companyID, accountID uuid.UUID,
+) (masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Account{}, err
+	}
+	return masterdata.Account{}, masterdata.ErrAccountNotFound
+}
+
+func (r *MemoryRepository) SaveOpenLines(ctx context.Context, lines []OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, line := range lines {
@@ -260,7 +330,10 @@ func (r *MemoryRepository) SaveOpenLines(lines []OpenLine) error {
 	return nil
 }
 
-func (r *MemoryRepository) CompareAndSaveOpenLines(expected, updated []OpenLine) error {
+func (r *MemoryRepository) CompareAndSaveOpenLines(ctx context.Context, expected, updated []OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(expected) != len(updated) {
@@ -285,7 +358,10 @@ func (r *MemoryRepository) CompareAndSaveOpenLines(expected, updated []OpenLine)
 	return nil
 }
 
-func (r *MemoryRepository) CompareAndSaveOpenLinesAndDraft(expected, updated []OpenLine, draft posting.JournalEntry) error {
+func (r *MemoryRepository) CompareAndSaveOpenLinesAndDraft(ctx context.Context, expected, updated []OpenLine, draft posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
@@ -322,28 +398,37 @@ func (r *MemoryRepository) CompareAndSaveOpenLinesAndDraft(expected, updated []O
 	return nil
 }
 
-func (r *MemoryRepository) GetOpenLine(id uuid.UUID) (OpenLine, error) {
+func (r *MemoryRepository) GetOpenLine(ctx context.Context, companyID, id uuid.UUID) (OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return OpenLine{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	line, ok := r.lines[id]
-	if !ok {
+	if !ok || (companyID != uuid.Nil && line.CompanyID != companyID) {
 		return OpenLine{}, ErrNotFound
 	}
 	return cloneOpenLine(line), nil
 }
 
-func (r *MemoryRepository) GetEntryByID(id uuid.UUID) (posting.JournalEntry, error) {
+func (r *MemoryRepository) GetEntryByIDForCompany(ctx context.Context, companyID, id uuid.UUID) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.drafts[id]
-	if !ok {
+	if !ok || (companyID != uuid.Nil && entry.CompanyID != companyID) {
 		return posting.JournalEntry{}, posting.ErrEntryNotFound
 	}
 	entry.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
 	return entry, nil
 }
 
-func (r *MemoryRepository) ConfirmOpenLineWriteOff(expected, updated OpenLine, postedEntry posting.JournalEntry) error {
+func (r *MemoryRepository) ConfirmOpenLineWriteOff(ctx context.Context, expected, updated OpenLine, postedEntry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
 		updated.CompanyID != expected.CompanyID || postedEntry.CompanyID != expected.CompanyID ||
 		postedEntry.Status != posting.EntryPosted {
@@ -369,7 +454,10 @@ func (r *MemoryRepository) ConfirmOpenLineWriteOff(expected, updated OpenLine, p
 	return nil
 }
 
-func (r *MemoryRepository) ListOpenLines(partnerID string) ([]OpenLine, error) {
+func (r *MemoryRepository) ListOpenLines(ctx context.Context, partnerID string) ([]OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	lines := make([]OpenLine, 0)
@@ -381,7 +469,10 @@ func (r *MemoryRepository) ListOpenLines(partnerID string) ([]OpenLine, error) {
 	return lines, nil
 }
 
-func (r *MemoryRepository) ListOpenLinesForCompany(companyID uuid.UUID, partnerID string) ([]OpenLine, error) {
+func (r *MemoryRepository) ListOpenLinesForCompanyContext(ctx context.Context, companyID uuid.UUID, partnerID string) ([]OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	lines := make([]OpenLine, 0)
@@ -394,7 +485,14 @@ func (r *MemoryRepository) ListOpenLinesForCompany(companyID uuid.UUID, partnerI
 	return lines, nil
 }
 
-func (r *MemoryRepository) SaveFixedAsset(asset FixedAsset) error {
+func (r *MemoryRepository) ListOpenLinesForCompany(companyID uuid.UUID, partnerID string) ([]OpenLine, error) {
+	return r.ListOpenLinesForCompanyContext(context.Background(), companyID, partnerID)
+}
+
+func (r *MemoryRepository) SaveFixedAsset(ctx context.Context, asset FixedAsset) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.assets[asset.ID]; ok && existing.CompanyID != asset.CompanyID {
@@ -404,7 +502,10 @@ func (r *MemoryRepository) SaveFixedAsset(asset FixedAsset) error {
 	return nil
 }
 
-func (r *MemoryRepository) SaveFixedAssetDraft(expected FixedAsset, entry posting.JournalEntry) error {
+func (r *MemoryRepository) SaveFixedAssetDraft(ctx context.Context, expected FixedAsset, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
 		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return ErrInvalidAsset
@@ -438,7 +539,10 @@ func (r *MemoryRepository) SaveFixedAssetDraft(expected FixedAsset, entry postin
 	return nil
 }
 
-func (r *MemoryRepository) ConfirmFixedAssetMutation(expected, updated FixedAsset, expectedEntry posting.JournalEntry) error {
+func (r *MemoryRepository) ConfirmFixedAssetMutation(ctx context.Context, expected, updated FixedAsset, expectedEntry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
 		updated.CompanyID != expected.CompanyID || expectedEntry.ID == uuid.Nil ||
 		expectedEntry.CompanyID != expected.CompanyID || expectedEntry.Status != posting.EntryPosted {
@@ -482,17 +586,23 @@ func FixedAssetEntryMatches(actual, expected posting.JournalEntry) bool {
 	return true
 }
 
-func (r *MemoryRepository) GetFixedAsset(id uuid.UUID) (FixedAsset, error) {
+func (r *MemoryRepository) GetFixedAsset(ctx context.Context, companyID, id uuid.UUID) (FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return FixedAsset{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	asset, ok := r.assets[id]
-	if !ok {
+	if !ok || (companyID != uuid.Nil && asset.CompanyID != companyID) {
 		return FixedAsset{}, ErrNotFound
 	}
 	return cloneFixedAsset(asset), nil
 }
 
-func (r *MemoryRepository) ListFixedAssets() ([]FixedAsset, error) {
+func (r *MemoryRepository) ListFixedAssets(ctx context.Context) ([]FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	assets := make([]FixedAsset, 0, len(r.assets))
@@ -502,7 +612,10 @@ func (r *MemoryRepository) ListFixedAssets() ([]FixedAsset, error) {
 	return assets, nil
 }
 
-func (r *MemoryRepository) SaveBankItem(item BankItem) error {
+func (r *MemoryRepository) SaveBankItem(ctx context.Context, item BankItem) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, current := range r.bank[item.AccountID.String()] {
@@ -517,14 +630,20 @@ func (r *MemoryRepository) SaveBankItem(item BankItem) error {
 	return nil
 }
 
-func (r *MemoryRepository) ListBankItems(accountID string) ([]BankItem, error) {
+func (r *MemoryRepository) ListBankItems(ctx context.Context, accountID string) ([]BankItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	items := append([]BankItem(nil), r.bank[accountID]...)
 	return items, nil
 }
 
-func (r *MemoryRepository) ListBankItemsForCompany(companyID uuid.UUID, accountID string) ([]BankItem, error) {
+func (r *MemoryRepository) ListBankItemsForCompany(ctx context.Context, companyID uuid.UUID, accountID string) ([]BankItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	items := make([]BankItem, 0)
@@ -536,7 +655,10 @@ func (r *MemoryRepository) ListBankItemsForCompany(companyID uuid.UUID, accountI
 	return items, nil
 }
 
-func (r *MemoryRepository) CompareAndSaveBankItems(expected, updated []BankItem) error {
+func (r *MemoryRepository) CompareAndSaveBankItems(ctx context.Context, expected, updated []BankItem) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(expected) != len(updated) {
@@ -576,7 +698,10 @@ func (r *MemoryRepository) CompareAndSaveBankItems(expected, updated []BankItem)
 	return nil
 }
 
-func (r *MemoryRepository) CompareAndSaveBankItemsAndDraft(expected, updated []BankItem, draft posting.JournalEntry) error {
+func (r *MemoryRepository) CompareAndSaveBankItemsAndDraft(ctx context.Context, expected, updated []BankItem, draft posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}

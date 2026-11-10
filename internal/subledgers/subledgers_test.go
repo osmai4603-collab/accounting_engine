@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestEventBridgeRejectsStoredEventWithoutResult(t *testing.T) {
 		CompanyID: uuid.New(), IdempotencyKey: "incomplete-event", EventType: "treasury_transfer",
 		Amount: money(t, "10"),
 	}
-	if err := repo.SaveEvent(event); err != nil {
+	if err := repo.SaveEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
 	_, err := NewEventBridge(repo, &draftCreator{}).Process(event)
@@ -202,10 +203,10 @@ func TestPartialReconciliation(t *testing.T) {
 	partner := uuid.New()
 	receivable := OpenLine{CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, Kind: LineReceivable, OriginalAmount: money(t, "100.00"), ResidualAmount: money(t, "100.00")}
 	payment := OpenLine{CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, Kind: LinePayable, OriginalAmount: money(t, "100.00"), ResidualAmount: money(t, "100.00")}
-	if err := repo.SaveOpenLine(receivable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), receivable); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(payment); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), payment); err != nil {
 		t.Fatal(err)
 	}
 	matcher := NewMatchingEngine(repo)
@@ -213,7 +214,7 @@ func TestPartialReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := repo.GetOpenLine(receivable.ID)
+	updated, err := repo.GetOpenLine(context.Background(), uuid.Nil, receivable.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,10 +234,10 @@ func TestMultiplePartialMatchesCanBeReversed(t *testing.T) {
 		CompanyID: companyID, ID: uuid.New(), Kind: LinePayable,
 		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
 	}
-	if err := repo.SaveOpenLine(receivable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), receivable); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(payable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), payable); err != nil {
 		t.Fatal(err)
 	}
 	matcher := NewMatchingEngine(repo)
@@ -245,7 +246,7 @@ func TestMultiplePartialMatchesCanBeReversed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	updated, err := repo.GetOpenLine(receivable.ID)
+	updated, err := repo.GetOpenLine(context.Background(), uuid.Nil, receivable.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestMultiplePartialMatchesCanBeReversed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []uuid.UUID{receivable.ID, payable.ID} {
-		line, err := repo.GetOpenLine(id)
+		line, err := repo.GetOpenLine(context.Background(), uuid.Nil, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,10 +278,10 @@ func TestConcurrentReconciliationDoesNotOvermatch(t *testing.T) {
 		CompanyID: companyID, ID: uuid.New(), Kind: LinePayable,
 		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
 	}
-	if err := repo.SaveOpenLine(receivable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), receivable); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(payable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), payable); err != nil {
 		t.Fatal(err)
 	}
 	matcher := NewMatchingEngine(repo)
@@ -303,7 +304,7 @@ func TestConcurrentReconciliationDoesNotOvermatch(t *testing.T) {
 	if successes != 1 {
 		t.Fatalf("successful matches = %d, want 1", successes)
 	}
-	line, err := repo.GetOpenLine(receivable.ID)
+	line, err := repo.GetOpenLine(context.Background(), uuid.Nil, receivable.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,10 +324,10 @@ func TestMatchingRejectsCrossCompanyLines(t *testing.T) {
 		CompanyID: uuid.New(), ID: uuid.New(), PartnerID: &partner, Kind: LinePayable,
 		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
 	}
-	if err := repo.SaveOpenLine(receivable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), receivable); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(payable); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), payable); err != nil {
 		t.Fatal(err)
 	}
 	_, err := NewMatchingEngine(repo).Match(receivable.ID, payable.ID, money(t, "10"))
@@ -390,7 +391,7 @@ func TestComponentDepreciationCreatesSeparateJournalLines(t *testing.T) {
 	if err := ledger.ConfirmDepreciation(assetID, entry.ID, amount, start); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := repo.GetFixedAsset(assetID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, assetID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +431,7 @@ func TestConcurrentMonthlyDepreciationIsAppliedOnce(t *testing.T) {
 			t.Fatalf("MonthlyDepreciation() error = %v", err)
 		}
 	}
-	updated, err := repo.GetFixedAsset(asset.ID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +466,7 @@ func TestMonthlyDepreciationConfirmationAndRejectedDraftRetry(t *testing.T) {
 	if err := ledger.ConfirmDepreciation(asset.ID, first.ID, amount, asOf); !errors.Is(err, posting.ErrEntryNotPosted) {
 		t.Fatalf("ConfirmDepreciation() error = %v, want posted-entry error", err)
 	}
-	unchanged, err := repo.GetFixedAsset(asset.ID)
+	unchanged, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +489,7 @@ func TestMonthlyDepreciationConfirmationAndRejectedDraftRetry(t *testing.T) {
 	if err := ledger.ConfirmDepreciation(asset.ID, second.ID, amount, asOf); err != nil {
 		t.Fatalf("ConfirmDepreciation() = %v", err)
 	}
-	updated, err := repo.GetFixedAsset(asset.ID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +520,7 @@ func TestTreasuryReconciliationDateTolerance(t *testing.T) {
 	if len(matched) != 1 || len(pending) != 0 || matched[0].ID != ledgerItem.ID {
 		t.Fatalf("unexpected tolerant reconciliation: matched=%d pending=%d", len(matched), len(pending))
 	}
-	stored, err := repo.ListBankItems(accountID.String())
+	stored, err := repo.ListBankItems(context.Background(), accountID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +585,7 @@ func TestTreasuryMultiLineReconciliationPostsBankFeeDraft(t *testing.T) {
 		!match.Difference.IsZero() {
 		t.Fatalf("unexpected multi-line reconciliation: match=%+v draft=%+v", match, draft)
 	}
-	stored, err := repo.ListBankItemsForCompany(companyID, accountID.String())
+	stored, err := repo.ListBankItemsForCompany(context.Background(), companyID, accountID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +627,7 @@ func TestTreasuryMultiLineReconciliationMatchesOneToFiveAndLeavesOthersPending(t
 	if draft != nil || len(match.LedgerItemIDs) != 5 || len(match.StatementLineIDs) != 1 {
 		t.Fatalf("unexpected 1:5 match: match=%+v draft=%+v", match, draft)
 	}
-	stored, err := repo.ListBankItemsForCompany(companyID, accountID.String())
+	stored, err := repo.ListBankItemsForCompany(context.Background(), companyID, accountID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +702,7 @@ func TestFixedAssetImpairmentIAS36(t *testing.T) {
 		t.Fatalf("expected 2 lines in impairment entry, got %d", len(entry.Lines))
 	}
 
-	updated, err := repo.GetFixedAsset(asset.ID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +718,7 @@ func TestFixedAssetImpairmentIAS36(t *testing.T) {
 	if err := ledger.ConfirmImpairment(asset.ID, entry.ID, loss, asOf); err != nil {
 		t.Fatalf("ConfirmImpairment() failed: %v", err)
 	}
-	updated, err = repo.GetFixedAsset(asset.ID)
+	updated, err = repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +776,7 @@ func TestFixedAssetRevaluationUsesOCIThenExpense(t *testing.T) {
 	if err := ledger.ConfirmRevaluation(assetID, decrease.ID, money(t, "8000"), secondDate); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := repo.GetFixedAsset(assetID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, assetID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,7 +806,7 @@ func TestDisposeAssetOnlyUpdatesAfterPosting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := repo.GetFixedAsset(asset.ID)
+	unchanged, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +822,7 @@ func TestDisposeAssetOnlyUpdatesAfterPosting(t *testing.T) {
 	if err := ledger.ConfirmDisposal(asset.ID, entry.ID, disposalDate, money(t, "9000")); err != nil {
 		t.Fatalf("ConfirmDisposal() failed: %v", err)
 	}
-	updated, err := repo.GetFixedAsset(asset.ID)
+	updated, err := repo.GetFixedAsset(context.Background(), uuid.Nil, asset.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,10 +856,10 @@ func TestMatchWithRealizedFXGainAndLoss(t *testing.T) {
 		OriginalAmount: money(t, "100.00"),
 		ResidualAmount: money(t, "100.00"),
 	}
-	if err := repo.SaveOpenLine(invLine); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), invLine); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(payLine); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), payLine); err != nil {
 		t.Fatal(err)
 	}
 
@@ -914,10 +915,10 @@ func TestMatchWithRealizedFXGainAndLoss(t *testing.T) {
 		OriginalAmount: money(t, "100.00"),
 		ResidualAmount: money(t, "100.00"),
 	}
-	if err := repo.SaveOpenLine(billLine); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), billLine); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveOpenLine(billPayLine); err != nil {
+	if err := repo.SaveOpenLine(context.Background(), billPayLine); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -17,16 +18,21 @@ func (l *PayableLedger) PrepareWriteOff(lineID uuid.UUID, amount financialtypes.
 	return prepareOpenLineWriteOff(l.repo, l.companyID, lineID, amount, params, LinePayable)
 }
 
-func PrepareWriteOffForCompany(repo Repository, companyID, lineID uuid.UUID, amount financialtypes.Money, params WriteOffParams) (posting.JournalEntry, error) {
-	line, err := repo.GetOpenLine(lineID)
+func PrepareWriteOffForCompany(repo PrepareWriteOffRepository, companyID, lineID uuid.UUID, amount financialtypes.Money, params WriteOffParams) (posting.JournalEntry, error) {
+	line, err := repo.GetOpenLine(context.Background(), companyID, lineID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	return prepareOpenLineWriteOff(repo, companyID, lineID, amount, params, line.Kind)
 }
 
-func prepareOpenLineWriteOff(repo Repository, companyID, lineID uuid.UUID, amount financialtypes.Money, params WriteOffParams, kind LineKind) (posting.JournalEntry, error) {
-	line, err := repo.GetOpenLine(lineID)
+type PrepareWriteOffRepository interface {
+	OpenLineRepository
+	ConditionalOpenLinesAndDraftRepository
+}
+
+func prepareOpenLineWriteOff(repo PrepareWriteOffRepository, companyID, lineID uuid.UUID, amount financialtypes.Money, params WriteOffParams, kind LineKind) (posting.JournalEntry, error) {
+	line, err := repo.GetOpenLine(context.Background(), companyID, lineID)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -66,11 +72,7 @@ func prepareOpenLineWriteOff(repo Repository, companyID, lineID uuid.UUID, amoun
 	updated.PendingWriteOffID = entry.ID
 	updated.PendingWriteOffAmount = amount
 	updated.WriteOffAdjustmentAccountID = params.AdjustmentAccountID
-	repository, ok := repo.(ConditionalOpenLinesAndDraftRepository)
-	if !ok {
-		return posting.JournalEntry{}, ErrAtomicMatchRequired
-	}
-	if err := repository.CompareAndSaveOpenLinesAndDraft([]OpenLine{line}, []OpenLine{updated}, entry); err != nil {
+	if err := repo.CompareAndSaveOpenLinesAndDraft(context.Background(), []OpenLine{line}, []OpenLine{updated}, entry); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	return entry, nil
@@ -84,12 +86,18 @@ func (l *PayableLedger) ConfirmWriteOff(lineID, postedEntryID uuid.UUID) error {
 	return confirmOpenLineWriteOff(l.repo, l.companyID, lineID, postedEntryID)
 }
 
-func ConfirmWriteOffForCompany(repo Repository, companyID, lineID, postedEntryID uuid.UUID) error {
+type WriteOffRepository interface {
+	PrepareWriteOffRepository
+	PostedJournalEntryReader
+	AtomicOpenLineWriteOffConfirmationRepository
+}
+
+func ConfirmWriteOffForCompany(repo WriteOffRepository, companyID, lineID, postedEntryID uuid.UUID) error {
 	return confirmOpenLineWriteOff(repo, companyID, lineID, postedEntryID)
 }
 
-func confirmOpenLineWriteOff(repo Repository, companyID, lineID, postedEntryID uuid.UUID) error {
-	line, err := repo.GetOpenLine(lineID)
+func confirmOpenLineWriteOff(repo WriteOffRepository, companyID, lineID, postedEntryID uuid.UUID) error {
+	line, err := repo.GetOpenLine(context.Background(), companyID, lineID)
 	if err != nil {
 		return err
 	}
@@ -101,11 +109,7 @@ func confirmOpenLineWriteOff(repo Repository, companyID, lineID, postedEntryID u
 		line.PendingWriteOffAmount.Amount().IsZero() || line.WriteOffAdjustmentAccountID == uuid.Nil {
 		return ErrNoPendingWriteOff
 	}
-	entryReader, ok := repo.(PostedJournalEntryReader)
-	if !ok {
-		return posting.ErrEntryNotFound
-	}
-	entry, err := entryReader.GetEntryByID(postedEntryID)
+	entry, err := repo.GetEntryByIDForCompany(context.Background(), companyID, postedEntryID)
 	if err != nil {
 		return err
 	}
@@ -138,11 +142,7 @@ func confirmOpenLineWriteOff(repo Repository, companyID, lineID, postedEntryID u
 	updated.PendingWriteOffID = uuid.Nil
 	updated.PendingWriteOffAmount = financialtypes.Money{}
 	updated.WriteOffAdjustmentAccountID = uuid.Nil
-	repository, ok := repo.(AtomicOpenLineWriteOffConfirmationRepository)
-	if !ok {
-		return ErrAtomicMatchRequired
-	}
-	return repository.ConfirmOpenLineWriteOff(line, updated, expected)
+	return repo.ConfirmOpenLineWriteOff(context.Background(), line, updated, expected)
 }
 
 func writeOffJournalLines(line OpenLine, adjustmentAccountID uuid.UUID, amount, zero financialtypes.Money) []posting.JournalEntryLine {

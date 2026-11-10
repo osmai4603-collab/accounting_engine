@@ -1,6 +1,7 @@
 package accounting_engine
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -43,17 +44,19 @@ func New(first, second any) (*AccountingEngine, error) {
 }
 
 type StorageDriver interface {
-	masterdata.Repository
+	masterdata.ContextStorageRepository
+	masterdata.FinancialDimensionRepository
 	posting.Repository
 	posting.BulkRepository
+	posting.FinancialDimensionPolicy
 	subledgers.Repository
 	valuation.RateProviderSPI
 	reporting.Repository
 	governance.Repository
 	reporting.AccountRepository
 	reporting.LedgerRepository
-	reporting.EntryDateRepository
 	reporting.FiscalYearRepository
+	reporting.CompanyScopedClosingRepository
 }
 
 type AccountingEngine struct {
@@ -63,6 +66,7 @@ type AccountingEngine struct {
 	Valuation  *valuation.Engine
 	Reporting  *reporting.Engine
 	Governance *governance.Engine
+	Dimensions masterdata.FinancialDimensionRepository
 	Config     Config
 }
 
@@ -78,6 +82,63 @@ func (e *AccountingEngine) StatementBundle(start, end time.Time, currency string
 	return e.Reporting.Bundle.Generate(start, end, currency)
 }
 
+func (e *AccountingEngine) DimensionProfitAndLossForCompanyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	start, end time.Time,
+	currency string,
+) (reporting.DimensionProfitAndLoss, error) {
+	return e.Reporting.GenerateDimensionProfitAndLossForCompanyContext(
+		ctx, companyID, start, end, currency,
+	)
+}
+
+func (e *AccountingEngine) StartDailyAuditExports(
+	ctx context.Context,
+	exporter *governance.AuditExporter,
+	companyIDs []uuid.UUID,
+) (<-chan error, error) {
+	if exporter == nil || len(companyIDs) == 0 {
+		return nil, errors.New("daily audit export requires an exporter and at least one company")
+	}
+	seen := make(map[uuid.UUID]struct{}, len(companyIDs))
+	for _, companyID := range companyIDs {
+		if companyID == uuid.Nil {
+			return nil, masterdata.ErrCompanyScopeRequired
+		}
+		if _, exists := seen[companyID]; exists {
+			return nil, errors.New("daily audit export company ids must be unique")
+		}
+		seen[companyID] = struct{}{}
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		results := make(chan error, len(companyIDs))
+		for _, companyID := range companyIDs {
+			go func(companyID uuid.UUID) {
+				results <- exporter.RunDaily(runCtx, companyID)
+			}(companyID)
+		}
+		var firstErr error
+		for range companyIDs {
+			if err := <-results; err != nil && !errors.Is(err, context.Canceled) && firstErr == nil {
+				firstErr = err
+				cancel()
+			}
+		}
+		if firstErr != nil {
+			errCh <- firstErr
+		} else if err := ctx.Err(); err != nil {
+			errCh <- err
+		}
+	}()
+	return errCh, nil
+}
+
 func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 	if driver == nil {
 		return nil, ErrUnsupportedStorageDriver
@@ -86,8 +147,9 @@ func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 		config.BaseCurrency = DefaultConfig().BaseCurrency
 	}
 
-	masterService := masterdata.NewService(driver)
+	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(driver))
 	postingEngine := posting.NewEngine(driver, masterService)
+	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(driver))
 	subledgerService := subledgers.NewService(driver, postingEngine)
 	return &AccountingEngine{
 		MasterData: masterService,
@@ -96,6 +158,15 @@ func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 		Valuation:  valuation.NewEngine(driver),
 		Reporting:  reporting.NewEngine(driver),
 		Governance: governance.NewEngine(driver),
+		Dimensions: driver,
 		Config:     config,
 	}, nil
+}
+
+func (e *AccountingEngine) SaveCostCenter(ctx context.Context, center masterdata.CostCenter) error {
+	return e.Dimensions.SaveCostCenter(ctx, center)
+}
+
+func (e *AccountingEngine) SaveAnalyticalDimension(ctx context.Context, value masterdata.AnalyticalDimensionValue) error {
+	return e.Dimensions.SaveAnalyticalDimension(ctx, value)
 }

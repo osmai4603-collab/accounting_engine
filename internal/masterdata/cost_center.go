@@ -1,6 +1,7 @@
 package masterdata
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -33,7 +34,7 @@ func (c CostCenter) Validate() error {
 }
 
 type CostCenterRepository interface {
-	GetCostCenterForCompany(companyID, costCenterID uuid.UUID) (CostCenter, error)
+	GetCostCenterForCompany(ctx context.Context, companyID, costCenterID uuid.UUID) (CostCenter, error)
 }
 
 func ValidateCostCenterHierarchy(centers []CostCenter) error {

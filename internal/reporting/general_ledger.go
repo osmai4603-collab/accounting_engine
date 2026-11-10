@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"time"
@@ -130,7 +131,11 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 }
 
 func (e *GeneralLedgerEngine) GenerateForCompany(companyID, accountID uuid.UUID, start, end time.Time, currency string) (GeneralLedgerAccountReport, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, accountID, start, end, currency)
+}
+
+func (e *GeneralLedgerEngine) GenerateForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID, start, end time.Time, currency string) (GeneralLedgerAccountReport, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return GeneralLedgerAccountReport{}, err
 	}

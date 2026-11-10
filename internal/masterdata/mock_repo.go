@@ -1,6 +1,7 @@
 package masterdata
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,55 @@ type MockRepository struct {
 	years     map[uuid.UUID]FiscalYear
 	periods   map[uuid.UUID]FiscalPeriod
 	sequences map[uuid.UUID]int64
+}
+
+func (r *MockRepository) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID) (Company, error) {
+	if err := ctx.Err(); err != nil {
+		return Company{}, err
+	}
+	return r.GetCompanyByID(companyID)
+}
+
+func (r *MockRepository) GetAccountByIDForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (Account, error) {
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return r.GetAccountByIDForCompany(companyID, accountID)
+}
+
+func (r *MockRepository) GetFiscalYearForCompanyContext(ctx context.Context, companyID, fiscalYearID uuid.UUID) (FiscalYear, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalYear{}, err
+	}
+	return r.GetFiscalYearForCompany(companyID, fiscalYearID)
+}
+
+func (r *MockRepository) GetPeriodByDateForCompanyContext(ctx context.Context, companyID uuid.UUID, date time.Time) (FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	return r.GetPeriodByDateForCompany(companyID, date)
+}
+
+func (r *MockRepository) GetPeriodByNumberForCompanyContext(ctx context.Context, companyID, fiscalYearID uuid.UUID, number int) (FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	return r.GetPeriodByNumberForCompany(companyID, fiscalYearID, number)
+}
+
+func (r *MockRepository) HasChildrenForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, account := range r.accounts {
+		if account.CompanyID == companyID && account.ParentID != nil && *account.ParentID == accountID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func NewMockRepository() *MockRepository {

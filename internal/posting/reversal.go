@@ -1,22 +1,30 @@
 package posting
 
 import (
+	"context"
 	"time"
 
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 )
 
-func (e *Engine) Reverse(entryID uuid.UUID, posterID string) (JournalEntry, error) {
-	return e.ReverseDual(entryID, "system-reversal", posterID, time.Now().UTC())
+func (e *Engine) Reverse(companyID, entryID uuid.UUID, posterID string) (JournalEntry, error) {
+	return e.ReverseDual(companyID, entryID, "system-reversal", posterID, time.Now().UTC())
 }
 
-func (e *Engine) ReverseAt(entryID uuid.UUID, creatorID string, reversalDate time.Time) (JournalEntry, error) {
-	return e.ReverseDual(entryID, creatorID, creatorID, reversalDate)
+func (e *Engine) ReverseAt(companyID, entryID uuid.UUID, creatorID string, reversalDate time.Time) (JournalEntry, error) {
+	return e.ReverseDual(companyID, entryID, creatorID, creatorID, reversalDate)
 }
 
-func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reversalDate time.Time) (JournalEntry, error) {
-	original, err := e.repo.GetEntryByID(entryID)
+func (e *Engine) ReverseDual(companyID, entryID uuid.UUID, creatorID, posterID string, reversalDate time.Time) (JournalEntry, error) {
+	return e.ReverseDualContext(context.Background(), companyID, entryID, creatorID, posterID, reversalDate)
+}
+
+func (e *Engine) ReverseDualContext(ctx context.Context, companyID, entryID uuid.UUID, creatorID, posterID string, reversalDate time.Time) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	original, err := e.repo.GetEntryByIDForCompany(ctx, companyID, entryID)
 	if err != nil {
 		return JournalEntry{}, err
 	}
@@ -67,11 +75,12 @@ func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reve
 	if err := reversal.Validate(); err != nil {
 		return JournalEntry{}, err
 	}
-	if repository, ok := e.repo.(AtomicReversalRepository); ok {
-		if err := e.prepareForPosting(&reversal, posterID); err != nil {
+	contextRepository, hasContextRepository := e.repo.(ContextAtomicReversalRepository)
+	if hasContextRepository {
+		if err := e.prepareForPosting(ctx, &reversal, posterID); err != nil {
 			return JournalEntry{}, err
 		}
-		if err := e.repo.SaveDraft(reversal); err != nil {
+		if err := e.repo.SaveDraftContext(ctx, reversal); err != nil {
 			return JournalEntry{}, err
 		}
 		now := time.Now().UTC()
@@ -81,12 +90,12 @@ func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reve
 		reversal.UpdatedAt = now
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		return repository.PostReversalAtomic(original, reversal)
+		return contextRepository.PostReversalAtomicContext(ctx, original, reversal)
 	}
-	if err := e.repo.SaveDraft(reversal); err != nil {
+	if err := e.repo.SaveDraftContext(ctx, reversal); err != nil {
 		return JournalEntry{}, err
 	}
-	if err := e.PostEntry(&reversal, posterID); err != nil {
+	if err := e.PostEntryContext(ctx, &reversal, posterID); err != nil {
 		return JournalEntry{}, err
 	}
 
@@ -94,7 +103,7 @@ func (e *Engine) ReverseDual(entryID uuid.UUID, creatorID, posterID string, reve
 	original.ReversedEntryID = &reversalID
 	original.Status = EntryReversed
 	original.UpdatedAt = time.Now().UTC()
-	if err := e.repo.PostAtomic(original); err != nil {
+	if err := e.repo.PostAtomicContext(ctx, original); err != nil {
 		return JournalEntry{}, err
 	}
 	return reversal, nil

@@ -13,7 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrInvalidAuditExport = errors.New("invalid audit export signature")
+var (
+	ErrInvalidAuditExport  = errors.New("invalid audit export signature")
+	ErrAuditAnchorMismatch = errors.New("audit anchor does not match the audit chain")
+)
 
 type AuditDayAnchor struct {
 	CompanyID uuid.UUID `json:"company_id"`
@@ -29,6 +32,7 @@ type AuditExportRepository interface {
 
 type WORMStorageClient interface {
 	PutImmutableObject(ctx context.Context, key string, object []byte, retainUntil time.Time) error
+	GetImmutableObject(ctx context.Context, key string) ([]byte, error)
 }
 
 type AuditExporter struct {
@@ -101,7 +105,42 @@ func VerifyAuditAnchor(object []byte, publicKey ed25519.PublicKey) (AuditDayAnch
 	return envelope.Anchor, nil
 }
 
+func (e *AuditExporter) VerifyDailyAnchor(ctx context.Context, companyID uuid.UUID, date time.Time) error {
+	if e == nil || e.repository == nil || e.storage == nil ||
+		len(e.privateKey) != ed25519.PrivateKeySize || companyID == uuid.Nil {
+		return ErrInvalidAuditExport
+	}
+	date = date.UTC().Truncate(24 * time.Hour)
+	key := fmt.Sprintf("%s/%s/audit-anchor.json", companyID, date.Format("2006-01-02"))
+	object, err := e.storage.GetImmutableObject(ctx, key)
+	if err != nil {
+		return fmt.Errorf("read immutable audit anchor: %w", err)
+	}
+	anchor, err := VerifyAuditAnchor(object, e.privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		return err
+	}
+	if anchor.CompanyID != companyID || anchor.Date != date.Format("2006-01-02") {
+		return ErrAuditAnchorMismatch
+	}
+	if err := e.repository.VerifyDay(ctx, companyID, date); err != nil {
+		return fmt.Errorf("verify audit chain: %w", err)
+	}
+	rootHash, count, err := e.repository.GetDayFinalHash(ctx, companyID, date)
+	if err != nil {
+		return err
+	}
+	if anchor.RootHash != rootHash || anchor.Entries != count {
+		return ErrAuditAnchorMismatch
+	}
+	return nil
+}
+
 func (e *AuditExporter) RunDaily(ctx context.Context, companyID uuid.UUID) error {
+	if e == nil || e.repository == nil || e.storage == nil ||
+		len(e.privateKey) != ed25519.PrivateKeySize || e.retention <= 0 || companyID == uuid.Nil {
+		return ErrInvalidAuditExport
+	}
 	for {
 		now := time.Now().UTC()
 		nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
@@ -113,6 +152,9 @@ func (e *AuditExporter) RunDaily(ctx context.Context, companyID uuid.UUID) error
 		case <-timer.C:
 		}
 		if err := e.ExportDailyAnchor(ctx, companyID, nextMidnight.Add(-24*time.Hour)); err != nil {
+			return err
+		}
+		if err := e.VerifyDailyAnchor(ctx, companyID, nextMidnight.Add(-24*time.Hour)); err != nil {
 			return err
 		}
 	}

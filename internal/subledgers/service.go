@@ -16,7 +16,9 @@ func NewServiceForCompany(repository Repository, creator JournalCreator, company
 	service := NewService(repository, creator)
 	service.Receivables = NewReceivableLedgerForCompany(repository, companyID)
 	service.Payables = NewPayableLedgerForCompany(repository, companyID)
+	service.FixedAssets = NewFixedAssetLedgerForCompany(repository, creator, companyID)
 	service.Treasury = NewTreasuryLedgerForCompany(repository, companyID)
+	service.Matching = NewMatchingEngineForCompany(repository, companyID)
 	return service
 }
 func NewService(repository Repository, creator JournalCreator) *Service {

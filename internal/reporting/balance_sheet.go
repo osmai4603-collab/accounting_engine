@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -81,7 +82,11 @@ func (e *BalanceSheetEngine) Generate(asOf time.Time, currency string) (BalanceS
 }
 
 func (e *BalanceSheetEngine) GenerateForCompany(companyID uuid.UUID, asOf time.Time, currency string) (BalanceSheet, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, asOf, currency)
+}
+
+func (e *BalanceSheetEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, asOf time.Time, currency string) (BalanceSheet, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, asOf)
 	if err != nil {
 		return BalanceSheet{}, err
 	}

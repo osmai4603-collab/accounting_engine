@@ -1,6 +1,7 @@
 package posting
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 var (
 	ErrEntryNotFound                         = errors.New("journal entry not found")
 	ErrInvalidEntryState                     = errors.New("invalid journal entry state")
+	ErrApprovalRequired                      = errors.New("journal entry requires completed approvals")
 	ErrAtomicPostingOpenLineRequired         = errors.New("atomic journal posting with an open line is required")
 	ErrAdjustmentPeriodAuthorizationRequired = errors.New("adjustment period requires explicit authorization")
 	ErrFunctionalCurrencyMismatch            = errors.New("journal entry functional currency does not match company")
@@ -31,13 +33,30 @@ type Engine struct {
 	mu         sync.Mutex
 
 	MakerCheckerThreshold decimal.Decimal
+	dimensions            *FinancialDimensionsEngine
+	approvalGate          ApprovalGate
 }
 
 func NewEngine(repo Repository, masterData *masterdata.Service) *Engine {
 	return &Engine{repo: repo, masterdata: masterData}
 }
 
+func (e *Engine) SetFinancialDimensionsEngine(engine *FinancialDimensionsEngine) {
+	e.dimensions = engine
+}
+
+func (e *Engine) SetApprovalGate(gate ApprovalGate) {
+	e.approvalGate = gate
+}
+
 func (e *Engine) CreateDraft(entry JournalEntry) error {
+	return e.CreateDraftContext(context.Background(), entry)
+}
+
+func (e *Engine) CreateDraftContext(ctx context.Context, entry JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if entry.ID == uuid.Nil {
 		entry.ID = uuid.New()
 	}
@@ -59,29 +78,47 @@ func (e *Engine) CreateDraft(entry JournalEntry) error {
 	if err := entry.Validate(); err != nil {
 		return err
 	}
-	return e.repo.SaveDraft(entry)
+	return e.repo.SaveDraftContext(ctx, entry)
 }
 
 func (e *Engine) SaveDraft(entry JournalEntry) error {
 	return e.CreateDraft(entry)
 }
 
-func (e *Engine) Post(entryID uuid.UUID, posterID string) error {
-	entry, err := e.repo.GetEntryByID(entryID)
+func (e *Engine) Post(companyID, entryID uuid.UUID, posterID string) error {
+	return e.PostContext(context.Background(), companyID, entryID, posterID)
+}
+
+func (e *Engine) PostContext(ctx context.Context, companyID, entryID uuid.UUID, posterID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entry, err := e.repo.GetEntryByIDForCompany(ctx, companyID, entryID)
 	if err != nil {
 		return err
 	}
-	return e.PostEntry(&entry, posterID)
+	return e.PostEntryContext(ctx, &entry, posterID)
+}
+
+func (e *Engine) PostForCompany(ctx context.Context, companyID, entryID uuid.UUID, posterID string) error {
+	return e.PostContext(ctx, companyID, entryID, posterID)
 }
 
 func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
+	return e.PostEntryContext(context.Background(), entry, posterID)
+}
+
+func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, posterID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if entry.Status != EntryDraft {
 		if entry.Status == EntryPosted {
 			return financialtypes.ErrMoveAlreadyPosted
 		}
 		return ErrEntryNotDraft
 	}
-	if err := e.prepareForPosting(entry, posterID); err != nil {
+	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
 		return err
 	}
 
@@ -92,8 +129,8 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
 	entry.UpdatedAt = now
-	if repository, ok := e.repo.(AtomicPostingRepository); ok {
-		posted, err := repository.PostAndSequence(*entry)
+	if repository, ok := e.repo.(ContextAtomicPostingRepository); ok {
+		posted, err := repository.PostAndSequenceContext(ctx, *entry)
 		if err != nil {
 			entry.Status = EntryDraft
 			entry.PostedBy = ""
@@ -103,7 +140,7 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 		*entry = posted
 		return nil
 	}
-	sequence, err := e.repo.GetNextSequence(entry.JournalID)
+	sequence, err := e.repo.GetNextSequenceForCompanyContext(ctx, entry.CompanyID, entry.JournalID)
 	if err != nil {
 		entry.Status = EntryDraft
 		entry.PostedBy = ""
@@ -111,7 +148,7 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 		return err
 	}
 	entry.SequenceNumber = sequence
-	if err := e.repo.PostAtomic(*entry); err != nil {
+	if err := e.repo.PostAtomicContext(ctx, *entry); err != nil {
 		entry.Status = EntryDraft
 		entry.PostedBy = ""
 		entry.PostedAt = nil
@@ -122,6 +159,13 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 }
 
 func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachment, posterID string) error {
+	return e.PostEntryWithOpenLineContext(context.Background(), entry, line, posterID)
+}
+
+func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *JournalEntry, line OpenLineAttachment, posterID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if entry.Status != EntryDraft {
 		if entry.Status == EntryPosted {
 			return financialtypes.ErrMoveAlreadyPosted
@@ -135,11 +179,11 @@ func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachm
 		line.Amount.Currency() == "" || line.Amount.IsNegative() || line.Amount.Amount().IsZero() {
 		return ErrInvalidEntry
 	}
-	repository, ok := e.repo.(AtomicPostingWithOpenLineRepository)
+	repository, ok := e.repo.(ContextAtomicPostingWithOpenLineRepository)
 	if !ok {
 		return ErrAtomicPostingOpenLineRequired
 	}
-	if err := e.prepareForPosting(entry, posterID); err != nil {
+	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -150,7 +194,7 @@ func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachm
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
 	entry.UpdatedAt = now
-	posted, err := repository.PostAndSequenceWithOpenLine(*entry, line)
+	posted, err := repository.PostAndSequenceWithOpenLineContext(ctx, *entry, line)
 	if err != nil {
 		*entry = original
 		return err
@@ -159,13 +203,30 @@ func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachm
 	return nil
 }
 
-func (e *Engine) prepareForPosting(entry *JournalEntry, posterID string) error {
+func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, posterID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := entry.Validate(); err != nil {
 		return err
 	}
+	if e.dimensions != nil {
+		if err := e.dimensions.ValidateEntry(ctx, *entry); err != nil {
+			return err
+		}
+	}
+	if e.approvalGate != nil {
+		approved, err := e.approvalGate.IsApproved(ctx, entry.CompanyID, entry.ID)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return ErrApprovalRequired
+		}
+	}
 	if e.masterdata != nil {
 		if entry.CompanyID != uuid.Nil {
-			company, err := e.masterdata.GetCompanyByID(entry.CompanyID)
+			company, err := e.masterdata.GetCompanyByIDContext(ctx, entry.CompanyID)
 			if err != nil {
 				return err
 			}
@@ -183,7 +244,7 @@ func (e *Engine) prepareForPosting(entry *JournalEntry, posterID string) error {
 			var period masterdata.FiscalPeriod
 			var err error
 			if entry.CompanyID != uuid.Nil {
-				period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDate(entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+				period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
 			} else {
 				period, err = e.masterdata.GetOpenAdjustmentPeriodForDate(effectiveDate(entry), entry.TargetPeriodNumber)
 			}
@@ -197,7 +258,7 @@ func (e *Engine) prepareForPosting(entry *JournalEntry, posterID string) error {
 			var period masterdata.FiscalPeriod
 			var err error
 			if entry.CompanyID != uuid.Nil {
-				period, err = e.masterdata.GetOpenPeriodForCompanyDate(entry.CompanyID, effectiveDate(entry))
+				period, err = e.masterdata.GetOpenPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
 			} else {
 				period, err = e.masterdata.GetOpenPeriodForDate(effectiveDate(entry))
 			}
@@ -209,7 +270,7 @@ func (e *Engine) prepareForPosting(entry *JournalEntry, posterID string) error {
 		for _, line := range entry.Lines {
 			var err error
 			if entry.CompanyID != uuid.Nil {
-				err = e.masterdata.ValidateCanPostToAccountForCompany(entry.CompanyID, line.AccountID)
+				err = e.masterdata.ValidateCanPostToAccountForCompanyContext(ctx, entry.CompanyID, line.AccountID)
 			} else {
 				err = e.masterdata.ValidateCanPostToAccount(line.AccountID)
 			}
@@ -288,6 +349,6 @@ func (e *Engine) SetMakerCheckerThreshold(threshold decimal.Decimal) {
 	e.MakerCheckerThreshold = threshold
 }
 
-func (e *Engine) GetEntry(entryID uuid.UUID) (JournalEntry, error) {
-	return e.repo.GetEntryByID(entryID)
+func (e *Engine) GetEntry(ctx context.Context, companyID, entryID uuid.UUID) (JournalEntry, error) {
+	return e.repo.GetEntryByIDForCompany(ctx, companyID, entryID)
 }

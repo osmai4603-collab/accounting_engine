@@ -13,94 +13,104 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Repository is intentionally left as an open SPI. Ledger implementations can
-// expose any of the typed repository capabilities below.
-type Repository interface{}
-
 type AccountRepository interface {
-	ListAccounts() ([]masterdata.Account, error)
+	ListAccounts(context.Context) ([]masterdata.Account, error)
 }
 
 type LedgerRepository interface {
-	ListPostedEntries(time.Time, time.Time) ([]posting.JournalEntry, error)
+	ListPostedEntries(context.Context, time.Time, time.Time) ([]posting.JournalEntry, error)
 }
 
 type EntryDateRepository interface {
-	ListEntries(time.Time, time.Time) ([]posting.JournalEntry, error)
+	ListEntries(context.Context, time.Time, time.Time) ([]posting.JournalEntry, error)
+}
+
+type Repository interface {
+	AccountRepository
+	LedgerRepository
+	CompanyScopedReportingRepository
+	FiscalYearRepository
+	CompanyScopedClosingRepository
+	ListFixedAssets(context.Context) ([]subledgers.FixedAsset, error)
+	ListOpenLines(context.Context, string) ([]subledgers.OpenLine, error)
 }
 
 type FiscalYearRepository interface {
-	GetFiscalYear(uuid.UUID) (masterdata.FiscalYear, error)
-	UpdatePeriodState(uuid.UUID, masterdata.PeriodState) error
-	UpdateFiscalYearState(uuid.UUID, masterdata.FiscalYearState) error
+	GetFiscalYearForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (masterdata.FiscalYear, error)
+	UpdatePeriodStateForCompanyContext(context.Context, uuid.UUID, uuid.UUID, masterdata.PeriodState) error
+	UpdateFiscalYearStateForCompanyContext(context.Context, uuid.UUID, uuid.UUID, masterdata.FiscalYearState) error
+}
+
+type CompanyScopedClosingRepository interface {
+	GetEntryByIDForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (posting.JournalEntry, error)
 }
 
 var ErrCompanyScopeRequired = errors.New("company-scoped reporting repository is required")
 
 type CompanyScopedReportingRepository interface {
-	ListAccountsForCompany(uuid.UUID) ([]masterdata.Account, error)
-	ListEntriesForCompany(uuid.UUID, time.Time, time.Time) ([]posting.JournalEntry, error)
-}
-
-type CompanyScopedSubledgerReportingRepository interface {
-	ListFixedAssetsForCompany(uuid.UUID) ([]subledgers.FixedAsset, error)
-	ListOpenLinesForCompany(uuid.UUID, string) ([]subledgers.OpenLine, error)
+	ListAccountsForCompanyContext(context.Context, uuid.UUID) ([]masterdata.Account, error)
+	ListAccountsForCompanyAsOfContext(context.Context, uuid.UUID, time.Time) ([]masterdata.Account, error)
+	ListEntriesForCompanyContext(context.Context, uuid.UUID, time.Time, time.Time) ([]posting.JournalEntry, error)
+	ListFixedAssetsForCompanyContext(context.Context, uuid.UUID) ([]subledgers.FixedAsset, error)
+	ListOpenLinesForCompanyContext(context.Context, uuid.UUID, string) ([]subledgers.OpenLine, error)
+	GetRateForCompany(context.Context, uuid.UUID, string, string, time.Time) (decimal.Decimal, error)
+	GetRateOfTypeForCompany(context.Context, uuid.UUID, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
 }
 
 type companyReportingRepository struct {
+	ctx       context.Context
 	companyID uuid.UUID
-	ledger    CompanyScopedReportingRepository
-	subledger CompanyScopedSubledgerReportingRepository
+	asOf      time.Time
+	ledger    Repository
 }
 
-func newCompanyReportingRepository(repository Repository, companyID uuid.UUID) (Repository, error) {
+func newCompanyReportingRepository(ctx context.Context, repository Repository, companyID uuid.UUID, asOf time.Time) (Repository, error) {
 	if companyID == uuid.Nil {
 		return nil, ErrCompanyScopeRequired
 	}
-	ledger, ok := repository.(CompanyScopedReportingRepository)
-	if !ok {
-		return nil, ErrCompanyScopeRequired
+	if ctx == nil {
+		return nil, errors.New("reporting context is required")
 	}
-	subledger, _ := repository.(CompanyScopedSubledgerReportingRepository)
-	return companyReportingRepository{companyID: companyID, ledger: ledger, subledger: subledger}, nil
+	return companyReportingRepository{ctx: ctx, companyID: companyID, asOf: asOf, ledger: repository}, nil
 }
 
-func (r companyReportingRepository) ListAccounts() ([]masterdata.Account, error) {
-	return r.ledger.ListAccountsForCompany(r.companyID)
-}
-
-func (r companyReportingRepository) ListEntries(start, end time.Time) ([]posting.JournalEntry, error) {
-	return r.ledger.ListEntriesForCompany(r.companyID, start, end)
-}
-
-func (r companyReportingRepository) ListPostedEntries(start, end time.Time) ([]posting.JournalEntry, error) {
-	return r.ListEntries(start, end)
-}
-
-func (r companyReportingRepository) ListFixedAssets() ([]subledgers.FixedAsset, error) {
-	if r.subledger == nil {
-		return nil, ErrCompanyScopeRequired
+func (r companyReportingRepository) ListAccounts(ctx context.Context) ([]masterdata.Account, error) {
+	if ctx == nil {
+		ctx = r.ctx
 	}
-	return r.subledger.ListFixedAssetsForCompany(r.companyID)
+	if !r.asOf.IsZero() {
+		return r.ledger.ListAccountsForCompanyAsOfContext(ctx, r.companyID, r.asOf)
+	}
+	return r.ledger.ListAccountsForCompanyContext(ctx, r.companyID)
 }
 
-func (r companyReportingRepository) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) {
-	if r.subledger == nil {
-		return nil, ErrCompanyScopeRequired
+func (r companyReportingRepository) ListEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
+	if ctx == nil {
+		ctx = r.ctx
 	}
-	return r.subledger.ListOpenLinesForCompany(r.companyID, partnerID)
+	return r.ledger.ListEntriesForCompanyContext(ctx, r.companyID, start, end)
+}
+
+func (r companyReportingRepository) ListPostedEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
+	return r.ListEntries(ctx, start, end)
+}
+
+func (r companyReportingRepository) ListFixedAssets(ctx context.Context) ([]subledgers.FixedAsset, error) {
+	if ctx == nil {
+		ctx = r.ctx
+	}
+	return r.ledger.ListFixedAssetsForCompanyContext(ctx, r.companyID)
+}
+
+func (r companyReportingRepository) ListOpenLines(ctx context.Context, partnerID string) ([]subledgers.OpenLine, error) {
+	if ctx == nil {
+		ctx = r.ctx
+	}
+	return r.ledger.ListOpenLinesForCompanyContext(ctx, r.companyID, partnerID)
 }
 
 func (r companyReportingRepository) GetRate(ctx context.Context, from, to string, date time.Time) (decimal.Decimal, error) {
-	if provider, ok := r.ledger.(interface {
-		GetRateForCompany(context.Context, uuid.UUID, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return provider.GetRateForCompany(ctx, r.companyID, from, to, date)
-	}
-	if provider, ok := r.ledger.(valuation.RateProviderSPI); ok {
-		return provider.GetRate(ctx, from, to, date)
-	}
-	return decimal.Zero, valuation.ErrRateNotFound
+	return r.ledger.GetRateForCompany(ctx, r.companyID, from, to, date)
 }
 
 func (r companyReportingRepository) GetRateOfType(
@@ -109,15 +119,88 @@ func (r companyReportingRepository) GetRateOfType(
 	from, to string,
 	date time.Time,
 ) (decimal.Decimal, error) {
-	if provider, ok := r.ledger.(interface {
-		GetRateOfTypeForCompany(context.Context, uuid.UUID, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return provider.GetRateOfTypeForCompany(ctx, r.companyID, rateType, from, to, date)
+	return r.ledger.GetRateOfTypeForCompany(ctx, r.companyID, rateType, from, to, date)
+}
+
+func (r companyReportingRepository) ListAccountsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]masterdata.Account, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
 	}
-	if provider, ok := r.ledger.(interface {
-		GetRateOfType(context.Context, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return provider.GetRateOfType(ctx, rateType, from, to, date)
+	return r.ledger.ListAccountsForCompanyContext(ctx, companyID)
+}
+
+func (r companyReportingRepository) ListAccountsForCompanyAsOfContext(ctx context.Context, companyID uuid.UUID, asOf time.Time) ([]masterdata.Account, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
 	}
-	return r.GetRate(ctx, from, to, date)
+	return r.ledger.ListAccountsForCompanyAsOfContext(ctx, companyID, asOf)
+}
+
+func (r companyReportingRepository) ListEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time) ([]posting.JournalEntry, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
+	}
+	return r.ledger.ListEntriesForCompanyContext(ctx, companyID, start, end)
+}
+
+func (r companyReportingRepository) ListFixedAssetsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]subledgers.FixedAsset, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
+	}
+	return r.ledger.ListFixedAssetsForCompanyContext(ctx, companyID)
+}
+
+func (r companyReportingRepository) ListOpenLinesForCompanyContext(ctx context.Context, companyID uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
+	}
+	return r.ledger.ListOpenLinesForCompanyContext(ctx, companyID, partnerID)
+}
+
+func (r companyReportingRepository) GetRateForCompany(ctx context.Context, companyID uuid.UUID, from, to string, date time.Time) (decimal.Decimal, error) {
+	if companyID != r.companyID {
+		return decimal.Zero, ErrCompanyScopeRequired
+	}
+	return r.ledger.GetRateForCompany(ctx, companyID, from, to, date)
+}
+
+func (r companyReportingRepository) GetRateOfTypeForCompany(
+	ctx context.Context,
+	companyID uuid.UUID,
+	rateType valuation.RateType,
+	from, to string,
+	date time.Time,
+) (decimal.Decimal, error) {
+	if companyID != r.companyID {
+		return decimal.Zero, ErrCompanyScopeRequired
+	}
+	return r.ledger.GetRateOfTypeForCompany(ctx, companyID, rateType, from, to, date)
+}
+
+func (r companyReportingRepository) GetFiscalYearForCompanyContext(ctx context.Context, companyID, yearID uuid.UUID) (masterdata.FiscalYear, error) {
+	if companyID != r.companyID {
+		return masterdata.FiscalYear{}, ErrCompanyScopeRequired
+	}
+	return r.ledger.GetFiscalYearForCompanyContext(ctx, companyID, yearID)
+}
+
+func (r companyReportingRepository) UpdatePeriodStateForCompanyContext(ctx context.Context, companyID, periodID uuid.UUID, state masterdata.PeriodState) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	return r.ledger.UpdatePeriodStateForCompanyContext(ctx, companyID, periodID, state)
+}
+
+func (r companyReportingRepository) UpdateFiscalYearStateForCompanyContext(ctx context.Context, companyID, yearID uuid.UUID, state masterdata.FiscalYearState) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	return r.ledger.UpdateFiscalYearStateForCompanyContext(ctx, companyID, yearID, state)
+}
+
+func (r companyReportingRepository) GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
+	if companyID != r.companyID {
+		return posting.JournalEntry{}, ErrCompanyScopeRequired
+	}
+	return r.ledger.GetEntryByIDForCompanyContext(ctx, companyID, entryID)
 }

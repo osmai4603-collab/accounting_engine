@@ -1,6 +1,7 @@
 package accounting_engine_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 
 func BenchmarkSinglePosting(b *testing.B) {
 	driver := memory.New()
+	ctx := context.Background()
 	cash, revenue := uuid.New(), uuid.New()
-	_ = driver.CreateAccount(masterdata.Account{ID: cash, Code: "BEN-CASH", Name: "Cash", AccountType: masterdata.AccountTypeAsset})
-	_ = driver.CreateAccount(masterdata.Account{ID: revenue, Code: "BEN-REV", Name: "Revenue", AccountType: masterdata.AccountTypeIncome})
+	_ = driver.CreateAccount(ctx, masterdata.Account{ID: cash, Code: "BEN-CASH", Name: "Cash", AccountType: masterdata.AccountTypeAsset})
+	_ = driver.CreateAccount(ctx, masterdata.Account{ID: revenue, Code: "BEN-REV", Name: "Revenue", AccountType: masterdata.AccountTypeIncome})
 	journalID := uuid.New()
 	amount, _ := financialtypes.NewMoneyFromString("100", "USD")
 

@@ -89,6 +89,38 @@ func TestConcurrentPostingSequenceIntegrity(t *testing.T) {
 	}
 }
 
+func TestAccountingEngineExposesCompanyFinancialDimensions(t *testing.T) {
+	driver := memory.New()
+	ctx := context.Background()
+	engine, err := accountingengine.New(accountingengine.DefaultConfig(), driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	companyID, centerID, projectID := uuid.New(), uuid.New(), uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: "DIM-API", LegalName: "Dimension API",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.SaveCostCenter(context.Background(), masterdata.CostCenter{
+		ID: centerID, CompanyID: companyID, Code: "OPS", Name: "Operations", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.SaveAnalyticalDimension(context.Background(), masterdata.AnalyticalDimensionValue{
+		ID: projectID, CompanyID: companyID, Kind: masterdata.DimensionProject,
+		Code: "PROJECT-1", Name: "Project 1", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.DimensionProfitAndLossForCompanyContext(
+		context.Background(), companyID, time.Now().AddDate(0, 0, -1), time.Now(), "USD",
+	); err != nil {
+		t.Fatalf("company-scoped dimension report: %v", err)
+	}
+}
+
 func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
 	driver := memory.New()
 	journalID := uuid.New()
@@ -118,6 +150,7 @@ func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
 
 func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	driver := memory.New()
+	ctx := context.Background()
 	engine, err := accountingengine.New(accountingengine.DefaultConfig(), driver)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +158,14 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC)
-	year := masterdata.FiscalYear{ID: uuid.New(), Name: "FY2026", StartDate: start, EndDate: end}
+	companyID := uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: "SIM-2026", LegalName: "Simulation Company",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	year := masterdata.FiscalYear{ID: uuid.New(), CompanyID: companyID, Name: "FY2026", StartDate: start, EndDate: end}
 	for month := 1; month <= 12; month++ {
 		periodStart := time.Date(2026, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 		periodEnd := periodStart.AddDate(0, 1, 0).Add(-time.Nanosecond)
@@ -134,7 +174,7 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 			StartDate: periodStart, EndDate: periodEnd, State: masterdata.PeriodOpen,
 		})
 	}
-	if err := driver.CreateFiscalYear(year); err != nil {
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,6 +189,7 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	}
 	for _, account := range definitions {
 		account.ID = uuid.New()
+		account.CompanyID = companyID
 		if err := engine.MasterData.RegisterAccount(account); err != nil {
 			t.Fatal(err)
 		}
@@ -165,10 +206,11 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	capital.CompanyID = companyID
 	if err := engine.Posting.CreateDraft(capital); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Posting.Post(capital.ID, "checker"); err != nil {
+	if err := engine.Posting.Post(capital.CompanyID, capital.ID, "checker"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,10 +221,11 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 		mustEntry(t, journalID, start.Add(60*24*time.Hour), accounts["1200"], accounts["4000"], sales, true),
 		mustEntry(t, journalID, start.Add(90*24*time.Hour), accounts["5000"], accounts["1000"], sales, true),
 	} {
+		entry.CompanyID = companyID
 		if err := engine.Posting.CreateDraft(entry); err != nil {
 			t.Fatal(err)
 		}
-		if err := engine.Posting.Post(entry.ID, "checker"); err != nil {
+		if err := engine.Posting.Post(entry.CompanyID, entry.ID, "checker"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -193,7 +236,7 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := subledgers.EconomicEvent{IdempotencyKey: "simulation-1", EventType: "sale", Amount: revenueExpense, Date: start.Add(60 * 24 * time.Hour), PartnerID: &partner}
-	if err := engine.Subledgers.Repository.SaveEvent(event); err != nil {
+	if err := engine.Subledgers.Repository.SaveEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
 
@@ -247,6 +290,7 @@ func mustEntry(t *testing.T, journalID uuid.UUID, date time.Time, debitAccount, 
 
 func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 	driver := memory.New()
+	ctx := context.Background()
 	companyID := uuid.New()
 	company := masterdata.Company{
 		ID:                   companyID,
@@ -256,7 +300,7 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		PresentationCurrency: "SAR",
 		Active:               true,
 	}
-	if err := driver.CreateCompany(company); err != nil {
+	if err := driver.CreateCompany(ctx, company); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +324,7 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		if acc.NormalBalance == "" {
 			acc.NormalBalance = masterdata.DefaultNormalBalance(acc.AccountType)
 		}
-		if err := driver.CreateAccount(acc); err != nil {
+		if err := driver.CreateAccount(ctx, acc); err != nil {
 			t.Fatal(err)
 		}
 		accounts[acc.Code] = acc.ID
@@ -364,7 +408,7 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 				Type: masterdata.FiscalPeriodTypeAuditAdjustment,
 			},
 		)
-		if err := driver.CreateFiscalYear(fiscalYear); err != nil {
+		if err := driver.CreateFiscalYear(ctx, fiscalYear); err != nil {
 			t.Fatalf("CreateFiscalYear(FY%d): %v", yearNum, err)
 		}
 
@@ -432,11 +476,11 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		// Close monthly periods 1-12 to prepare for closing move
 		for _, p := range fiscalYear.Periods {
 			if p.Number >= 1 && p.Number <= 12 {
-				_ = driver.UpdatePeriodState(p.ID, masterdata.PeriodSoftClosed)
-				_ = driver.UpdatePeriodState(p.ID, masterdata.PeriodHardClosed)
+				_ = driver.UpdatePeriodState(ctx, companyID, p.ID, masterdata.PeriodSoftClosed)
+				_ = driver.UpdatePeriodState(ctx, companyID, p.ID, masterdata.PeriodHardClosed)
 			}
 		}
-		currentYear, err := driver.GetFiscalYearForCompany(companyID, fiscalYear.ID)
+		currentYear, err := driver.GetFiscalYearForCompany(ctx, companyID, fiscalYear.ID)
 		if err != nil {
 			t.Fatalf("GetFiscalYearForCompany FY%d: %v", yearNum, err)
 		}

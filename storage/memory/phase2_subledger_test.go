@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -12,10 +13,55 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestFinancialDimensionsAreCompanyScopedAndActive(t *testing.T) {
+	driver := New()
+	ctx := context.Background()
+	companyID, accountID, centerID, projectID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: "DIM", LegalName: "Dimensions", FunctionalCurrency: "USD",
+		PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateAccount(ctx, masterdata.Account{
+		ID: accountID, CompanyID: companyID, Code: "5000", Name: "Operating expense",
+		AccountType: masterdata.AccountTypeExpense, RequiresCostCenter: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.SaveCostCenter(ctx, masterdata.CostCenter{
+		ID: centerID, CompanyID: companyID, Code: "OPS", Name: "Operations", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.SaveAnalyticalDimension(ctx, masterdata.AnalyticalDimensionValue{
+		ID: projectID, CompanyID: companyID, Kind: masterdata.DimensionProject,
+		Code: "PROJECT-1", Name: "Project 1", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if required, err := driver.RequiresCostCenter(ctx, companyID, accountID); err != nil || !required {
+		t.Fatalf("cost center policy = %v, %v; want required", required, err)
+	}
+	if err := driver.ValidateCostCenter(ctx, companyID, centerID); err != nil {
+		t.Fatalf("active cost center validation: %v", err)
+	}
+	if err := driver.ValidateCostCenter(ctx, uuid.New(), centerID); !errors.Is(err, masterdata.ErrInvalidCostCenter) {
+		t.Fatalf("cross-company cost center validation = %v", err)
+	}
+	if err := driver.ValidateAnalyticalDimension(ctx, companyID, masterdata.DimensionProject, projectID); err != nil {
+		t.Fatalf("active project validation: %v", err)
+	}
+	if err := driver.ValidateAnalyticalDimension(ctx, companyID, masterdata.DimensionSegment, projectID); !errors.Is(err, masterdata.ErrInvalidAnalyticalDimension) {
+		t.Fatalf("wrong-kind project validation = %v", err)
+	}
+}
+
 func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T) {
 	driver := New()
+	ctx := context.Background()
 	companyID, controlID, revenueID, journalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	if err := driver.CreateCompany(masterdata.Company{
+	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: "T2", LegalName: "Phase Two", FunctionalCurrency: "USD", PresentationCurrency: "USD",
 	}); err != nil {
 		t.Fatal(err)
@@ -25,10 +71,10 @@ func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T
 		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
 		IsControlAccount: true, IsReconcilable: true,
 	}
-	if err := driver.CreateAccount(control); err != nil {
+	if err := driver.CreateAccount(ctx, control); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.CreateAccount(masterdata.Account{
+	if err := driver.CreateAccount(ctx, masterdata.Account{
 		CompanyID: companyID, ID: revenueID, Code: "4000", Name: "Revenue",
 		AccountType: masterdata.AccountTypeIncome, NormalBalance: masterdata.NormalBalanceCredit,
 	}); err != nil {
@@ -73,21 +119,22 @@ func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T
 
 func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 	driver := New()
+	ctx := context.Background()
 	companyID, controlID, revenueID, journalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	if err := driver.CreateCompany(masterdata.Company{
+	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: "T2-ATOMIC", LegalName: "Atomic Posting",
 		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.CreateAccount(masterdata.Account{
+	if err := driver.CreateAccount(ctx, masterdata.Account{
 		CompanyID: companyID, ID: controlID, Code: "1200", Name: "Trade receivables",
 		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
 		IsControlAccount: true, IsReconcilable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.CreateAccount(masterdata.Account{
+	if err := driver.CreateAccount(ctx, masterdata.Account{
 		CompanyID: companyID, ID: revenueID, Code: "4000", Name: "Revenue",
 		AccountType: masterdata.AccountTypeIncome, NormalBalance: masterdata.NormalBalanceCredit,
 	}); err != nil {
@@ -95,7 +142,7 @@ func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 	}
 	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	year.CompanyID = companyID
-	if err := driver.CreateFiscalYear(year); err != nil {
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,7 +160,7 @@ func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry.CompanyID = companyID
-	engine := posting.NewEngine(driver, masterdata.NewService(driver))
+	engine := posting.NewEngine(driver, masterdata.NewService(masterdata.NewRepositoryAdapter(driver)))
 	if err := engine.CreateDraft(entry); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +190,7 @@ func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 	if stored.Status != posting.EntryDraft {
 		t.Fatalf("entry status after failed atomic post = %s, want draft", stored.Status)
 	}
-	if _, err := driver.GetOpenLine(line.ID); !errors.Is(err, subledgers.ErrNotFound) {
+	if _, err := driver.GetOpenLine(ctx, companyID, line.ID); !errors.Is(err, subledgers.ErrNotFound) {
 		t.Fatalf("open line after failed atomic post error = %v, want not found", err)
 	}
 
@@ -161,7 +208,7 @@ func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 	if stored.Status != posting.EntryPosted {
 		t.Fatalf("entry status after successful atomic post = %s, want posted", stored.Status)
 	}
-	storedLine, err := driver.GetOpenLine(postedLine.ID)
+	storedLine, err := driver.GetOpenLine(ctx, companyID, postedLine.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

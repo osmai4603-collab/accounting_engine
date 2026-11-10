@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"context"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -9,15 +10,22 @@ import (
 )
 
 type PayableLedger struct {
-	repo      Repository
+	repo      PayableRepository
 	companyID uuid.UUID
 }
 
-func NewPayableLedger(repo Repository) *PayableLedger {
+type PayableRepository interface {
+	OpenLineRepository
+	CompanyOpenLineRepository
+	PostedInvoiceRepository
+	WriteOffRepository
+}
+
+func NewPayableLedger(repo PayableRepository) *PayableLedger {
 	return &PayableLedger{repo: repo}
 }
 
-func NewPayableLedgerForCompany(repo Repository, companyID uuid.UUID) *PayableLedger {
+func NewPayableLedgerForCompany(repo PayableRepository, companyID uuid.UUID) *PayableLedger {
 	return &PayableLedger{repo: repo, companyID: companyID}
 }
 
@@ -94,7 +102,7 @@ func (l *PayableLedger) addInvoice(companyID, partnerID, controlAccountID, journ
 		DueDate:          dueDate,
 		Reference:        reference,
 	}
-	if err := l.repo.SaveOpenLine(line); err != nil {
+	if err := l.repo.SaveOpenLine(context.Background(), line); err != nil {
 		return OpenLine{}, err
 	}
 	return line, nil
@@ -137,11 +145,7 @@ func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedu
 
 func (l *PayableLedger) listOpenLines(partnerID string) ([]OpenLine, error) {
 	if l.companyID == uuid.Nil {
-		return l.repo.ListOpenLines(partnerID)
+		return l.repo.ListOpenLines(context.Background(), partnerID)
 	}
-	repository, ok := l.repo.(CompanyOpenLineRepository)
-	if !ok {
-		return nil, ErrCompanyScopedOpenLinesRequired
-	}
-	return repository.ListOpenLinesForCompany(l.companyID, partnerID)
+	return l.repo.ListOpenLinesForCompanyContext(context.Background(), l.companyID, partnerID)
 }

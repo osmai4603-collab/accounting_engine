@@ -1,6 +1,7 @@
 package reporting
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -251,7 +252,11 @@ func validIFRSCategory(category string) bool {
 }
 
 func (e *IncomeStatementEngine) GenerateForCompany(companyID uuid.UUID, start, end time.Time, currency string) (IncomeStatement, error) {
-	repository, err := newCompanyReportingRepository(e.repository, companyID)
+	return e.GenerateForCompanyContext(context.Background(), companyID, start, end, currency)
+}
+
+func (e *IncomeStatementEngine) GenerateForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time, currency string) (IncomeStatement, error) {
+	repository, err := newCompanyReportingRepository(ctx, e.repository, companyID, end)
 	if err != nil {
 		return IncomeStatement{}, err
 	}

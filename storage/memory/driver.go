@@ -22,10 +22,13 @@ import (
 type Driver struct {
 	mu         sync.RWMutex
 	accounts   map[uuid.UUID]masterdata.Account
+	versions   map[uuid.UUID][]masterdata.AccountVersion
+	centers    map[uuid.UUID]masterdata.CostCenter
+	dimensions map[string]masterdata.AnalyticalDimensionValue
 	companies  map[uuid.UUID]masterdata.Company
 	years      map[uuid.UUID]masterdata.FiscalYear
 	periods    map[uuid.UUID]masterdata.FiscalPeriod
-	journalSeq map[uuid.UUID]int64
+	journalSeq map[string]int64
 	entries    map[uuid.UUID]posting.JournalEntry
 	events     map[string]subledgers.EconomicEvent
 	eventRules map[string][]subledgers.EventAccountingRule
@@ -36,13 +39,21 @@ type Driver struct {
 	rates      *valuation.RateRegistry
 }
 
+var (
+	_ subledgers.Repository               = (*Driver)(nil)
+	_ masterdata.ContextStorageRepository = (*Driver)(nil)
+)
+
 func New() *Driver {
 	return &Driver{
 		accounts:   make(map[uuid.UUID]masterdata.Account),
+		versions:   make(map[uuid.UUID][]masterdata.AccountVersion),
+		centers:    make(map[uuid.UUID]masterdata.CostCenter),
+		dimensions: make(map[string]masterdata.AnalyticalDimensionValue),
 		companies:  make(map[uuid.UUID]masterdata.Company),
 		years:      make(map[uuid.UUID]masterdata.FiscalYear),
 		periods:    make(map[uuid.UUID]masterdata.FiscalPeriod),
-		journalSeq: make(map[uuid.UUID]int64),
+		journalSeq: make(map[string]int64),
 		entries:    make(map[uuid.UUID]posting.JournalEntry),
 		events:     make(map[string]subledgers.EconomicEvent),
 		eventRules: make(map[string][]subledgers.EventAccountingRule),
@@ -53,7 +64,10 @@ func New() *Driver {
 	}
 }
 
-func (d *Driver) CreateCompany(company masterdata.Company) error {
+func (d *Driver) CreateCompany(ctx context.Context, company masterdata.Company) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := company.Validate(); err != nil {
@@ -78,7 +92,17 @@ func (d *Driver) GetCompanyByID(id uuid.UUID) (masterdata.Company, error) {
 	return company, nil
 }
 
-func (d *Driver) CreateAccount(account masterdata.Account) error {
+func (d *Driver) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID) (masterdata.Company, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Company{}, err
+	}
+	return d.GetCompanyByID(companyID)
+}
+
+func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	code := strings.ToUpper(strings.TrimSpace(account.Code))
@@ -92,7 +116,10 @@ func (d *Driver) CreateAccount(account masterdata.Account) error {
 	return nil
 }
 
-func (d *Driver) GetAccountByID(id uuid.UUID) (masterdata.Account, error) {
+func (d *Driver) GetAccountByID(ctx context.Context, id uuid.UUID) (masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Account{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	account, ok := d.accounts[id]
@@ -103,8 +130,8 @@ func (d *Driver) GetAccountByID(id uuid.UUID) (masterdata.Account, error) {
 	return account, nil
 }
 
-func (d *Driver) GetAccountByIDForCompany(companyID, accountID uuid.UUID) (masterdata.Account, error) {
-	account, err := d.GetAccountByID(accountID)
+func (d *Driver) GetAccountByIDForCompany(ctx context.Context, companyID, accountID uuid.UUID) (masterdata.Account, error) {
+	account, err := d.GetAccountByID(ctx, accountID)
 	if err != nil {
 		return masterdata.Account{}, err
 	}
@@ -114,7 +141,14 @@ func (d *Driver) GetAccountByIDForCompany(companyID, accountID uuid.UUID) (maste
 	return account, nil
 }
 
-func (d *Driver) GetAccountByCodeForCompany(companyID uuid.UUID, code string) (masterdata.Account, error) {
+func (d *Driver) GetAccountByIDForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (masterdata.Account, error) {
+	return d.GetAccountByIDForCompany(ctx, companyID, accountID)
+}
+
+func (d *Driver) GetAccountByCodeForCompany(ctx context.Context, companyID uuid.UUID, code string) (masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Account{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, account := range d.accounts {
@@ -125,7 +159,10 @@ func (d *Driver) GetAccountByCodeForCompany(companyID uuid.UUID, code string) (m
 	return masterdata.Account{}, masterdata.ErrAccountNotFound
 }
 
-func (d *Driver) GetAccountByCode(code string) (masterdata.Account, error) {
+func (d *Driver) GetAccountByCode(ctx context.Context, code string) (masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Account{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, account := range d.accounts {
@@ -136,7 +173,10 @@ func (d *Driver) GetAccountByCode(code string) (masterdata.Account, error) {
 	return masterdata.Account{}, masterdata.ErrAccountNotFound
 }
 
-func (d *Driver) ListAccounts() ([]masterdata.Account, error) {
+func (d *Driver) ListAccounts(ctx context.Context) ([]masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	accounts := make([]masterdata.Account, 0, len(d.accounts))
@@ -160,18 +200,208 @@ func (d *Driver) ListAccountsForCompany(companyID uuid.UUID) ([]masterdata.Accou
 	return accounts, nil
 }
 
-func (d *Driver) HasChildren(id uuid.UUID) (bool, error) {
+func (d *Driver) ListAccountsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.ListAccountsForCompany(companyID)
+}
+
+func (d *Driver) ListAccountsForCompanyAsOfContext(ctx context.Context, companyID uuid.UUID, asOf time.Time) ([]masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if companyID == uuid.Nil || asOf.IsZero() {
+		return nil, masterdata.ErrCompanyScopeRequired
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	accounts := make([]masterdata.Account, 0)
+	for _, account := range d.accounts {
+		if account.CompanyID != companyID {
+			continue
+		}
+		versions := d.versions[account.ID]
+		if len(versions) > 0 {
+			version, err := masterdata.AccountVersionAt(versions, asOf)
+			if err != nil {
+				return nil, err
+			}
+			account.Name = version.Name
+			account.AccountType = version.AccountType
+			account.IFRSCategory = version.IFRSCategory
+		}
+		accounts = append(accounts, account)
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Code < accounts[j].Code })
+	return accounts, nil
+}
+
+func (d *Driver) SaveCostCenter(ctx context.Context, center masterdata.CostCenter) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := center.Validate(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for id, existing := range d.centers {
+		if id != center.ID && existing.CompanyID == center.CompanyID && strings.EqualFold(existing.Code, center.Code) {
+			return masterdata.ErrInvalidCostCenter
+		}
+	}
+	if center.ParentID != nil {
+		parent, ok := d.centers[*center.ParentID]
+		if !ok || parent.CompanyID != center.CompanyID {
+			return masterdata.ErrInvalidCostCenter
+		}
+		seen := map[uuid.UUID]struct{}{center.ID: {}}
+		current := center.ParentID
+		for current != nil {
+			if _, found := seen[*current]; found {
+				return masterdata.ErrCostCenterCycle
+			}
+			seen[*current] = struct{}{}
+			ancestor, exists := d.centers[*current]
+			if !exists || ancestor.CompanyID != center.CompanyID {
+				return masterdata.ErrInvalidCostCenter
+			}
+			current = ancestor.ParentID
+		}
+	}
+	d.centers[center.ID] = center
+	return nil
+}
+
+func (d *Driver) RequiresCostCenter(ctx context.Context, companyID, accountID uuid.UUID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	account, ok := d.accounts[accountID]
+	if !ok || account.CompanyID != companyID {
+		return false, masterdata.ErrAccountNotFound
+	}
+	return account.RequiresCostCenter, nil
+}
+
+func (d *Driver) ValidateCostCenter(ctx context.Context, companyID, centerID uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	center, ok := d.centers[centerID]
+	if !ok || center.CompanyID != companyID || !center.Active {
+		return masterdata.ErrInvalidCostCenter
+	}
+	return nil
+}
+
+func (d *Driver) SaveAnalyticalDimension(ctx context.Context, value masterdata.AnalyticalDimensionValue) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for key, existing := range d.dimensions {
+		if key != analyticalDimensionKey(value.CompanyID, value.Kind, value.ID) &&
+			existing.CompanyID == value.CompanyID && existing.Kind == value.Kind &&
+			strings.EqualFold(existing.Code, value.Code) {
+			return masterdata.ErrInvalidAnalyticalDimension
+		}
+	}
+	d.dimensions[analyticalDimensionKey(value.CompanyID, value.Kind, value.ID)] = value
+	return nil
+}
+
+func (d *Driver) ValidateAnalyticalDimension(
+	ctx context.Context,
+	companyID uuid.UUID,
+	kind masterdata.AnalyticalDimensionKind,
+	dimensionID uuid.UUID,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	value, ok := d.dimensions[analyticalDimensionKey(companyID, kind, dimensionID)]
+	if !ok || !value.Active {
+		return masterdata.ErrInvalidAnalyticalDimension
+	}
+	return nil
+}
+
+func analyticalDimensionKey(companyID uuid.UUID, kind masterdata.AnalyticalDimensionKind, id uuid.UUID) string {
+	return companyID.String() + "\x00" + string(kind) + "\x00" + id.String()
+}
+
+func (d *Driver) SaveAccountVersion(ctx context.Context, version masterdata.AccountVersion) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := masterdata.ValidateAccountVersions([]masterdata.AccountVersion{version}); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	account, ok := d.accounts[version.AccountID]
+	if !ok || account.CompanyID != version.CompanyID {
+		return masterdata.ErrAccountNotFound
+	}
+	versions := append([]masterdata.AccountVersion(nil), d.versions[version.AccountID]...)
+	for _, current := range versions {
+		if current.CompanyID != version.CompanyID {
+			return masterdata.ErrInvalidEffectivePeriod
+		}
+	}
+	versions = append(versions, version)
+	if err := masterdata.ValidateAccountVersions(versions); err != nil {
+		return err
+	}
+	d.versions[version.AccountID] = versions
+	return nil
+}
+
+func (d *Driver) GetAccountVersionForCompanyAsOf(ctx context.Context, companyID, accountID uuid.UUID, asOf time.Time) (masterdata.AccountVersion, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.AccountVersion{}, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, version := range d.versions[accountID] {
+		if version.CompanyID != companyID {
+			return masterdata.AccountVersion{}, masterdata.ErrAccountVersionNotFound
+		}
+	}
+	return masterdata.AccountVersionAt(d.versions[accountID], asOf)
+}
+
+func (d *Driver) HasChildren(ctx context.Context, id uuid.UUID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, account := range d.accounts {
 		if account.ParentID != nil && *account.ParentID == id {
 			return true, nil
 		}
+
 	}
 	return false, nil
 }
 
-func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
+func (d *Driver) CreateFiscalYear(ctx context.Context, year masterdata.FiscalYear) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if year.State == "" {
@@ -195,11 +425,17 @@ func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 	return nil
 }
 
-func (d *Driver) UpdateFiscalYearState(id uuid.UUID, state masterdata.FiscalYearState) error {
+func (d *Driver) UpdateFiscalYearState(ctx context.Context, companyID, id uuid.UUID, state masterdata.FiscalYearState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	year, ok := d.years[id]
 	if !ok {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if year.CompanyID != companyID {
 		return masterdata.ErrFiscalYearNotFound
 	}
 	if err := masterdata.ValidateFiscalYearTransition(year.State, state); err != nil {
@@ -210,7 +446,24 @@ func (d *Driver) UpdateFiscalYearState(id uuid.UUID, state masterdata.FiscalYear
 	return nil
 }
 
-func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
+func (d *Driver) UpdateFiscalYearStateForCompanyContext(ctx context.Context, companyID, id uuid.UUID, state masterdata.FiscalYearState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	year, err := d.GetFiscalYearForCompany(ctx, companyID, id)
+	if err != nil {
+		return err
+	}
+	if year.CompanyID != companyID {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	return d.UpdateFiscalYearState(ctx, companyID, id, state)
+}
+
+func (d *Driver) GetFiscalYear(ctx context.Context, id uuid.UUID) (masterdata.FiscalYear, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalYear{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	year, ok := d.years[id]
@@ -220,18 +473,22 @@ func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
 	return year, nil
 }
 
-func (d *Driver) GetFiscalYearForCompany(companyID, fiscalYearID uuid.UUID) (masterdata.FiscalYear, error) {
-	year, err := d.GetFiscalYear(fiscalYearID)
+func (d *Driver) GetFiscalYearForCompany(ctx context.Context, companyID, fiscalYearID uuid.UUID) (masterdata.FiscalYear, error) {
+	year, err := d.GetFiscalYear(ctx, fiscalYearID)
 	if err != nil {
 		return masterdata.FiscalYear{}, err
 	}
+
 	if year.CompanyID != companyID {
 		return masterdata.FiscalYear{}, masterdata.ErrFiscalYearNotFound
 	}
 	return year, nil
 }
 
-func (d *Driver) GetPeriodByDate(date time.Time) (masterdata.FiscalPeriod, error) {
+func (d *Driver) GetPeriodByDate(ctx context.Context, date time.Time) (masterdata.FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalPeriod{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var matched []masterdata.FiscalPeriod
@@ -253,7 +510,10 @@ func (d *Driver) GetPeriodByDate(date time.Time) (masterdata.FiscalPeriod, error
 	return matched[0], nil
 }
 
-func (d *Driver) GetPeriodByDateForCompany(companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {
+func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalPeriod{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var matched []masterdata.FiscalPeriod
@@ -261,6 +521,7 @@ func (d *Driver) GetPeriodByDateForCompany(companyID uuid.UUID, date time.Time) 
 		if period.CompanyID == companyID && period.Contains(date) {
 			matched = append(matched, period)
 		}
+
 	}
 	if len(matched) == 0 {
 		return masterdata.FiscalPeriod{}, masterdata.ErrFiscalPeriodNotFound
@@ -274,22 +535,32 @@ func (d *Driver) GetPeriodByDateForCompany(companyID uuid.UUID, date time.Time) 
 	return matched[0], nil
 }
 
-func (d *Driver) GetPeriodByNumberForCompany(companyID, fiscalYearID uuid.UUID, number int) (masterdata.FiscalPeriod, error) {
+func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fiscalYearID uuid.UUID, number int) (masterdata.FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalPeriod{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, period := range d.periods {
 		if period.CompanyID == companyID && period.FiscalYearID == fiscalYearID && period.Number == number {
 			return period, nil
 		}
+
 	}
 	return masterdata.FiscalPeriod{}, masterdata.ErrFiscalPeriodNotFound
 }
 
-func (d *Driver) UpdatePeriodState(id uuid.UUID, state masterdata.PeriodState) error {
+func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	period, ok := d.periods[id]
 	if !ok {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	if period.CompanyID != companyID {
 		return masterdata.ErrFiscalPeriodNotFound
 	}
 	if err := masterdata.ValidatePeriodTransition(period.State, state); err != nil {
@@ -308,11 +579,31 @@ func (d *Driver) UpdatePeriodState(id uuid.UUID, state masterdata.PeriodState) e
 	return nil
 }
 
-func (d *Driver) GetNextSequenceWithLock(id uuid.UUID) (int64, error) {
+func (d *Driver) UpdatePeriodStateForCompanyContext(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.RLock()
+	period, ok := d.periods[id]
+	d.mu.RUnlock()
+	if !ok || period.CompanyID != companyID {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	return d.UpdatePeriodState(ctx, companyID, id, state)
+}
+
+func (d *Driver) GetNextSequenceWithLock(ctx context.Context, companyID, id uuid.UUID) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if companyID == uuid.Nil || id == uuid.Nil {
+		return 0, masterdata.ErrCompanyScopeRequired
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.journalSeq[id]++
-	return d.journalSeq[id], nil
+	key := companyID.String() + "\x00" + id.String()
+	d.journalSeq[key]++
+	return d.journalSeq[key], nil
 }
 
 func cloneEntry(entry posting.JournalEntry) posting.JournalEntry {
@@ -365,6 +656,23 @@ func (d *Driver) GetEntryByID(id uuid.UUID) (posting.JournalEntry, error) {
 	return cloneEntry(entry), nil
 }
 
+func (d *Driver) GetEntryByIDForCompany(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	entry, ok := d.entries[entryID]
+	if !ok || entry.CompanyID != companyID {
+		return posting.JournalEntry{}, posting.ErrEntryNotFound
+	}
+	return cloneEntry(entry), nil
+}
+
+func (d *Driver) GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
+	return d.GetEntryByIDForCompany(ctx, companyID, entryID)
+}
+
 func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -388,8 +696,9 @@ func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEnt
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
 	}
-	d.journalSeq[entry.JournalID]++
-	entry.SequenceNumber = d.journalSeq[entry.JournalID]
+	key := sequenceKey(entry.CompanyID, entry.JournalID)
+	d.journalSeq[key]++
+	entry.SequenceNumber = d.journalSeq[key]
 	d.entries[entry.ID] = cloneEntry(entry)
 	return cloneEntry(entry), nil
 }
@@ -425,8 +734,9 @@ func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachm
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	d.journalSeq[entry.JournalID]++
-	entry.SequenceNumber = d.journalSeq[entry.JournalID]
+	key := sequenceKey(entry.CompanyID, entry.JournalID)
+	d.journalSeq[key]++
+	entry.SequenceNumber = d.journalSeq[key]
 	d.entries[entry.ID] = cloneEntry(entry)
 	d.lines[line.ID] = line
 	return cloneEntry(entry), nil
@@ -446,8 +756,9 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 	if !ok || currentReversal.Status != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
 	}
-	d.journalSeq[reversal.JournalID]++
-	reversal.SequenceNumber = d.journalSeq[reversal.JournalID]
+	key := sequenceKey(reversal.CompanyID, reversal.JournalID)
+	d.journalSeq[key]++
+	reversal.SequenceNumber = d.journalSeq[key]
 	reversal = cloneEntry(reversal)
 	reversal.Status = posting.EntryPosted
 	reversalID := reversal.ID
@@ -459,11 +770,67 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 	return cloneEntry(reversal), nil
 }
 
-func (d *Driver) GetNextSequence(id uuid.UUID) (int64, error) {
-	return d.GetNextSequenceWithLock(id)
+func (d *Driver) SaveDraftContext(ctx context.Context, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.SaveDraft(entry)
 }
 
-func (d *Driver) PostBulk(entries []posting.JournalEntry) error {
+func (d *Driver) PostAtomicContext(ctx context.Context, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return d.PostAtomic(entry)
+}
+
+func (d *Driver) PostAndSequenceContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return d.PostAndSequence(entry)
+}
+
+func (d *Driver) PostAndSequenceWithOpenLineContext(ctx context.Context, entry posting.JournalEntry, attachment posting.OpenLineAttachment) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return d.PostAndSequenceWithOpenLine(entry, attachment)
+}
+
+func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return d.PostReversalAtomic(original, reversal)
+}
+
+func (d *Driver) GetNextSequence(id uuid.UUID) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := sequenceKey(uuid.Nil, id)
+	d.journalSeq[key]++
+	return d.journalSeq[key], nil
+}
+
+func (d *Driver) GetNextSequenceForCompanyContext(ctx context.Context, companyID, journalID uuid.UUID) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if companyID == uuid.Nil || journalID == uuid.Nil {
+		return 0, masterdata.ErrCompanyScopeRequired
+	}
+	return d.GetNextSequenceWithLock(ctx, companyID, journalID)
+}
+
+func sequenceKey(companyID, journalID uuid.UUID) string {
+	return companyID.String() + "\x00" + journalID.String()
+}
+
+func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, entry := range entries {
@@ -472,11 +839,17 @@ func (d *Driver) PostBulk(entries []posting.JournalEntry) error {
 	return nil
 }
 
-func (d *Driver) ListPostedEntries(start, end time.Time) ([]posting.JournalEntry, error) {
-	return d.ListEntries(start, end)
+func (d *Driver) ListPostedEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.ListEntries(ctx, start, end)
 }
 
-func (d *Driver) ListEntries(start, end time.Time) ([]posting.JournalEntry, error) {
+func (d *Driver) ListEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	entries := make([]posting.JournalEntry, 0, len(d.entries))
@@ -502,6 +875,7 @@ func (d *Driver) ListEntriesForCompany(companyID uuid.UUID, start, end time.Time
 		if date.IsZero() {
 			date = entry.Date
 		}
+
 		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted &&
 			(start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
 			entries = append(entries, cloneEntry(entry))
@@ -509,6 +883,13 @@ func (d *Driver) ListEntriesForCompany(companyID uuid.UUID, start, end time.Time
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].EntryDate.Before(entries[j].EntryDate) })
 	return entries, nil
+}
+
+func (d *Driver) ListEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.ListEntriesForCompany(companyID, start, end)
 }
 
 func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
@@ -534,7 +915,10 @@ func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uui
 	return subledgers.ControlAccountBalanceFromEntries(account, entries, company.FunctionalCurrency)
 }
 
-func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
+func (d *Driver) SaveEvent(ctx context.Context, event subledgers.EconomicEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	key := event.CompanyID.String() + "\x00" + event.IdempotencyKey
@@ -549,7 +933,10 @@ func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
 	return nil
 }
 
-func (d *Driver) SaveEventAccountingRule(rule subledgers.EventAccountingRule) error {
+func (d *Driver) SaveEventAccountingRule(ctx context.Context, rule subledgers.EventAccountingRule) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := rule.Validate(); err != nil {
 		return err
 	}
@@ -574,7 +961,10 @@ func (d *Driver) SaveEventAccountingRule(rule subledgers.EventAccountingRule) er
 	return nil
 }
 
-func (d *Driver) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventType string) ([]subledgers.EventAccountingRule, error) {
+func (d *Driver) ListEventAccountingRulesForCompany(ctx context.Context, companyID uuid.UUID, eventType string) ([]subledgers.EventAccountingRule, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	rules := d.eventRules[companyID.String()+"\x00"+eventType]
@@ -585,7 +975,10 @@ func (d *Driver) ListEventAccountingRulesForCompany(companyID uuid.UUID, eventTy
 	return result, nil
 }
 
-func (d *Driver) SaveEventAndDraft(event subledgers.EconomicEvent, entry posting.JournalEntry) error {
+func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.EconomicEvent, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -620,7 +1013,10 @@ func (d *Driver) SaveEventAndDraft(event subledgers.EconomicEvent, entry posting
 	return nil
 }
 
-func (d *Driver) GetEventByIdempotencyKey(key string) (subledgers.EconomicEvent, bool, error) {
+func (d *Driver) GetEventByIdempotencyKey(ctx context.Context, key string) (subledgers.EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.EconomicEvent{}, false, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var event subledgers.EconomicEvent
@@ -636,13 +1032,19 @@ func (d *Driver) GetEventByIdempotencyKey(key string) (subledgers.EconomicEvent,
 	return event, ok, nil
 }
 
-func (d *Driver) GetEventByIdempotencyKeyForCompany(companyID uuid.UUID, key string) (subledgers.EconomicEvent, bool, error) {
+func (d *Driver) GetEventByIdempotencyKeyForCompany(ctx context.Context, companyID uuid.UUID, key string) (subledgers.EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.EconomicEvent{}, false, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	event, ok := d.events[companyID.String()+"\x00"+key]
 	return event, ok, nil
 }
-func (d *Driver) SaveOpenLine(line subledgers.OpenLine) error {
+func (d *Driver) SaveOpenLine(ctx context.Context, line subledgers.OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if existing, ok := d.lines[line.ID]; ok && existing.CompanyID != line.CompanyID {
@@ -652,7 +1054,10 @@ func (d *Driver) SaveOpenLine(line subledgers.OpenLine) error {
 	return nil
 }
 
-func (d *Driver) SaveOpenLineForPostedEntry(line subledgers.OpenLine) error {
+func (d *Driver) SaveOpenLineForPostedEntry(ctx context.Context, line subledgers.OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	account, accountExists := d.accounts[line.ControlAccountID]
@@ -678,7 +1083,10 @@ func (d *Driver) SaveOpenLineForPostedEntry(line subledgers.OpenLine) error {
 	return nil
 }
 
-func (d *Driver) SaveOpenLines(lines []subledgers.OpenLine) error {
+func (d *Driver) SaveOpenLines(ctx context.Context, lines []subledgers.OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, line := range lines {
@@ -694,7 +1102,10 @@ func (d *Driver) SaveOpenLines(lines []subledgers.OpenLine) error {
 	return nil
 }
 
-func (d *Driver) CompareAndSaveOpenLines(expected, updated []subledgers.OpenLine) error {
+func (d *Driver) CompareAndSaveOpenLines(ctx context.Context, expected, updated []subledgers.OpenLine) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if len(expected) != len(updated) {
@@ -721,7 +1132,10 @@ func (d *Driver) CompareAndSaveOpenLines(expected, updated []subledgers.OpenLine
 	return nil
 }
 
-func (d *Driver) CompareAndSaveOpenLinesAndDraft(expected, updated []subledgers.OpenLine, draft posting.JournalEntry) error {
+func (d *Driver) CompareAndSaveOpenLinesAndDraft(ctx context.Context, expected, updated []subledgers.OpenLine, draft posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
@@ -768,11 +1182,14 @@ func (d *Driver) CompareAndSaveOpenLinesAndDraft(expected, updated []subledgers.
 	return nil
 }
 
-func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
+func (d *Driver) GetOpenLine(ctx context.Context, companyID, id uuid.UUID) (subledgers.OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.OpenLine{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	line, ok := d.lines[id]
-	if !ok {
+	if !ok || line.CompanyID != companyID {
 		return subledgers.OpenLine{}, subledgers.ErrNotFound
 	}
 	line.MatchIDs = append([]uuid.UUID(nil), line.MatchIDs...)
@@ -780,7 +1197,10 @@ func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
 	return line, nil
 }
 
-func (d *Driver) ConfirmOpenLineWriteOff(expected, updated subledgers.OpenLine, postedEntry posting.JournalEntry) error {
+func (d *Driver) ConfirmOpenLineWriteOff(ctx context.Context, expected, updated subledgers.OpenLine, postedEntry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
 		updated.CompanyID != expected.CompanyID || postedEntry.CompanyID != expected.CompanyID ||
 		postedEntry.Status != posting.EntryPosted {
@@ -808,7 +1228,10 @@ func (d *Driver) ConfirmOpenLineWriteOff(expected, updated subledgers.OpenLine, 
 	return nil
 }
 
-func (d *Driver) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) {
+func (d *Driver) ListOpenLines(ctx context.Context, partnerID string) ([]subledgers.OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	result := make([]subledgers.OpenLine, 0)
@@ -822,7 +1245,10 @@ func (d *Driver) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) 
 	return result, nil
 }
 
-func (d *Driver) ListOpenLinesForCompany(companyID uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
+func (d *Driver) ListOpenLinesForCompany(ctx context.Context, companyID uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	result := make([]subledgers.OpenLine, 0)
@@ -836,7 +1262,10 @@ func (d *Driver) ListOpenLinesForCompany(companyID uuid.UUID, partnerID string) 
 	}
 	return result, nil
 }
-func (d *Driver) SaveFixedAsset(asset subledgers.FixedAsset) error {
+func (d *Driver) SaveFixedAsset(ctx context.Context, asset subledgers.FixedAsset) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if existing, ok := d.assets[asset.ID]; ok && existing.CompanyID != asset.CompanyID {
@@ -846,7 +1275,17 @@ func (d *Driver) SaveFixedAsset(asset subledgers.FixedAsset) error {
 	return nil
 }
 
-func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+func (d *Driver) ListOpenLinesForCompanyContext(ctx context.Context, companyID uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.ListOpenLinesForCompany(ctx, companyID, partnerID)
+}
+
+func (d *Driver) SaveFixedAssetDraft(ctx context.Context, expected subledgers.FixedAsset, entry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || entry.ID == uuid.Nil ||
 		entry.CompanyID != expected.CompanyID || entry.Status != posting.EntryDraft {
 		return subledgers.ErrInvalidAsset
@@ -889,7 +1328,10 @@ func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posti
 	return nil
 }
 
-func (d *Driver) ConfirmFixedAssetMutation(expected, updated subledgers.FixedAsset, expectedEntry posting.JournalEntry) error {
+func (d *Driver) ConfirmFixedAssetMutation(ctx context.Context, expected, updated subledgers.FixedAsset, expectedEntry posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
 		updated.CompanyID != expected.CompanyID || expectedEntry.ID == uuid.Nil ||
 		expectedEntry.CompanyID != expected.CompanyID || expectedEntry.Status != posting.EntryPosted {
@@ -915,11 +1357,14 @@ func (d *Driver) ConfirmFixedAssetMutation(expected, updated subledgers.FixedAss
 	return nil
 }
 
-func (d *Driver) GetFixedAsset(id uuid.UUID) (subledgers.FixedAsset, error) {
+func (d *Driver) GetFixedAsset(ctx context.Context, companyID, id uuid.UUID) (subledgers.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.FixedAsset{}, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	asset, ok := d.assets[id]
-	if !ok {
+	if !ok || asset.CompanyID != companyID {
 		return subledgers.FixedAsset{}, subledgers.ErrNotFound
 	}
 	if asset.DisposedAt != nil {
@@ -929,7 +1374,10 @@ func (d *Driver) GetFixedAsset(id uuid.UUID) (subledgers.FixedAsset, error) {
 	return asset, nil
 }
 
-func (d *Driver) ListFixedAssets() ([]subledgers.FixedAsset, error) {
+func (d *Driver) ListFixedAssets(ctx context.Context) ([]subledgers.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	assets := make([]subledgers.FixedAsset, 0, len(d.assets))
@@ -943,7 +1391,10 @@ func (d *Driver) ListFixedAssets() ([]subledgers.FixedAsset, error) {
 	return assets, nil
 }
 
-func (d *Driver) ListFixedAssetsForCompany(companyID uuid.UUID) ([]subledgers.FixedAsset, error) {
+func (d *Driver) ListFixedAssetsForCompany(ctx context.Context, companyID uuid.UUID) ([]subledgers.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	assets := make([]subledgers.FixedAsset, 0)
@@ -954,7 +1405,10 @@ func (d *Driver) ListFixedAssetsForCompany(companyID uuid.UUID) ([]subledgers.Fi
 	}
 	return assets, nil
 }
-func (d *Driver) SaveBankItem(item subledgers.BankItem) error {
+func (d *Driver) SaveBankItem(ctx context.Context, item subledgers.BankItem) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, current := range d.bank[item.AccountID.String()] {
@@ -968,13 +1422,26 @@ func (d *Driver) SaveBankItem(item subledgers.BankItem) error {
 	d.bank[item.AccountID.String()] = append(d.bank[item.AccountID.String()], item)
 	return nil
 }
-func (d *Driver) ListBankItems(accountID string) ([]subledgers.BankItem, error) {
+func (d *Driver) ListBankItems(ctx context.Context, accountID string) ([]subledgers.BankItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return append([]subledgers.BankItem(nil), d.bank[accountID]...), nil
 }
 
-func (d *Driver) ListBankItemsForCompany(companyID uuid.UUID, accountID string) ([]subledgers.BankItem, error) {
+func (d *Driver) ListFixedAssetsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]subledgers.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.ListFixedAssetsForCompany(ctx, companyID)
+}
+
+func (d *Driver) ListBankItemsForCompany(ctx context.Context, companyID uuid.UUID, accountID string) ([]subledgers.BankItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	items := make([]subledgers.BankItem, 0)
@@ -986,7 +1453,10 @@ func (d *Driver) ListBankItemsForCompany(companyID uuid.UUID, accountID string) 
 	return items, nil
 }
 
-func (d *Driver) CompareAndSaveBankItems(expected, updated []subledgers.BankItem) error {
+func (d *Driver) CompareAndSaveBankItems(ctx context.Context, expected, updated []subledgers.BankItem) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if len(expected) != len(updated) {
@@ -1026,7 +1496,10 @@ func (d *Driver) CompareAndSaveBankItems(expected, updated []subledgers.BankItem
 	return nil
 }
 
-func (d *Driver) CompareAndSaveBankItemsAndDraft(expected, updated []subledgers.BankItem, draft posting.JournalEntry) error {
+func (d *Driver) CompareAndSaveBankItemsAndDraft(ctx context.Context, expected, updated []subledgers.BankItem, draft posting.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if draft.ID == uuid.Nil || draft.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
@@ -1091,8 +1564,29 @@ func (d *Driver) AddRate(rate valuation.ExchangeRate) error  { return d.Register
 func (d *Driver) GetRate(ctx context.Context, from, to string, date time.Time) (decimal.Decimal, error) {
 	return d.rates.GetRate(ctx, from, to, date)
 }
+
+func (d *Driver) GetRateForCompany(ctx context.Context, companyID uuid.UUID, from, to string, date time.Time) (decimal.Decimal, error) {
+	if companyID == uuid.Nil {
+		return decimal.Zero, masterdata.ErrCompanyScopeRequired
+	}
+	return d.GetRate(ctx, from, to, date)
+}
+
 func (d *Driver) GetRateOfType(ctx context.Context, rateType valuation.RateType, from, to string, date time.Time) (decimal.Decimal, error) {
 	return d.rates.GetRateOfType(ctx, rateType, from, to, date)
+}
+
+func (d *Driver) GetRateOfTypeForCompany(
+	ctx context.Context,
+	companyID uuid.UUID,
+	rateType valuation.RateType,
+	from, to string,
+	date time.Time,
+) (decimal.Decimal, error) {
+	if companyID == uuid.Nil {
+		return decimal.Zero, masterdata.ErrCompanyScopeRequired
+	}
+	return d.GetRateOfType(ctx, rateType, from, to, date)
 }
 
 func (d *Driver) AppendAuditLog(ctx context.Context, log governance.FinancialAuditLog) error {
@@ -1121,6 +1615,7 @@ func (d *Driver) IterateAuditLogs(ctx context.Context, fromID int64, handler gov
 		if log.ID >= fromID {
 			logs = append(logs, *log)
 		}
+
 	}
 	d.mu.RUnlock()
 	sort.Slice(logs, func(i, j int) bool { return logs[i].ID < logs[j].ID })
@@ -1130,4 +1625,39 @@ func (d *Driver) IterateAuditLogs(ctx context.Context, fromID int64, handler gov
 		}
 	}
 	return nil
+}
+
+func (d *Driver) HasChildrenForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, account := range d.accounts {
+		if account.CompanyID == companyID && account.ParentID != nil && *account.ParentID == accountID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (d *Driver) GetFiscalYearForCompanyContext(ctx context.Context, companyID, fiscalYearID uuid.UUID) (masterdata.FiscalYear, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalYear{}, err
+	}
+	return d.GetFiscalYearForCompany(ctx, companyID, fiscalYearID)
+}
+
+func (d *Driver) GetPeriodByDateForCompanyContext(ctx context.Context, companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalPeriod{}, err
+	}
+	return d.GetPeriodByDateForCompany(ctx, companyID, date)
+}
+
+func (d *Driver) GetPeriodByNumberForCompanyContext(ctx context.Context, companyID, fiscalYearID uuid.UUID, number int) (masterdata.FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.FiscalPeriod{}, err
+	}
+	return d.GetPeriodByNumberForCompany(ctx, companyID, fiscalYearID, number)
 }
