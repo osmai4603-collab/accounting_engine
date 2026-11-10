@@ -11,7 +11,6 @@ import (
 	"accounting_engine/storage/postgres"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // TestBulkPhaseTiming is a temporary profiling harness (not part of the suite).
@@ -68,22 +67,36 @@ func TestBulkPhaseTiming(t *testing.T) {
 		ids[i] = entries2[i].ID
 	}
 	start = time.Now()
-	err = driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE account_moves
-			SET status='posted', entry_number = sub.seq + $3,
-			    entry = jsonb_set(entry, '{Status}', '"posted"', true)
-			FROM (SELECT id, row_number() OVER () AS seq FROM unnest($2::uuid[]) WITH ORDINALITY AS u(id, ord)) sub
-			WHERE account_moves.company_id=$1 AND account_moves.id=sub.id AND account_moves.status='draft'`,
-			companyID, ids, totalEntries)
-		if err != nil {
-			return err
-		}
-		t.Logf("single-statement flip rows=%d", tag.RowsAffected())
-		return nil
-	})
+	pool := driver.Pool()
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	tAcquired := time.Now()
+	if _, err := conn.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
+		t.Fatal(err)
+	}
+	tSetConfig := time.Now()
+	tag, err := conn.Exec(ctx, `UPDATE account_moves
+		SET status='posted', entry_number = sub.seq + $3,
+		    entry = jsonb_set(entry, '{Status}', '"posted"', true)
+		FROM (SELECT id, row_number() OVER () AS seq FROM unnest($2::uuid[]) WITH ORDINALITY AS u(id, ord)) sub
+		WHERE account_moves.company_id=$1 AND account_moves.id=sub.id AND account_moves.status='draft'`,
+		companyID, ids, totalEntries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tExec := time.Now()
+	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	tCommit := time.Now()
+	t.Logf("acquire+began=%v set_config=%v EXEC=%v (rows=%d) COMMIT=%v",
+		tAcquired.Sub(start), tSetConfig.Sub(tAcquired), tExec.Sub(tSetConfig), tag.RowsAffected(), tCommit.Sub(tExec))
 	elapsed = time.Since(start)
 	t.Logf("single-statement draft->posted flip: %v", elapsed)
 }
