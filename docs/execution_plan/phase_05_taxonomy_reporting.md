@@ -146,7 +146,6 @@ import (
     "fmt"
     "time"
 
-    "accounting_engine/internal/reporting"
     "github.com/google/uuid"
     "github.com/shopspring/decimal"
 )
@@ -172,10 +171,10 @@ type EvaluatedStatement struct {
 }
 
 type TaxonomyEvaluator struct {
-    balancesRepo reporting.BalanceReader
+    balancesRepo BalanceReader
 }
 
-func NewTaxonomyEvaluator(repo reporting.BalanceReader) *TaxonomyEvaluator {
+func NewTaxonomyEvaluator(repo BalanceReader) *TaxonomyEvaluator {
     return &TaxonomyEvaluator{balancesRepo: repo}
 }
 
@@ -222,7 +221,7 @@ func (e *TaxonomyEvaluator) EvaluateStatement(
 
 ### 3.3 هجرة قاعدة البيانات لجداول التصنيف المالي
 
-**ملف:** `storage/postgres/migrations/202611100012_reporting_taxonomies.sql`
+**ملف:** `storage/postgres/migrations/202611100013_reporting_taxonomies.sql`
 
 ```sql
 -- المرحلة 5: جداول شجرة التصنيف المالي للتقارير المرنة
@@ -261,7 +260,7 @@ CREATE INDEX IF NOT EXISTS idx_taxonomy_nodes_lookup
     ON reporting_taxonomy_nodes(taxonomy_id, parent_id, display_order);
 ```
 
-**ملف التراجع:** `storage/postgres/migrations/202611100012_reporting_taxonomies.down.sql`
+**ملف التراجع:** `storage/postgres/migrations/202611100013_reporting_taxonomies.down.sql`
 
 ```sql
 DROP TABLE IF EXISTS reporting_taxonomy_nodes;
@@ -297,6 +296,8 @@ DROP TABLE IF EXISTS reporting_taxonomies;
 
 3. **قالب `SOCPA_ZAKAT_STATUTORY_2026`:**
    - يدمج حسابات وعاء الزكاة الشرعية وتفاصيل الاستقطاعات الضريبية المعتمدة لدى هيئة الزكاة والضريبة والجمارك (ZATCA).
+
+**واجهة التنفيذ:** يطبق `storage/postgres.Driver` واجهة قارئ أرصدة الفترة التي يستخدمها المحرك، ويتيح تحميل/حفظ تعريفات التقارير وإسناد وسوم تقارير للحسابات. كما أصبحت محركات قائمة الدخل والميزانية القديمة واجهات توافق تعرض نواتج تعريفات taxonomy بدل إعادة تصنيف الحسابات داخل تقارير ثابتة. تستخدم التهيئة ترحيلاً تالياً للإصدار `012` الموجود مسبقاً في المستودع.
 
 ---
 

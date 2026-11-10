@@ -756,6 +756,7 @@ func (r *MemoryRepository) CompareAndSaveBankItemsAndDraft(ctx context.Context, 
 func cloneOpenLine(line OpenLine) OpenLine {
 	line.MatchIDs = append([]uuid.UUID(nil), line.MatchIDs...)
 	line.Matches = append([]OpenLineMatch(nil), line.Matches...)
+	line.MatchHistory = append([]OpenLineMatch(nil), line.MatchHistory...)
 	return line
 }
 

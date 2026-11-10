@@ -96,14 +96,18 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 	if matchedAt.IsZero() {
 		matchedAt = time.Now().UTC()
 	}
-	line.Matches = append(lineMatches, OpenLineMatch{
+	lineMatch := OpenLineMatch{
 		MatchingNumber: matchingNumber, CounterpartID: counterpart.ID, Amount: amount,
 		FunctionalAmount: lineFunctionalAmount, MatchedAt: matchedAt,
-	})
-	counterpart.Matches = append(counterpartMatches, OpenLineMatch{
+	}
+	counterpartMatch := OpenLineMatch{
 		MatchingNumber: matchingNumber, CounterpartID: line.ID, Amount: amount,
 		FunctionalAmount: counterpartFunctionalAmount, MatchedAt: matchedAt,
-	})
+	}
+	line.Matches = append(lineMatches, lineMatch)
+	counterpart.Matches = append(counterpartMatches, counterpartMatch)
+	line.MatchHistory = append(line.MatchHistory, lineMatch)
+	counterpart.MatchHistory = append(counterpart.MatchHistory, counterpartMatch)
 	if err := applyMatch(&line, &counterpart, amount); err != nil {
 		return "", nil, err
 	}
@@ -335,6 +339,9 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 		}
 		updatedLine.Matches = removeMatch(updatedLine.Matches, match.MatchingNumber, match.CounterpartID)
 		counterpart.Matches = removeMatch(counterpartMatches, match.MatchingNumber, line.ID)
+		reversedAt := time.Now().UTC()
+		markMatchReversed(&updatedLine.MatchHistory, match.MatchingNumber, match.CounterpartID, reversedAt)
+		markMatchReversed(&counterpart.MatchHistory, match.MatchingNumber, line.ID, reversedAt)
 		updated[updatedLine.ID] = updatedLine
 		updated[counterpart.ID] = counterpart
 	}
@@ -355,6 +362,15 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 		return toSaveUpdated[i].ID.String() < toSaveUpdated[j].ID.String()
 	})
 	return m.repo.CompareAndSaveOpenLines(context.Background(), toSaveExpected, toSaveUpdated)
+}
+
+func markMatchReversed(history *[]OpenLineMatch, matchingNumber string, counterpartID uuid.UUID, reversedAt time.Time) {
+	for i := range *history {
+		if (*history)[i].MatchingNumber == matchingNumber && (*history)[i].CounterpartID == counterpartID {
+			(*history)[i].ReversedAt = reversedAt
+			return
+		}
+	}
 }
 
 func openLineMatches(line OpenLine) ([]OpenLineMatch, error) {

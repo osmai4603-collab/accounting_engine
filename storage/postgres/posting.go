@@ -268,7 +268,7 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 			ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
 			FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
 			DocumentDate: attachment.DocumentDate,
-			DueDate: attachment.DueDate, Reference: attachment.Reference,
+			DueDate:      attachment.DueDate, Reference: attachment.Reference,
 		}
 		account, err := scanAccount(tx.QueryRow(ctx,
 			accountSelect+` WHERE company_id=$1 AND id=$2 FOR SHARE`, entry.CompanyID, attachment.ControlAccountID))

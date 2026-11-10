@@ -64,7 +64,8 @@ func (d *ReconciliationDaemon) RunDailyCheckCertificate(ctx context.Context, com
 	reports = append(reports, treasuryReports...)
 
 	certificate := ReconciliationCertificate{
-		CompanyID: companyID, AsOfDate: asOf,
+		CompanyID:   companyID,
+		AsOfDate:    time.Date(asOf.UTC().Year(), asOf.UTC().Month(), asOf.UTC().Day(), 0, 0, 0, 0, time.UTC),
 		CertifiedAt: time.Now().UTC(), Clean: true, Reports: reports,
 	}
 	for _, report := range reports {

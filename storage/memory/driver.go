@@ -15,28 +15,28 @@ import (
 )
 
 type Driver struct {
-	mu               sync.RWMutex
-	accounts         map[uuid.UUID]masterdata.Account
-	versions         map[uuid.UUID][]masterdata.AccountVersion
-	centers          map[uuid.UUID]masterdata.CostCenter
-	dimensions       map[string]masterdata.AnalyticalDimensionValue
-	companies        map[uuid.UUID]masterdata.Company
-	years            map[uuid.UUID]masterdata.FiscalYear
-	periods          map[uuid.UUID]masterdata.FiscalPeriod
-	journalSeq       map[string]int64
-	entries          map[uuid.UUID]posting.JournalEntry
-	balances         map[accountBalanceKey]accountBalance
-	adjustingPeriods map[companyPeriodKey]bool
-	events           map[string]subledgers.EconomicEvent
-	eventRules       map[string][]subledgers.EventAccountingRule
-	lines            map[uuid.UUID]subledgers.OpenLine
-	assets           map[uuid.UUID]subledgers.FixedAsset
-	bank             map[string][]subledgers.BankItem
-	reconciliationReports []subledgers.DiscrepancyReport
+	mu                         sync.RWMutex
+	accounts                   map[uuid.UUID]masterdata.Account
+	versions                   map[uuid.UUID][]masterdata.AccountVersion
+	centers                    map[uuid.UUID]masterdata.CostCenter
+	dimensions                 map[string]masterdata.AnalyticalDimensionValue
+	companies                  map[uuid.UUID]masterdata.Company
+	years                      map[uuid.UUID]masterdata.FiscalYear
+	periods                    map[uuid.UUID]masterdata.FiscalPeriod
+	journalSeq                 map[string]int64
+	entries                    map[uuid.UUID]posting.JournalEntry
+	balances                   map[accountBalanceKey]accountBalance
+	adjustingPeriods           map[companyPeriodKey]bool
+	events                     map[string]subledgers.EconomicEvent
+	eventRules                 map[string][]subledgers.EventAccountingRule
+	lines                      map[uuid.UUID]subledgers.OpenLine
+	assets                     map[uuid.UUID]subledgers.FixedAsset
+	bank                       map[string][]subledgers.BankItem
+	reconciliationReports      []subledgers.DiscrepancyReport
 	reconciliationCertificates []subledgers.ReconciliationCertificate
-	contracts        map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
-	audit            []*governance.FinancialAuditLog
-	rates            *valuation.RateRegistry
+	contracts                  map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
+	audit                      []*governance.FinancialAuditLog
+	rates                      *valuation.RateRegistry
 }
 
 type accountBalanceKey struct {

@@ -15,13 +15,13 @@ import (
 )
 
 var (
-	ErrMixedCurrencyReconciliation              = errors.New("subledger: control account contains multiple currencies")
-	ErrInvalidReconciliationKind                = errors.New("subledger: invalid reconciliation line kind")
-	ErrReconciliationNotConfigured              = errors.New("subledger: reconciliation engine is not configured")
-	ErrControlBalanceCurrencyMismatch           = errors.New("subledger: GL control balance cannot be expressed in its functional currency")
-	ErrReconciliationFunctionalAmountMissing    = errors.New("subledger: functional open-line balance is unavailable")
-	ErrReconciliationHistoryUnavailable         = errors.New("subledger: dated reconciliation history is unavailable")
-	ErrAsOfReconciliationNotSupported           = errors.New("subledger: general-ledger reader does not support as-of balances")
+	ErrMixedCurrencyReconciliation           = errors.New("subledger: control account contains multiple currencies")
+	ErrInvalidReconciliationKind             = errors.New("subledger: invalid reconciliation line kind")
+	ErrReconciliationNotConfigured           = errors.New("subledger: reconciliation engine is not configured")
+	ErrControlBalanceCurrencyMismatch        = errors.New("subledger: GL control balance cannot be expressed in its functional currency")
+	ErrReconciliationFunctionalAmountMissing = errors.New("subledger: functional open-line balance is unavailable")
+	ErrReconciliationHistoryUnavailable      = errors.New("subledger: dated reconciliation history is unavailable")
+	ErrAsOfReconciliationNotSupported        = errors.New("subledger: general-ledger reader does not support as-of balances")
 )
 
 type ReconciliationBreakdown struct {
@@ -48,11 +48,11 @@ func (r DiscrepancyReport) HasVariance() bool {
 }
 
 type ReconciliationCertificate struct {
-	CompanyID  uuid.UUID
-	AsOfDate   time.Time
+	CompanyID   uuid.UUID
+	AsOfDate    time.Time
 	CertifiedAt time.Time
-	Clean      bool
-	Reports    []DiscrepancyReport
+	Clean       bool
+	Reports     []DiscrepancyReport
 }
 
 type ReconciliationDiscrepancy struct {
@@ -307,20 +307,20 @@ func openLineBalanceAsOf(line OpenLine, asOf time.Time) (financialtypes.Money, f
 	if recordedDate.After(date) {
 		return transaction, functional, false, nil
 	}
-	matches, err := openLineMatches(line)
-	if err != nil {
-		return financialtypes.Money{}, financialtypes.Money{}, false, err
+	var err error
+	matches := line.MatchHistory
+	if len(matches) == 0 {
+		matches, err = openLineMatches(line)
+		if err != nil {
+			return financialtypes.Money{}, financialtypes.Money{}, false, err
+		}
+	}
+	if len(matches) == 0 && !line.OriginalAmount.Equal(line.ResidualAmount) {
+		return financialtypes.Money{}, financialtypes.Money{}, false, ErrReconciliationHistoryUnavailable
 	}
 	for _, match := range matches {
 		if match.MatchedAt.IsZero() {
 			return financialtypes.Money{}, financialtypes.Money{}, false, ErrReconciliationHistoryUnavailable
-		}
-		if !match.MatchedAt.After(date.Add(24*time.Hour - time.Nanosecond)) {
-			continue
-		}
-		transaction, err = transaction.Add(match.Amount)
-		if err != nil {
-			return financialtypes.Money{}, financialtypes.Money{}, false, err
 		}
 		matchFunctional := match.FunctionalAmount
 		if matchFunctional.Currency() == "" {
@@ -330,7 +330,23 @@ func openLineBalanceAsOf(line OpenLine, asOf time.Time) (financialtypes.Money, f
 			}
 			matchFunctional = match.Amount
 		}
-		functional, err = functional.Add(matchFunctional)
+		matchedByAsOf := !match.MatchedAt.After(date.Add(24*time.Hour - time.Nanosecond))
+		reversedByAsOf := !match.ReversedAt.IsZero() &&
+			!match.ReversedAt.After(date.Add(24*time.Hour-time.Nanosecond))
+		if match.ReversedAt.IsZero() {
+			if matchedByAsOf {
+				continue
+			}
+			transaction, err = transaction.Add(match.Amount)
+			if err == nil {
+				functional, err = functional.Add(matchFunctional)
+			}
+		} else if matchedByAsOf && !reversedByAsOf {
+			transaction, err = transaction.Subtract(match.Amount)
+			if err == nil {
+				functional, err = functional.Subtract(matchFunctional)
+			}
+		}
 		if err != nil {
 			return financialtypes.Money{}, financialtypes.Money{}, false, err
 		}
@@ -436,15 +452,44 @@ func (e *LedgerReconciliationEngine) ReconcileFixedAssetsControl(ctx context.Con
 		if asset.AssetAccountID == uuid.Nil || asset.HistoricalCost.Currency() == "" {
 			return nil, ErrInvalidAsset
 		}
-		if err := addAssetBalance(balances, asset.AssetAccountID, "FIXED_ASSETS_COST", asset.HistoricalCost.Amount()); err != nil {
+		revaluation := asset.RevaluationAdjustment
+		if revaluation.Currency() == "" {
+			revaluation, err = financialtypes.Zero(asset.HistoricalCost.Currency())
+			if err != nil {
+				return nil, err
+			}
+		}
+		grossCost, err := asset.HistoricalCost.Add(revaluation)
+		if err != nil {
 			return nil, err
 		}
-		if !asset.AccumulatedDepreciation.Amount().IsZero() {
-			if asset.AccumulatedAccountID == uuid.Nil {
-				return nil, ErrInvalidAsset
+		if err := addAssetBalance(balances, asset.AssetAccountID, "FIXED_ASSETS_COST", grossCost.Amount()); err != nil {
+			return nil, err
+		}
+		if len(asset.Components) == 0 {
+			if !asset.AccumulatedDepreciation.Amount().IsZero() {
+				if asset.AccumulatedAccountID == uuid.Nil {
+					return nil, ErrInvalidAsset
+				}
+				if err := addAssetBalance(balances, asset.AccumulatedAccountID, "FIXED_ASSETS_DEPRECIATION", asset.AccumulatedDepreciation.Amount()); err != nil {
+					return nil, err
+				}
 			}
-			if err := addAssetBalance(balances, asset.AccumulatedAccountID, "FIXED_ASSETS_DEPRECIATION", asset.AccumulatedDepreciation.Amount()); err != nil {
-				return nil, err
+		} else {
+			for _, component := range asset.Components {
+				if component.AccumulatedDepreciation.Amount().IsZero() {
+					continue
+				}
+				accountID := component.AccumulatedAccountID
+				if accountID == uuid.Nil {
+					accountID = asset.AccumulatedAccountID
+				}
+				if accountID == uuid.Nil {
+					return nil, ErrInvalidAsset
+				}
+				if err := addAssetBalance(balances, accountID, "FIXED_ASSETS_DEPRECIATION", component.AccumulatedDepreciation.Amount()); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if !asset.AccumulatedImpairment.Amount().IsZero() {
@@ -465,7 +510,9 @@ func (e *LedgerReconciliationEngine) ReconcileFixedAssetsControl(ctx context.Con
 		subledger := balance.balance
 		if gl.Currency() != "" {
 			for _, asset := range assets {
-				if asset.CompanyID == companyID && asset.AssetAccountID == accountID && asset.HistoricalCost.Currency() != gl.Currency() {
+				if asset.CompanyID == companyID && asset.AssetAccountID == accountID &&
+					(asset.HistoricalCost.Currency() != gl.Currency() ||
+						(asset.RevaluationAdjustment.Currency() != "" && asset.RevaluationAdjustment.Currency() != gl.Currency())) {
 					return nil, ErrReconciliationFunctionalAmountMissing
 				}
 				if asset.CompanyID == companyID && asset.AccumulatedAccountID == accountID && asset.AccumulatedDepreciation.Currency() != "" &&
@@ -475,6 +522,17 @@ func (e *LedgerReconciliationEngine) ReconcileFixedAssetsControl(ctx context.Con
 				if asset.CompanyID == companyID && asset.AccumulatedImpairmentAccountID == accountID && asset.AccumulatedImpairment.Currency() != "" &&
 					asset.AccumulatedImpairment.Currency() != gl.Currency() {
 					return nil, ErrReconciliationFunctionalAmountMissing
+				}
+				for _, component := range asset.Components {
+					componentAccount := component.AccumulatedAccountID
+					if componentAccount == uuid.Nil {
+						componentAccount = asset.AccumulatedAccountID
+					}
+					if asset.CompanyID == companyID && componentAccount == accountID &&
+						component.AccumulatedDepreciation.Currency() != "" &&
+						component.AccumulatedDepreciation.Currency() != gl.Currency() {
+						return nil, ErrReconciliationFunctionalAmountMissing
+					}
 				}
 			}
 		}
@@ -524,11 +582,14 @@ func (e *LedgerReconciliationEngine) ReconcileTreasuryControl(
 		}
 		if item.JournalEntryID == uuid.Nil {
 			statementBalance = statementBalance.Add(item.Amount.Amount())
-		} else if item.Status != BankItemMatched || item.MatchedAt.After(reconciliationCutoff(asOf)) {
-			if item.Status == BankItemMatched && item.MatchedAt.IsZero() && asOf.Before(reconciliationCutoff(time.Now().UTC())) {
+		} else {
+			if item.Status == BankItemMatched && item.MatchedAt.IsZero() &&
+				asOf.Before(reconciliationCutoff(time.Now().UTC())) {
 				return DiscrepancyReport{}, ErrReconciliationHistoryUnavailable
 			}
-			pendingLedgerItems = pendingLedgerItems.Add(item.Amount.Amount())
+			if item.Status != BankItemMatched || item.MatchedAt.After(reconciliationCutoff(asOf)) {
+				pendingLedgerItems = pendingLedgerItems.Add(item.Amount.Amount())
+			}
 		}
 	}
 	return newBalanceReport(
@@ -591,7 +652,7 @@ func addAssetBalance(balances map[uuid.UUID]assetBalanceTotals, accountID uuid.U
 func newBalanceReport(companyID, accountID uuid.UUID, domain string, asOf time.Time, gl financialtypes.Money, subledger decimal.Decimal) DiscrepancyReport {
 	return DiscrepancyReport{
 		CompanyID: companyID, Domain: domain, ControlAccountID: accountID,
-		AsOfDate: reconciliationCutoff(asOf).Truncate(24 * time.Hour),
+		AsOfDate:       reconciliationCutoff(asOf).Truncate(24 * time.Hour),
 		FunctionalCurr: gl.Currency(), SubledgerBalance: subledger,
 		GLBalance: gl.Amount(), Difference: subledger.Sub(gl.Amount()),
 		DiscoveredAt: time.Now().UTC(),

@@ -7,6 +7,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting/taxonomy"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -54,82 +55,59 @@ func (e *IncomeStatementEngine) Generate(start, end time.Time, currency string) 
 	if err != nil {
 		return IncomeStatement{}, err
 	}
-	report := IncomeStatement{StartDate: start, EndDate: end, Currency: currency}
+	taxonomyBalances := taxonomy.PeriodBalances{Accounts: make([]taxonomy.AccountBalance, 0, len(accounts))}
 	for _, account := range accounts {
-		amount := adjustedAccountBalance(balances[account.ID], account)
-		classification := normalizeClassification(account.SubClassification)
-		category := normalizeClassification(account.IFRSCategory)
-		switch account.AccountType {
-		case masterdata.AccountTypeIncome:
-			if !validIFRSCategory(category) {
-				return IncomeStatement{}, ErrIFRSClassificationRequired
-			}
-			switch category {
-			case masterdata.IFRSCategoryBalanceSheetPerpetual:
-				continue
-			case masterdata.IFRSCategoryTax, masterdata.IFRSCategoryIncomeTaxes:
-				report.TaxExpense = report.TaxExpense.Add(amount)
-			case masterdata.IFRSCategoryInvesting:
-				report.InvestingIncome = report.InvestingIncome.Add(amount)
-			case masterdata.IFRSCategoryFinancing:
-				report.FinancingIncome = report.FinancingIncome.Add(amount)
-			case masterdata.IFRSCategoryEquityMovements:
-				report.OCI = report.OCI.Add(amount)
-			case masterdata.IFRSCategoryDiscontinued, masterdata.IFRSCategoryDiscontinuedOperations:
-				report.DiscontinuedOperations = report.DiscontinuedOperations.Add(amount)
-			case masterdata.IFRSCategoryOperating:
-				report.Revenue = report.Revenue.Add(amount)
-			default:
-				return IncomeStatement{}, ErrIFRSClassificationRequired
-			}
-		case masterdata.AccountTypeExpense:
-			if !validIFRSCategory(category) {
-				return IncomeStatement{}, ErrIFRSClassificationRequired
-			}
-			switch category {
-			case masterdata.IFRSCategoryBalanceSheetPerpetual:
-				continue
-			case masterdata.IFRSCategoryTax, masterdata.IFRSCategoryIncomeTaxes:
-				report.TaxExpense = report.TaxExpense.Add(amount)
-				continue
-			case masterdata.IFRSCategoryInvesting:
-				report.InvestingIncome = report.InvestingIncome.Sub(amount)
-				continue
-			case masterdata.IFRSCategoryFinancing:
-				report.FinanceCosts = report.FinanceCosts.Add(amount)
-				continue
-			case masterdata.IFRSCategoryEquityMovements:
-				report.OCI = report.OCI.Sub(amount)
-				continue
-			case masterdata.IFRSCategoryDiscontinued, masterdata.IFRSCategoryDiscontinuedOperations:
-				report.DiscontinuedOperations = report.DiscontinuedOperations.Sub(amount)
-				continue
-			case masterdata.IFRSCategoryOperating:
-			default:
-				return IncomeStatement{}, ErrIFRSClassificationRequired
-			}
-			switch classification {
-			case masterdata.SubClassCostOfSales:
-				report.CostOfSales = report.CostOfSales.Add(amount)
-			case masterdata.SubClassSellingDistributionExpense:
-				report.SellingExpenses = report.SellingExpenses.Add(amount)
-			case masterdata.SubClassGeneralAdminExpense:
-				report.AdministrativeExpenses = report.AdministrativeExpenses.Add(amount)
-			case masterdata.SubClassDepreciationAmortExpense, masterdata.SubClassExpectedCreditLossExpense:
-				report.DepreciationAndProvisionExpenses = report.DepreciationAndProvisionExpenses.Add(amount)
-			default:
-				report.OtherOperatingExpenses = report.OtherOperatingExpenses.Add(amount)
-			}
+		tags, include, err := incomeStatementTaxonomyTags(account)
+		if err != nil {
+			return IncomeStatement{}, err
 		}
+		if !include {
+			continue
+		}
+		taxonomyBalances.Accounts = append(taxonomyBalances.Accounts, taxonomy.AccountBalance{
+			AccountID: account.ID,
+			Code:      account.Code,
+			Tags:      tags,
+			Amount:    adjustedAccountBalance(balances[account.ID], account),
+		})
 	}
-	report.GrossProfit = report.Revenue.Sub(report.CostOfSales)
-	report.OperatingProfit = report.GrossProfit.Sub(report.SellingExpenses).Sub(report.AdministrativeExpenses).
-		Sub(report.DepreciationAndProvisionExpenses).Sub(report.OtherOperatingExpenses)
-	report.ProfitBeforeFinancingAndTax = report.OperatingProfit.Add(report.InvestingIncome)
-	report.FinanceIncome = report.InvestingIncome.Add(report.FinancingIncome)
-	report.ProfitBeforeTax = report.ProfitBeforeFinancingAndTax.Add(report.FinancingIncome).Sub(report.FinanceCosts)
-	report.NetProfit = report.ProfitBeforeTax.Sub(report.TaxExpense)
-	report.NetProfit = report.NetProfit.Add(report.DiscontinuedOperations)
+	definition, err := taxonomy.BuiltInTemplate(taxonomy.TemplateIFRSFunctionIncome)
+	if err != nil {
+		return IncomeStatement{}, err
+	}
+	evaluated, err := taxonomy.NewTaxonomyEvaluator(staticTaxonomyBalanceReader{balances: taxonomyBalances}).
+		EvaluateStatement(context.Background(), uuid.New(), definition, uuid.New(), currency)
+	if err != nil {
+		return IncomeStatement{}, err
+	}
+	values := make(map[string]decimal.Decimal, len(evaluated.Lines))
+	for _, line := range evaluated.Lines {
+		values[line.Code] = line.Amount
+	}
+	report := IncomeStatement{
+		StartDate:                        start,
+		EndDate:                          end,
+		Currency:                         currency,
+		Revenue:                          values["REVENUE"],
+		InvestingIncome:                  values["NET_INVESTING_INCOME"],
+		CostOfSales:                      values["COST_OF_SALES"],
+		GrossProfit:                      values["GROSS_PROFIT"],
+		SellingExpenses:                  values["SELLING_EXPENSES"],
+		AdministrativeExpenses:           values["ADMIN_EXPENSES"],
+		DepreciationAndProvisionExpenses: values["DEPRECIATION_EXPENSES"],
+		OtherOperatingExpenses:           values["OTHER_OPERATING_EXPENSES"],
+		OperatingProfit:                  values["OPERATING_PROFIT"],
+		ProfitBeforeFinancingAndTax:      values["PROFIT_BEFORE_FINANCING_AND_TAX"],
+		FinanceIncome:                    values["FINANCE_INCOME"],
+		FinancingIncome:                  values["FINANCING_REVENUE"],
+		FinanceCosts:                     values["FINANCE_COSTS"],
+		ProfitBeforeTax:                  values["PROFIT_BEFORE_TAX"],
+		TaxExpense:                       values["INCOME_TAX_ZAKAT"],
+		DiscontinuedOperations:           values["DISCONTINUED_OPERATIONS"],
+		NetProfit:                        values["NET_PROFIT"],
+		OCI:                              values["OCI"],
+		TotalComprehensiveIncome:         values["TOTAL_COMPREHENSIVE_INCOME"],
+	}
 	translated, err := entriesRequireTranslation(e.repository, end, currency)
 	if err != nil {
 		return IncomeStatement{}, err
@@ -151,6 +129,86 @@ func (e *IncomeStatementEngine) Generate(start, end time.Time, currency string) 
 	}
 	report.TotalComprehensiveIncome = report.NetProfit.Add(report.OCI)
 	return report, nil
+}
+
+func incomeStatementTaxonomyTags(account masterdata.Account) ([]string, bool, error) {
+	if account.AccountType != masterdata.AccountTypeIncome && account.AccountType != masterdata.AccountTypeExpense {
+		return nil, false, nil
+	}
+	category := normalizeClassification(account.IFRSCategory)
+	if !validIFRSCategory(category) {
+		return nil, false, ErrIFRSClassificationRequired
+	}
+	if category == masterdata.IFRSCategoryBalanceSheetPerpetual {
+		return nil, false, nil
+	}
+	categoryTags := map[string]map[masterdata.AccountType]string{
+		masterdata.IFRSCategoryOperating: {
+			masterdata.AccountTypeIncome: "revenue",
+		},
+		masterdata.IFRSCategoryInvesting: {
+			masterdata.AccountTypeIncome:  "investing_revenue",
+			masterdata.AccountTypeExpense: "investing_expense",
+		},
+		masterdata.IFRSCategoryFinancing: {
+			masterdata.AccountTypeIncome:  "financing_revenue",
+			masterdata.AccountTypeExpense: "finance_cost",
+		},
+		masterdata.IFRSCategoryTax: {
+			masterdata.AccountTypeIncome:  "income_tax",
+			masterdata.AccountTypeExpense: "income_tax",
+		},
+		masterdata.IFRSCategoryIncomeTaxes: {
+			masterdata.AccountTypeIncome:  "income_tax",
+			masterdata.AccountTypeExpense: "income_tax",
+		},
+		masterdata.IFRSCategoryEquityMovements: {
+			masterdata.AccountTypeIncome:  "oci_income",
+			masterdata.AccountTypeExpense: "oci_expense",
+		},
+		masterdata.IFRSCategoryDiscontinued: {
+			masterdata.AccountTypeIncome:  "discontinued_income",
+			masterdata.AccountTypeExpense: "discontinued_expense",
+		},
+		masterdata.IFRSCategoryDiscontinuedOperations: {
+			masterdata.AccountTypeIncome:  "discontinued_income",
+			masterdata.AccountTypeExpense: "discontinued_expense",
+		},
+	}
+	tag := categoryTags[category][account.AccountType]
+	if account.AccountType == masterdata.AccountTypeExpense && category == masterdata.IFRSCategoryOperating {
+		expenseTags := map[string]string{
+			masterdata.SubClassCostOfSales:                "cost_of_sales",
+			masterdata.SubClassSellingDistributionExpense: "selling_expense",
+			masterdata.SubClassGeneralAdminExpense:        "administrative_expense",
+			masterdata.SubClassDepreciationAmortExpense:   "depreciation_expense",
+			masterdata.SubClassExpectedCreditLossExpense:  "depreciation_expense",
+			masterdata.SubClassOtherOperatingExpense:      "other_operating_expense",
+		}
+		tag = expenseTags[normalizeClassification(account.SubClassification)]
+		if tag == "" {
+			tag = "other_operating_expense"
+		}
+	}
+	if tag == "" {
+		return nil, false, ErrIFRSClassificationRequired
+	}
+	return []string{tag}, true, nil
+}
+
+type staticTaxonomyBalanceReader struct {
+	balances taxonomy.PeriodBalances
+}
+
+func (r staticTaxonomyBalanceReader) GetPeriodBalances(
+	ctx context.Context,
+	_, _ uuid.UUID,
+	_ string,
+) (taxonomy.PeriodBalances, error) {
+	if err := ctx.Err(); err != nil {
+		return taxonomy.PeriodBalances{}, err
+	}
+	return r.balances, nil
 }
 
 func translationReserveAt(

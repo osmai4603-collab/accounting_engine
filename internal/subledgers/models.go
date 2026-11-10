@@ -100,6 +100,7 @@ type OpenLine struct {
 	MatchingNumber              string
 	MatchIDs                    []uuid.UUID
 	Matches                     []OpenLineMatch
+	MatchHistory                []OpenLineMatch
 	Closed                      bool
 	WrittenOffAmount            financialtypes.Money
 	PendingWriteOffID           uuid.UUID
@@ -108,11 +109,12 @@ type OpenLine struct {
 }
 
 type OpenLineMatch struct {
-	MatchingNumber string
-	CounterpartID  uuid.UUID
-	Amount         financialtypes.Money
+	MatchingNumber   string
+	CounterpartID    uuid.UUID
+	Amount           financialtypes.Money
 	FunctionalAmount financialtypes.Money
-	MatchedAt      time.Time
+	MatchedAt        time.Time
+	ReversedAt       time.Time
 }
 
 func linePartner(line OpenLine) string {
@@ -174,6 +176,7 @@ type BankItem struct {
 	AccountID      uuid.UUID
 	JournalEntryID uuid.UUID
 	Date           time.Time
+	MatchedAt      time.Time
 	Amount         financialtypes.Money
 	Reference      string
 	Status         BankItemStatus

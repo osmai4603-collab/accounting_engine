@@ -44,7 +44,7 @@ func NewPostingOpenLineAttachment(line OpenLine) (posting.OpenLineAttachment, er
 		ID: line.ID, CompanyID: line.CompanyID, JournalEntryID: line.JournalEntryID,
 		PartnerID: *line.PartnerID, ControlAccountID: line.ControlAccountID,
 		Kind: string(line.Kind), Amount: line.OriginalAmount, FunctionalAmount: line.FunctionalOriginalAmount,
-		PostingDate: line.PostingDate,
+		PostingDate:  line.PostingDate,
 		DocumentDate: line.DocumentDate, DueDate: line.DueDate, Reference: line.Reference,
 	}, nil
 }
@@ -203,12 +203,6 @@ func postedFunctionalControlAmount(entry posting.JournalEntry, line OpenLine) (f
 			continue
 		}
 
-		func entryPostingDate(entry posting.JournalEntry) time.Time {
-			if !entry.EntryDate.IsZero() {
-				return entry.EntryDate
-			}
-			return entry.Date
-		}
 		amount := entryLine.FunctionalDebit
 		if line.Kind == LinePayable {
 			amount = entryLine.FunctionalCredit
@@ -233,4 +227,11 @@ func postedFunctionalControlAmount(entry posting.JournalEntry, line OpenLine) (f
 		return financialtypes.Money{}, ErrInvalidOpenLine
 	}
 	return financialtypes.NewMoney(total, currency)
+}
+
+func entryPostingDate(entry posting.JournalEntry) time.Time {
+	if !entry.EntryDate.IsZero() {
+		return entry.EntryDate
+	}
+	return entry.Date
 }

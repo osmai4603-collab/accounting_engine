@@ -90,20 +90,20 @@ func (l *PayableLedger) addInvoice(companyID, partnerID, controlAccountID, journ
 		return OpenLine{}, ErrInvalidAmount
 	}
 	line := OpenLine{
-		CompanyID:        companyID,
-		ID:               uuid.New(),
-		PartnerID:        &partnerID,
-		ControlAccountID: controlAccountID,
-		JournalEntryID:   journalEntryID,
-		Kind:             LinePayable,
-		OriginalAmount:   amount,
-		ResidualAmount:   amount,
+		CompanyID:                companyID,
+		ID:                       uuid.New(),
+		PartnerID:                &partnerID,
+		ControlAccountID:         controlAccountID,
+		JournalEntryID:           journalEntryID,
+		Kind:                     LinePayable,
+		OriginalAmount:           amount,
+		ResidualAmount:           amount,
 		FunctionalOriginalAmount: amount,
 		FunctionalResidualAmount: amount,
 		PostingDate:              documentDate,
-		DocumentDate:     documentDate,
-		DueDate:          dueDate,
-		Reference:        reference,
+		DocumentDate:             documentDate,
+		DueDate:                  dueDate,
+		Reference:                reference,
 	}
 	if err := l.repo.SaveOpenLine(context.Background(), line); err != nil {
 		return OpenLine{}, err

@@ -164,7 +164,7 @@ func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachm
 		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
 		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
 		DocumentDate: attachment.DocumentDate,
-		DueDate: attachment.DueDate, Reference: attachment.Reference,
+		DueDate:      attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
 		return posting.JournalEntry{}, err
@@ -269,7 +269,7 @@ func (d *Driver) SaveOpenLineFromAttachment(ctx context.Context, attachment post
 		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
 		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
 		DocumentDate: attachment.DocumentDate,
-		DueDate: attachment.DueDate, Reference: attachment.Reference,
+		DueDate:      attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
 		return err
@@ -351,7 +351,7 @@ func (s *memoryMutationState) SaveOpenLineFromAttachment(
 		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
 		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
 		DocumentDate: attachment.DocumentDate,
-		DueDate: attachment.DueDate, Reference: attachment.Reference,
+		DueDate:      attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
 		return err

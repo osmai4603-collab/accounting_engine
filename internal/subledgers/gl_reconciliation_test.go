@@ -76,14 +76,14 @@ func TestLedgerReconciliationEngineReconcilesMixedCurrenciesInFunctionalCurrency
 		{
 			CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, ControlAccountID: controlID,
 			Kind: LinePayable, OriginalAmount: mustMoney(t, "10.00", "USD"),
-			ResidualAmount: mustMoney(t, "10.00", "USD"),
+			ResidualAmount:           mustMoney(t, "10.00", "USD"),
 			FunctionalOriginalAmount: money(t, "10.00"), FunctionalResidualAmount: money(t, "10.00"),
 			DocumentDate: time.Now(),
 		},
 		{
 			CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, ControlAccountID: controlID,
 			Kind: LinePayable, OriginalAmount: mustMoney(t, "10.00", "EUR"),
-			ResidualAmount: mustMoney(t, "10.00", "EUR"),
+			ResidualAmount:           mustMoney(t, "10.00", "EUR"),
 			FunctionalOriginalAmount: money(t, "10.00"), FunctionalResidualAmount: money(t, "10.00"),
 			DocumentDate: time.Now(),
 		},
@@ -92,12 +92,20 @@ func TestLedgerReconciliationEngineReconcilesMixedCurrenciesInFunctionalCurrency
 			t.Fatal(err)
 		}
 	}
-	engine := NewLedgerReconciliationEngine(repo, repo, &stubGLReader{balances: map[string]financialtypes.Money{
-		companyID.String() + "|" + controlID.String(): money(t, "20.00"),
-	}})
-	discrepancy, err := engine.ReconcileAPControl(context.Background(), companyID, controlID)
-	if err != nil || discrepancy != nil {
-		t.Fatalf("ReconcileAPControl() = (%+v, %v), want a balanced multi-currency reconciliation", discrepancy, err)
+	gl := newFakeReconciliationStore()
+	gl.balances[controlID] = money(t, "20.00")
+	engine := NewLedgerReconciliationEngine(repo, repo, gl)
+	report, err := engine.ReconcileAPControlAsOf(context.Background(), companyID, controlID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasVariance() || len(report.Breakdown) != 2 {
+		t.Fatalf("multi-currency report = %+v, want balanced two-currency breakdown", report)
+	}
+	if report.Breakdown[0].TransactionCurrency != "EUR" ||
+		report.Breakdown[1].TransactionCurrency != "USD" ||
+		!report.Breakdown[0].FunctionalAmount.Add(report.Breakdown[1].FunctionalAmount).Equal(decimal.NewFromInt(20)) {
+		t.Fatalf("unexpected functional-currency breakdown: %+v", report.Breakdown)
 	}
 }
 
@@ -230,6 +238,31 @@ func TestReconcileControlAsOfReconstructsLaterSettlement(t *testing.T) {
 	}
 }
 
+func TestOpenLineAsOfPreservesBalanceBetweenMatchAndUnreconcile(t *testing.T) {
+	line := OpenLine{
+		CompanyID: uuid.New(), ID: uuid.New(), ControlAccountID: uuid.New(), Kind: LineReceivable,
+		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
+		FunctionalOriginalAmount: money(t, "100"), FunctionalResidualAmount: money(t, "100"),
+		PostingDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		MatchHistory: []OpenLineMatch{{
+			MatchingNumber: "MATCH-2", CounterpartID: uuid.New(), Amount: money(t, "50"),
+			FunctionalAmount: money(t, "50"),
+			MatchedAt:        time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+			ReversedAt:       time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		}},
+	}
+	balance, functional, include, err := openLineBalanceAsOf(line, time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || !include || !balance.Equal(money(t, "50")) || !functional.Equal(money(t, "50")) {
+		t.Fatalf("balance between match and unreconcile = %s/%s include=%v err=%v",
+			balance, functional, include, err)
+	}
+	balance, functional, include, err = openLineBalanceAsOf(line, time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil || !include || !balance.Equal(money(t, "100")) || !functional.Equal(money(t, "100")) {
+		t.Fatalf("balance after unreconcile = %s/%s include=%v err=%v",
+			balance, functional, include, err)
+	}
+}
+
 func TestReconcileFixedAssetControlMatchesCostAndDepreciation(t *testing.T) {
 	companyID, costAccount, depreciationAccount := uuid.New(), uuid.New(), uuid.New()
 	asOf := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
@@ -237,7 +270,7 @@ func TestReconcileFixedAssetControlMatchesCostAndDepreciation(t *testing.T) {
 	gl.assets = []FixedAsset{{
 		CompanyID: companyID, ID: uuid.New(), AssetAccountID: costAccount,
 		AccumulatedAccountID: depreciationAccount,
-		HistoricalCost: money(t, "100"), AccumulatedDepreciation: money(t, "20"),
+		HistoricalCost:       money(t, "100"), AccumulatedDepreciation: money(t, "20"),
 		InServiceDate: asOf.Add(-time.Hour), LastDepreciationDate: asOf.Add(-time.Hour),
 	}}
 	gl.balances[costAccount] = money(t, "100")
@@ -309,13 +342,13 @@ func TestReconciliationDaemonPersistsCertificateAuditsAndNotifies(t *testing.T) 
 }
 
 type fakeReconciliationStore struct {
-	balances    map[uuid.UUID]financialtypes.Money
-	accounts    []masterdata.Account
-	assets      []FixedAsset
-	bankItems   []BankItem
-	reports     []DiscrepancyReport
+	balances     map[uuid.UUID]financialtypes.Money
+	accounts     []masterdata.Account
+	assets       []FixedAsset
+	bankItems    []BankItem
+	reports      []DiscrepancyReport
 	certificates []ReconciliationCertificate
-	auditLogs   []governance.FinancialAuditLog
+	auditLogs    []governance.FinancialAuditLog
 }
 
 func newFakeReconciliationStore() *fakeReconciliationStore {
