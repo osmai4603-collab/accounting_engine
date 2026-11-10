@@ -9,6 +9,7 @@ import (
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 var ErrInvalidControlAccount = errors.New("subledger: account is not a valid control account for this ledger")
@@ -42,7 +43,8 @@ func NewPostingOpenLineAttachment(line OpenLine) (posting.OpenLineAttachment, er
 	return posting.OpenLineAttachment{
 		ID: line.ID, CompanyID: line.CompanyID, JournalEntryID: line.JournalEntryID,
 		PartnerID: *line.PartnerID, ControlAccountID: line.ControlAccountID,
-		Kind: string(line.Kind), Amount: line.OriginalAmount,
+		Kind: string(line.Kind), Amount: line.OriginalAmount, FunctionalAmount: line.FunctionalOriginalAmount,
+		PostingDate: line.PostingDate,
 		DocumentDate: line.DocumentDate, DueDate: line.DueDate, Reference: line.Reference,
 	}, nil
 }
@@ -66,6 +68,13 @@ func postInvoiceEntry(
 		OriginalAmount: amount, ResidualAmount: amount,
 		DocumentDate: documentDate, DueDate: dueDate, Reference: reference,
 	}
+	line.PostingDate = entryPostingDate(*entry)
+	functionalAmount, err := postedFunctionalControlAmount(*entry, line)
+	if err != nil {
+		return OpenLine{}, err
+	}
+	line.FunctionalOriginalAmount = functionalAmount
+	line.FunctionalResidualAmount = functionalAmount
 	attachment, err := NewPostingOpenLineAttachment(line)
 	if err != nil {
 		return OpenLine{}, err
@@ -169,6 +178,13 @@ func addPostedInvoice(
 		OriginalAmount: amount, ResidualAmount: amount,
 		DocumentDate: documentDate, DueDate: dueDate, Reference: reference,
 	}
+	line.PostingDate = entryPostingDate(entry)
+	functionalAmount, err := postedFunctionalControlAmount(entry, line)
+	if err != nil {
+		return OpenLine{}, err
+	}
+	line.FunctionalOriginalAmount = functionalAmount
+	line.FunctionalResidualAmount = functionalAmount
 	if err := ValidatePostedOpenLine(line, account, entry); err != nil {
 		return OpenLine{}, err
 	}
@@ -176,4 +192,45 @@ func addPostedInvoice(
 		return OpenLine{}, err
 	}
 	return line, nil
+}
+
+func postedFunctionalControlAmount(entry posting.JournalEntry, line OpenLine) (financialtypes.Money, error) {
+	total := decimal.Zero
+	currency := ""
+	for _, entryLine := range entry.Lines {
+		if entryLine.AccountID != line.ControlAccountID ||
+			(entryLine.PartnerID != nil && (line.PartnerID == nil || *entryLine.PartnerID != *line.PartnerID)) {
+			continue
+		}
+
+		func entryPostingDate(entry posting.JournalEntry) time.Time {
+			if !entry.EntryDate.IsZero() {
+				return entry.EntryDate
+			}
+			return entry.Date
+		}
+		amount := entryLine.FunctionalDebit
+		if line.Kind == LinePayable {
+			amount = entryLine.FunctionalCredit
+		}
+		if amount.Currency() == "" {
+			amount = entryLine.Debit
+			if line.Kind == LinePayable {
+				amount = entryLine.Credit
+			}
+		}
+		if amount.Currency() == "" {
+			continue
+		}
+		if currency == "" {
+			currency = amount.Currency()
+		} else if currency != amount.Currency() {
+			return financialtypes.Money{}, ErrControlBalanceCurrencyMismatch
+		}
+		total = total.Add(amount.Amount())
+	}
+	if currency == "" || total.IsZero() {
+		return financialtypes.Money{}, ErrInvalidOpenLine
+	}
+	return financialtypes.NewMoney(total, currency)
 }

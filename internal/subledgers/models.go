@@ -14,6 +14,7 @@ type EconomicEvent struct {
 	IdempotencyKey string
 	EventType      string
 	Date           time.Time
+	MatchedAt      time.Time
 	Amount         financialtypes.Money
 	Values         map[string]financialtypes.Money
 	Attributes     map[string]string
@@ -90,6 +91,9 @@ type OpenLine struct {
 	Kind                        LineKind
 	OriginalAmount              financialtypes.Money
 	ResidualAmount              financialtypes.Money
+	FunctionalOriginalAmount    financialtypes.Money
+	FunctionalResidualAmount    financialtypes.Money
+	PostingDate                 time.Time
 	DueDate                     time.Time
 	DocumentDate                time.Time
 	Reference                   string
@@ -107,6 +111,8 @@ type OpenLineMatch struct {
 	MatchingNumber string
 	CounterpartID  uuid.UUID
 	Amount         financialtypes.Money
+	FunctionalAmount financialtypes.Money
+	MatchedAt      time.Time
 }
 
 func linePartner(line OpenLine) string {

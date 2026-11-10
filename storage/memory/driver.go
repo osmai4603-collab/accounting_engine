@@ -32,6 +32,8 @@ type Driver struct {
 	lines            map[uuid.UUID]subledgers.OpenLine
 	assets           map[uuid.UUID]subledgers.FixedAsset
 	bank             map[string][]subledgers.BankItem
+	reconciliationReports []subledgers.DiscrepancyReport
+	reconciliationCertificates []subledgers.ReconciliationCertificate
 	contracts        map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
 	audit            []*governance.FinancialAuditLog
 	rates            *valuation.RateRegistry

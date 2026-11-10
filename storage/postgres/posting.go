@@ -254,11 +254,20 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	}
 	if attachment != nil {
 		partnerID := attachment.PartnerID
+		postingDate := attachment.PostingDate
+		if postingDate.IsZero() {
+			postingDate = entry.EntryDate
+			if postingDate.IsZero() {
+				postingDate = entry.Date
+			}
+		}
 		line := subledgers.OpenLine{
 			CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
 			ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
 			Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
-			ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+			ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
+			FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
+			DocumentDate: attachment.DocumentDate,
 			DueDate: attachment.DueDate, Reference: attachment.Reference,
 		}
 		account, err := scanAccount(tx.QueryRow(ctx,

@@ -243,8 +243,15 @@ func (d *Driver) ListEntriesForCompany(ctx context.Context, companyID uuid.UUID,
 }
 
 func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
+	return d.GetAccountBalanceAsOf(ctx, companyID, accountID, time.Now().UTC())
+}
+
+func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID uuid.UUID, asOf time.Time) (financialtypes.Money, error) {
 	if err := ctx.Err(); err != nil {
 		return financialtypes.Money{}, err
+	}
+	if asOf.IsZero() {
+		return financialtypes.Money{}, subledgers.ErrReconciliationHistoryUnavailable
 	}
 	account, err := d.GetAccountByIDForCompany(ctx, companyID, accountID)
 	if err != nil {
@@ -256,7 +263,7 @@ func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uui
 	}); err != nil {
 		return financialtypes.Money{}, err
 	}
-	entries, err := d.ListEntriesForCompany(ctx, companyID, time.Time{}, time.Now().UTC())
+	entries, err := d.ListEntriesForCompany(ctx, companyID, time.Time{}, asOf)
 	if err != nil {
 		return financialtypes.Money{}, err
 	}

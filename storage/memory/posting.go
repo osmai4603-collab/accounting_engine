@@ -150,11 +150,20 @@ func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachm
 		return posting.JournalEntry{}, subledgers.ErrAlreadyExists
 	}
 	partnerID := attachment.PartnerID
+	postingDate := attachment.PostingDate
+	if postingDate.IsZero() {
+		postingDate = entry.EntryDate
+		if postingDate.IsZero() {
+			postingDate = entry.Date
+		}
+	}
 	line := subledgers.OpenLine{
 		CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
 		ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
 		Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
-		ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
+		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
+		DocumentDate: attachment.DocumentDate,
 		DueDate: attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
@@ -246,11 +255,20 @@ func (d *Driver) SaveOpenLineFromAttachment(ctx context.Context, attachment post
 		return subledgers.ErrAlreadyExists
 	}
 	partnerID := attachment.PartnerID
+	postingDate := attachment.PostingDate
+	if postingDate.IsZero() {
+		postingDate = entry.EntryDate
+		if postingDate.IsZero() {
+			postingDate = entry.Date
+		}
+	}
 	line := subledgers.OpenLine{
 		CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
 		ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
 		Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
-		ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
+		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
+		DocumentDate: attachment.DocumentDate,
 		DueDate: attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
@@ -319,11 +337,20 @@ func (s *memoryMutationState) SaveOpenLineFromAttachment(
 		return subledgers.ErrAlreadyExists
 	}
 	partnerID := attachment.PartnerID
+	postingDate := attachment.PostingDate
+	if postingDate.IsZero() {
+		postingDate = entry.EntryDate
+		if postingDate.IsZero() {
+			postingDate = entry.Date
+		}
+	}
 	line := subledgers.OpenLine{
 		CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
 		ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
 		Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
-		ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+		ResidualAmount: attachment.Amount, FunctionalOriginalAmount: attachment.FunctionalAmount,
+		FunctionalResidualAmount: attachment.FunctionalAmount, PostingDate: postingDate,
+		DocumentDate: attachment.DocumentDate,
 		DueDate: attachment.DueDate, Reference: attachment.Reference,
 	}
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
@@ -826,6 +853,36 @@ func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uui
 	entries := make([]posting.JournalEntry, 0)
 	for _, entry := range d.entries {
 		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted {
+			entries = append(entries, cloneEntry(entry))
+		}
+	}
+	d.mu.RUnlock()
+	if !exists || account.CompanyID != companyID {
+		return financialtypes.Money{}, masterdata.ErrAccountNotFound
+	}
+	if !companyExists {
+		return financialtypes.Money{}, masterdata.ErrInvalidCompany
+	}
+	return subledgers.ControlAccountBalanceFromEntries(account, entries, company.FunctionalCurrency)
+}
+
+func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID uuid.UUID, asOf time.Time) (financialtypes.Money, error) {
+	if asOf.IsZero() {
+		return financialtypes.Money{}, subledgers.ErrReconciliationHistoryUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return financialtypes.Money{}, err
+	}
+	d.mu.RLock()
+	account, exists := d.accounts[accountID]
+	company, companyExists := d.companies[companyID]
+	entries := make([]posting.JournalEntry, 0)
+	for _, entry := range d.entries {
+		entryDate := entry.EntryDate
+		if entryDate.IsZero() {
+			entryDate = entry.Date
+		}
+		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted && !entryDate.After(asOf) {
 			entries = append(entries, cloneEntry(entry))
 		}
 	}

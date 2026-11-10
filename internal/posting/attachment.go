@@ -109,6 +109,9 @@ func (a *OpenLineLedgerAttachment) ExecuteAtomicMutation(ctx context.Context, tx
 		Kind             string
 		OriginalAmount   financialtypes.Money
 		ResidualAmount   financialtypes.Money
+		FunctionalOriginalAmount financialtypes.Money
+		FunctionalResidualAmount financialtypes.Money
+		PostingDate time.Time
 		DocumentDate     time.Time
 		DueDate          time.Time
 		Reference        string
@@ -116,6 +119,9 @@ func (a *OpenLineLedgerAttachment) ExecuteAtomicMutation(ctx context.Context, tx
 		CompanyID: a.Attachment.CompanyID, ID: a.Attachment.ID, PartnerID: &a.Attachment.PartnerID,
 		ControlAccountID: a.Attachment.ControlAccountID, JournalEntryID: a.Attachment.JournalEntryID,
 		Kind: a.Attachment.Kind, OriginalAmount: a.Attachment.Amount, ResidualAmount: a.Attachment.Amount,
+		FunctionalOriginalAmount: a.Attachment.FunctionalAmount,
+		FunctionalResidualAmount: a.Attachment.FunctionalAmount,
+		PostingDate: a.Attachment.PostingDate,
 		DocumentDate: a.Attachment.DocumentDate, DueDate: a.Attachment.DueDate, Reference: a.Attachment.Reference,
 	}
 	data, err := json.Marshal(record)

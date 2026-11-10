@@ -51,6 +51,8 @@ type OpenLineAttachment struct {
 	ControlAccountID uuid.UUID
 	Kind             string
 	Amount           financialtypes.Money
+	FunctionalAmount financialtypes.Money
+	PostingDate      time.Time
 	DocumentDate     time.Time
 	DueDate          time.Time
 	Reference        string
@@ -76,4 +78,3 @@ type AtomicAttachmentRepository interface {
 type ContextAtomicAttachmentRepository interface {
 	PostWithAttachmentsContext(ctx context.Context, entry *JournalEntry, attachments []LedgerAttachment) error
 }
-

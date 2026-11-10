@@ -84,11 +84,25 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 	if err != nil {
 		return "", nil, err
 	}
+	lineFunctionalAmount, err := matchedFunctionalAmount(line, amount)
+	if err != nil {
+		return "", nil, err
+	}
+	counterpartFunctionalAmount, err := matchedFunctionalAmount(counterpart, amount)
+	if err != nil {
+		return "", nil, err
+	}
+	matchedAt := params.Date
+	if matchedAt.IsZero() {
+		matchedAt = time.Now().UTC()
+	}
 	line.Matches = append(lineMatches, OpenLineMatch{
 		MatchingNumber: matchingNumber, CounterpartID: counterpart.ID, Amount: amount,
+		FunctionalAmount: lineFunctionalAmount, MatchedAt: matchedAt,
 	})
 	counterpart.Matches = append(counterpartMatches, OpenLineMatch{
 		MatchingNumber: matchingNumber, CounterpartID: line.ID, Amount: amount,
+		FunctionalAmount: counterpartFunctionalAmount, MatchedAt: matchedAt,
 	})
 	if err := applyMatch(&line, &counterpart, amount); err != nil {
 		return "", nil, err
@@ -189,6 +203,14 @@ func validLineKind(kind LineKind) bool {
 
 func applyMatch(line, counterpart *OpenLine, amount financialtypes.Money) error {
 	var err error
+	lineMatchAmount, err := matchedFunctionalAmount(*line, amount)
+	if err != nil {
+		return err
+	}
+	counterpartMatchAmount, err := matchedFunctionalAmount(*counterpart, amount)
+	if err != nil {
+		return err
+	}
 	line.ResidualAmount, err = line.ResidualAmount.Subtract(amount)
 	if err != nil {
 		return err
@@ -197,9 +219,43 @@ func applyMatch(line, counterpart *OpenLine, amount financialtypes.Money) error 
 	if err != nil {
 		return err
 	}
+	if line.FunctionalResidualAmount.Currency() != "" {
+		line.FunctionalResidualAmount, err = line.FunctionalResidualAmount.Subtract(lineMatchAmount)
+		if err != nil {
+			return err
+		}
+	}
+	if counterpart.FunctionalResidualAmount.Currency() != "" {
+		counterpart.FunctionalResidualAmount, err = counterpart.FunctionalResidualAmount.Subtract(counterpartMatchAmount)
+		if err != nil {
+			return err
+		}
+	}
 	line.Closed = line.ResidualAmount.Amount().IsZero()
 	counterpart.Closed = counterpart.ResidualAmount.Amount().IsZero()
 	return nil
+}
+
+func matchedFunctionalAmount(line OpenLine, amount financialtypes.Money) (financialtypes.Money, error) {
+	functional := line.FunctionalResidualAmount
+	if functional.Currency() == "" {
+		functional = line.ResidualAmount
+	}
+	if line.ResidualAmount.Currency() == "" || amount.Currency() != line.ResidualAmount.Currency() ||
+		line.ResidualAmount.Amount().IsZero() || amount.GreaterThan(line.ResidualAmount) {
+		return financialtypes.Money{}, ErrInvalidOpenLine
+	}
+	if amount.Equal(line.ResidualAmount) {
+		return functional, nil
+	}
+	result, err := financialtypes.NewMoney(
+		functional.Amount().Mul(amount.Amount()).Div(line.ResidualAmount.Amount()),
+		functional.Currency(),
+	)
+	if err != nil {
+		return financialtypes.Money{}, err
+	}
+	return result.RoundForPosting(), nil
 }
 
 func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
@@ -260,6 +316,22 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 		if updatedLine.ResidualAmount.GreaterThan(updatedLine.OriginalAmount) ||
 			counterpart.ResidualAmount.GreaterThan(counterpart.OriginalAmount) {
 			return ErrInvalidOpenLine
+		}
+		if match.FunctionalAmount.Currency() != "" && updatedLine.FunctionalResidualAmount.Currency() != "" {
+			updatedLine.FunctionalResidualAmount, err = updatedLine.FunctionalResidualAmount.Add(match.FunctionalAmount)
+			if err != nil {
+				return err
+			}
+		}
+		for _, reciprocal := range counterpartMatches {
+			if reciprocal.MatchingNumber == match.MatchingNumber && reciprocal.CounterpartID == line.ID &&
+				reciprocal.FunctionalAmount.Currency() != "" && counterpart.FunctionalResidualAmount.Currency() != "" {
+				counterpart.FunctionalResidualAmount, err = counterpart.FunctionalResidualAmount.Add(reciprocal.FunctionalAmount)
+				if err != nil {
+					return err
+				}
+				break
+			}
 		}
 		updatedLine.Matches = removeMatch(updatedLine.Matches, match.MatchingNumber, match.CounterpartID)
 		counterpart.Matches = removeMatch(counterpartMatches, match.MatchingNumber, line.ID)

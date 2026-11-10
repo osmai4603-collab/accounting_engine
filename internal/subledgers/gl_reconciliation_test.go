@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"accounting_engine/internal/governance"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -68,21 +69,35 @@ func TestLedgerReconciliationEngineDetectsMismatch(t *testing.T) {
 	}
 }
 
-func TestLedgerReconciliationEngineRejectsMixedCurrencies(t *testing.T) {
+func TestLedgerReconciliationEngineReconcilesMixedCurrenciesInFunctionalCurrency(t *testing.T) {
 	repo := NewMemoryRepository()
 	companyID, controlID, partner := uuid.New(), uuid.New(), uuid.New()
-	ledger := NewPayableLedgerForCompany(repo, companyID)
-	for _, amount := range []financialtypes.Money{money(t, "10.00"), mustMoney(t, "10.00", "EUR")} {
-		if _, err := ledger.AddInvoiceForCompanyWithControl(companyID, partner, controlID, uuid.New(), amount, time.Now(), time.Now(), "BILL"); err != nil {
+	for _, line := range []OpenLine{
+		{
+			CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, ControlAccountID: controlID,
+			Kind: LinePayable, OriginalAmount: mustMoney(t, "10.00", "USD"),
+			ResidualAmount: mustMoney(t, "10.00", "USD"),
+			FunctionalOriginalAmount: money(t, "10.00"), FunctionalResidualAmount: money(t, "10.00"),
+			DocumentDate: time.Now(),
+		},
+		{
+			CompanyID: companyID, ID: uuid.New(), PartnerID: &partner, ControlAccountID: controlID,
+			Kind: LinePayable, OriginalAmount: mustMoney(t, "10.00", "EUR"),
+			ResidualAmount: mustMoney(t, "10.00", "EUR"),
+			FunctionalOriginalAmount: money(t, "10.00"), FunctionalResidualAmount: money(t, "10.00"),
+			DocumentDate: time.Now(),
+		},
+	} {
+		if err := repo.SaveOpenLine(context.Background(), line); err != nil {
 			t.Fatal(err)
 		}
 	}
 	engine := NewLedgerReconciliationEngine(repo, repo, &stubGLReader{balances: map[string]financialtypes.Money{
 		companyID.String() + "|" + controlID.String(): money(t, "20.00"),
 	}})
-	_, err := engine.ReconcileAPControl(context.Background(), companyID, controlID)
-	if err != ErrMixedCurrencyReconciliation {
-		t.Fatalf("ReconcileAPControl() error = %v, want %v", err, ErrMixedCurrencyReconciliation)
+	discrepancy, err := engine.ReconcileAPControl(context.Background(), companyID, controlID)
+	if err != nil || discrepancy != nil {
+		t.Fatalf("ReconcileAPControl() = (%+v, %v), want a balanced multi-currency reconciliation", discrepancy, err)
 	}
 }
 
@@ -182,4 +197,224 @@ func mustMoney(t *testing.T, amount, currency string) financialtypes.Money {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestReconcileControlAsOfReconstructsLaterSettlement(t *testing.T) {
+	companyID, accountID, partnerID := uuid.New(), uuid.New(), uuid.New()
+	asOf := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+	line := OpenLine{
+		CompanyID: companyID, ID: uuid.New(), PartnerID: &partnerID,
+		ControlAccountID: accountID, Kind: LineReceivable,
+		OriginalAmount: money(t, "100"), ResidualAmount: money(t, "50"),
+		FunctionalOriginalAmount: money(t, "100"), FunctionalResidualAmount: money(t, "50"),
+		PostingDate: asOf.Add(-time.Hour), DocumentDate: asOf.Add(-time.Hour),
+		Matches: []OpenLineMatch{{
+			MatchingNumber: "MATCH-1", CounterpartID: uuid.New(), Amount: money(t, "50"),
+			FunctionalAmount: money(t, "50"), MatchedAt: asOf.Add(24 * time.Hour),
+		}},
+	}
+	repo := NewMemoryRepository()
+	if err := repo.SaveOpenLine(context.Background(), line); err != nil {
+		t.Fatal(err)
+	}
+	gl := newFakeReconciliationStore()
+	gl.balances[accountID] = money(t, "100")
+	engine := NewLedgerReconciliationEngine(repo, repo, gl)
+
+	report, err := engine.ReconcileARControlAsOf(context.Background(), companyID, accountID, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasVariance() || !report.SubledgerBalance.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("as-of report = %+v, want balanced 100", report)
+	}
+}
+
+func TestReconcileFixedAssetControlMatchesCostAndDepreciation(t *testing.T) {
+	companyID, costAccount, depreciationAccount := uuid.New(), uuid.New(), uuid.New()
+	asOf := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+	gl := newFakeReconciliationStore()
+	gl.assets = []FixedAsset{{
+		CompanyID: companyID, ID: uuid.New(), AssetAccountID: costAccount,
+		AccumulatedAccountID: depreciationAccount,
+		HistoricalCost: money(t, "100"), AccumulatedDepreciation: money(t, "20"),
+		InServiceDate: asOf.Add(-time.Hour), LastDepreciationDate: asOf.Add(-time.Hour),
+	}}
+	gl.balances[costAccount] = money(t, "100")
+	gl.balances[depreciationAccount] = money(t, "20")
+	engine := NewLedgerReconciliationEngine(NewMemoryRepository(), NewMemoryRepository(), gl)
+
+	reports, err := engine.ReconcileFixedAssetsControl(context.Background(), companyID, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 2 || reports[0].HasVariance() || reports[1].HasVariance() {
+		t.Fatalf("fixed-asset reconciliation = %+v, want two balanced reports", reports)
+	}
+}
+
+func TestReconcileTreasuryControlIncludesUnmatchedLedgerItems(t *testing.T) {
+	companyID, accountID := uuid.New(), uuid.New()
+	asOf := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+	gl := newFakeReconciliationStore()
+	gl.balances[accountID] = money(t, "110")
+	gl.bankItems = []BankItem{
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: asOf, Amount: money(t, "100")},
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, JournalEntryID: uuid.New(),
+			Date: asOf, Amount: money(t, "10"), Status: BankItemPending},
+	}
+	engine := NewLedgerReconciliationEngine(NewMemoryRepository(), NewMemoryRepository(), gl)
+
+	report, err := engine.ReconcileTreasuryControl(context.Background(), companyID, accountID, asOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasVariance() || !report.SubledgerBalance.Equal(decimal.NewFromInt(110)) {
+		t.Fatalf("treasury report = %+v, want balanced 110", report)
+	}
+}
+
+func TestReconciliationDaemonPersistsCertificateAuditsAndNotifies(t *testing.T) {
+	companyID, accountID, partnerID := uuid.New(), uuid.New(), uuid.New()
+	repo := NewMemoryRepository()
+	line := OpenLine{
+		CompanyID: companyID, ID: uuid.New(), PartnerID: &partnerID, ControlAccountID: accountID,
+		Kind: LineReceivable, OriginalAmount: money(t, "100"), ResidualAmount: money(t, "100"),
+		FunctionalOriginalAmount: money(t, "100"), FunctionalResidualAmount: money(t, "100"),
+		PostingDate: time.Now().UTC(), DocumentDate: time.Now().UTC(),
+	}
+	if err := repo.SaveOpenLine(context.Background(), line); err != nil {
+		t.Fatal(err)
+	}
+	gl := newFakeReconciliationStore()
+	gl.accounts = []masterdata.Account{{
+		CompanyID: companyID, ID: accountID, AccountType: masterdata.AccountTypeAsset,
+		IsControlAccount: true, IsReconcilable: true,
+		SubClassification: masterdata.SubClassTradeReceivables,
+	}}
+	gl.balances[accountID] = money(t, "0")
+	notifier := &recordingNotifier{}
+	engine := NewLedgerReconciliationEngine(repo, repo, gl)
+	daemon := NewReconciliationDaemon(engine, notifier, time.Hour)
+
+	certificate, err := daemon.RunDailyCheckCertificate(context.Background(), companyID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if certificate.Clean || len(certificate.Reports) != 1 || len(gl.reports) != 1 ||
+		len(gl.certificates) != 1 || len(gl.auditLogs) != 2 || len(notifier.reports) != 1 {
+		t.Fatalf("certificate=%+v reports=%d certs=%d audits=%d alerts=%d",
+			certificate, len(gl.reports), len(gl.certificates), len(gl.auditLogs), len(notifier.reports))
+	}
+}
+
+type fakeReconciliationStore struct {
+	balances    map[uuid.UUID]financialtypes.Money
+	accounts    []masterdata.Account
+	assets      []FixedAsset
+	bankItems   []BankItem
+	reports     []DiscrepancyReport
+	certificates []ReconciliationCertificate
+	auditLogs   []governance.FinancialAuditLog
+}
+
+func newFakeReconciliationStore() *fakeReconciliationStore {
+	return &fakeReconciliationStore{balances: make(map[uuid.UUID]financialtypes.Money)}
+}
+
+func (s *fakeReconciliationStore) GetAccountBalance(_ context.Context, _, accountID uuid.UUID) (financialtypes.Money, error) {
+	balance, ok := s.balances[accountID]
+	if !ok {
+		return financialtypes.Money{}, ErrNotFound
+	}
+	return balance, nil
+}
+
+func (s *fakeReconciliationStore) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID uuid.UUID, _ time.Time) (financialtypes.Money, error) {
+	return s.GetAccountBalance(ctx, companyID, accountID)
+}
+
+func (s *fakeReconciliationStore) ListAccountsForCompanyContext(ctx context.Context, _ uuid.UUID) ([]masterdata.Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return append([]masterdata.Account(nil), s.accounts...), nil
+}
+
+func (s *fakeReconciliationStore) ListFixedAssetsForCompanyContext(ctx context.Context, _ uuid.UUID) ([]FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return append([]FixedAsset(nil), s.assets...), nil
+}
+
+func (s *fakeReconciliationStore) ListBankItemsForCompany(ctx context.Context, companyID uuid.UUID, accountID string) ([]BankItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]BankItem, 0)
+	for _, item := range s.bankItems {
+		if item.CompanyID == companyID && item.AccountID.String() == accountID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+func (s *fakeReconciliationStore) SaveReconciliationReport(ctx context.Context, report DiscrepancyReport) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.reports = append(s.reports, report)
+	return nil
+}
+
+func (s *fakeReconciliationStore) SaveReconciliationCertificate(ctx context.Context, certificate ReconciliationCertificate) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.certificates = append(s.certificates, certificate)
+	return nil
+}
+
+func (s *fakeReconciliationStore) AppendAuditLog(ctx context.Context, log governance.FinancialAuditLog) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	log.ID = int64(len(s.auditLogs) + 1)
+	s.auditLogs = append(s.auditLogs, log)
+	return nil
+}
+
+func (s *fakeReconciliationStore) GetLastAuditLog(ctx context.Context) (*governance.FinancialAuditLog, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(s.auditLogs) == 0 {
+		return nil, nil
+	}
+	last := s.auditLogs[len(s.auditLogs)-1]
+	return &last, nil
+}
+
+func (s *fakeReconciliationStore) IterateAuditLogs(ctx context.Context, fromID int64, handler governance.AuditLogHandler) error {
+	for _, log := range s.auditLogs {
+		if log.ID < fromID {
+			continue
+		}
+		if err := handler(log); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+type recordingNotifier struct {
+	reports []DiscrepancyReport
+	err     error
+}
+
+func (n *recordingNotifier) SendDiscrepancyAlert(_ context.Context, report DiscrepancyReport) error {
+	n.reports = append(n.reports, report)
+	return n.err
 }

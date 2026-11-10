@@ -150,8 +150,13 @@ func (l *TreasuryLedger) ReconcileMultiLine(
 	updated := append([]BankItem(nil), selected...)
 	ledgerIDs := make([]uuid.UUID, 0, len(selected))
 	entryIDs := make([]uuid.UUID, 0, len(selected))
+	matchedAt := feeParams.Date
+	if matchedAt.IsZero() {
+		matchedAt = time.Now().UTC()
+	}
 	for i := range updated {
 		updated[i].Status = BankItemMatched
+		updated[i].MatchedAt = matchedAt
 		ledgerIDs = append(ledgerIDs, updated[i].ID)
 		if updated[i].JournalEntryID != uuid.Nil {
 			entryIDs = append(entryIDs, updated[i].JournalEntryID)
