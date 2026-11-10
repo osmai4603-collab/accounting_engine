@@ -198,6 +198,27 @@ type JournalEntry struct {
 	Lines                []JournalEntryLine
 }
 
+type AccountPeriodBalance struct {
+	AccountID       uuid.UUID
+	BeginningDebit  decimal.Decimal
+	BeginningCredit decimal.Decimal
+	PeriodDebit     decimal.Decimal
+	PeriodCredit    decimal.Decimal
+	EndingDebit     decimal.Decimal
+	EndingCredit    decimal.Decimal
+}
+
+func LineFunctionalAmounts(line JournalEntryLine) (decimal.Decimal, decimal.Decimal, string) {
+	debit, credit, currency, present := lineFunctionalAmounts(line)
+	if present {
+		return debit, credit, currency
+	}
+	if !line.Debit.Amount().IsZero() {
+		return line.Debit.Amount(), decimal.Zero, line.Debit.Currency()
+	}
+	return decimal.Zero, line.Credit.Amount(), line.Credit.Currency()
+}
+
 func NewJournalEntry(journalID uuid.UUID, date time.Time, createdBy string, lines []JournalEntryLine) (JournalEntry, error) {
 	entry := JournalEntry{
 		ID:             uuid.New(),

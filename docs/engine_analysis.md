@@ -768,6 +768,10 @@ flowchart LR
 
 ## 12. أهم القرارات المعمارية الواجب حسمها (Key Architectural Decisions)
 
+> [!NOTE]
+> **وثيقة التحليل التفصيلي:** للاطلاع على التحليل التشريحي المعمق لكل قرار من القرارات الخمسة مع فحص الكود الحالي ومخططات المعالجة والتنفيذ، راجع الوثيقة المستقلة: [key_architectural_decisions_analysis.md](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/docs/key_architectural_decisions_analysis.md).
+
+
 ### القرار 1: هل المحرك Perpetual Ledger أم Periodic Ledger؟
 >
 > **التوصية:** تثبيت خيار الدفتر المستمر (**Perpetual Ledger**)؛ حيث تنعكس كل حركة فوراً على الأرصدة، مع تحديد آليات واضحة للقيود الافتتاحية والإقفال الدوري.

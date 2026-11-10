@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	ErrFiscalYearAlreadyClosed = errors.New("fiscal year is already closed")
-	ErrOpeningMoveNotRequired  = errors.New("opening balance moves are not supported by the perpetual general ledger")
-	ErrInvalidOpeningYear      = errors.New("opening balance year is invalid")
-	ErrClosingMoveNotPosted    = errors.New("closing move must be posted before the fiscal year can be closed")
+	ErrFiscalYearAlreadyClosed            = errors.New("fiscal year is already closed")
+	ErrOpeningMoveNotRequired             = errors.New("opening balance moves are not supported by the perpetual general ledger")
+	ErrInvalidOpeningYear                 = errors.New("opening balance year is invalid")
+	ErrClosingMoveNotPosted               = errors.New("closing move must be posted before the fiscal year can be closed")
+	ErrFiscalYearNotClosedForCarryForward = errors.New("fiscal year must be hard closed before balances are carried forward")
 )
 
 type ClosingEngine struct{ repository Repository }
@@ -86,6 +87,21 @@ func (e *ClosingEngine) GenerateOpeningMoveContext(ctx context.Context, year mas
 			return posting.JournalEntry{}, err
 		}
 	}
+	if history, ok := repository.(FiscalYearHistoryRepository); ok {
+		isFirstYear, err := history.IsFirstFiscalYearForCompanyContext(ctx, year.CompanyID, year.ID)
+		if err != nil {
+			if !errors.Is(err, ErrFiscalYearHistoryRepositoryRequired) {
+				return posting.JournalEntry{}, err
+			}
+			if err := rejectOpeningMoveAfterPriorActivity(repository, year.StartDate); err != nil {
+				return posting.JournalEntry{}, err
+			}
+		} else if !isFirstYear {
+			return posting.JournalEntry{}, ErrOpeningMoveNotRequired
+		}
+	} else if err := rejectOpeningMoveAfterPriorActivity(repository, year.StartDate); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	accounts, err := listAccounts(repository)
 	if err != nil {
 		return posting.JournalEntry{}, err
@@ -148,6 +164,48 @@ func (e *ClosingEngine) GenerateOpeningMoveContext(ctx context.Context, year mas
 		entry.Lines[i].CompanyID = year.CompanyID
 	}
 	return entry, nil
+}
+
+func rejectOpeningMoveAfterPriorActivity(repository Repository, yearStart time.Time) error {
+	entries, err := listPostedEntries(repository, time.Time{}, yearStart.Add(-time.Nanosecond))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Status == posting.EntryPosted {
+			return ErrOpeningMoveNotRequired
+		}
+	}
+	return nil
+}
+
+func (e *ClosingEngine) CarryForwardBalances(
+	ctx context.Context,
+	closedYear masterdata.FiscalYear,
+	newYearFirstPeriodID uuid.UUID,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if closedYear.ID == uuid.Nil || closedYear.CompanyID == uuid.Nil || newYearFirstPeriodID == uuid.Nil {
+		return ErrInvalidOpeningYear
+	}
+	if closedYear.State != masterdata.FiscalYearHardClosed {
+		return ErrFiscalYearNotClosedForCarryForward
+	}
+	repository, err := newCompanyReportingRepository(
+		ctx, e.repository, closedYear.CompanyID, closedYear.EndDate,
+	)
+	if err != nil {
+		return err
+	}
+	carryForward, ok := repository.(BalanceCarryForwardRepository)
+	if !ok {
+		return ErrAccountBalanceRepositoryRequired
+	}
+	return carryForward.CarryForwardBalancesForCompanyContext(
+		ctx, closedYear.CompanyID, closedYear.ID, newYearFirstPeriodID,
+	)
 }
 
 func openingAccountBalances(repository Repository, end time.Time, currency string) (map[uuid.UUID]accountSide, error) {

@@ -21,6 +21,27 @@ type LedgerRepository interface {
 	ListPostedEntries(context.Context, time.Time, time.Time) ([]posting.JournalEntry, error)
 }
 
+type AccountPeriodBalanceReader interface {
+	ReadAccountPeriodBalancesForCompanyContext(
+		context.Context,
+		uuid.UUID,
+		time.Time,
+		time.Time,
+		string,
+		bool,
+	) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error)
+}
+
+type MaterializedBalanceReader interface {
+	ReadAccountPeriodBalancesContext(
+		context.Context,
+		time.Time,
+		time.Time,
+		string,
+		bool,
+	) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error)
+}
+
 type EntryDateRepository interface {
 	ListEntries(context.Context, time.Time, time.Time) ([]posting.JournalEntry, error)
 }
@@ -39,6 +60,14 @@ type FiscalYearRepository interface {
 	GetFiscalYearForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (masterdata.FiscalYear, error)
 	UpdatePeriodStateForCompanyContext(context.Context, uuid.UUID, uuid.UUID, masterdata.PeriodState) error
 	UpdateFiscalYearStateForCompanyContext(context.Context, uuid.UUID, uuid.UUID, masterdata.FiscalYearState) error
+}
+
+type FiscalYearHistoryRepository interface {
+	IsFirstFiscalYearForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (bool, error)
+}
+
+type BalanceCarryForwardRepository interface {
+	CarryForwardBalancesForCompanyContext(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error
 }
 
 type CompanyScopedClosingRepository interface {
@@ -93,6 +122,24 @@ func (r companyReportingRepository) ListEntries(ctx context.Context, start, end 
 
 func (r companyReportingRepository) ListPostedEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
 	return r.ListEntries(ctx, start, end)
+}
+
+func (r companyReportingRepository) ReadAccountPeriodBalancesContext(
+	ctx context.Context,
+	start, end time.Time,
+	currency string,
+	includeAdjusting bool,
+) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
+	if ctx == nil {
+		ctx = r.ctx
+	}
+	reader, ok := r.ledger.(AccountPeriodBalanceReader)
+	if !ok {
+		return nil, false, nil
+	}
+	return reader.ReadAccountPeriodBalancesForCompanyContext(
+		ctx, r.companyID, start, end, currency, includeAdjusting,
+	)
 }
 
 func (r companyReportingRepository) ListFixedAssets(ctx context.Context) ([]subledgers.FixedAsset, error) {
@@ -182,6 +229,34 @@ func (r companyReportingRepository) GetFiscalYearForCompanyContext(ctx context.C
 		return masterdata.FiscalYear{}, ErrCompanyScopeRequired
 	}
 	return r.ledger.GetFiscalYearForCompanyContext(ctx, companyID, yearID)
+}
+
+func (r companyReportingRepository) IsFirstFiscalYearForCompanyContext(
+	ctx context.Context,
+	companyID, yearID uuid.UUID,
+) (bool, error) {
+	if companyID != r.companyID {
+		return false, ErrCompanyScopeRequired
+	}
+	repository, ok := r.ledger.(FiscalYearHistoryRepository)
+	if !ok {
+		return false, ErrFiscalYearHistoryRepositoryRequired
+	}
+	return repository.IsFirstFiscalYearForCompanyContext(ctx, companyID, yearID)
+}
+
+func (r companyReportingRepository) CarryForwardBalancesForCompanyContext(
+	ctx context.Context,
+	companyID, closedYearID, newPeriodID uuid.UUID,
+) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	repository, ok := r.ledger.(BalanceCarryForwardRepository)
+	if !ok {
+		return ErrAccountBalanceRepositoryRequired
+	}
+	return repository.CarryForwardBalancesForCompanyContext(ctx, companyID, closedYearID, newPeriodID)
 }
 
 func (r companyReportingRepository) UpdatePeriodStateForCompanyContext(ctx context.Context, companyID, periodID uuid.UUID, state masterdata.PeriodState) error {

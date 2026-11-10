@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -331,6 +332,7 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 	}
 
 	journalID := uuid.New()
+	var postingFiscalYear masterdata.FiscalYear
 	postEntry := func(date time.Time, lines []posting.JournalEntryLine, ref string) posting.JournalEntry {
 		entry, err := posting.NewJournalEntry(journalID, date, "maker", lines)
 		if err != nil {
@@ -338,6 +340,22 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		}
 		entry.CompanyID = companyID
 		entry.Reference = ref
+		periodNumber := 0
+		if strings.Contains(ref, "P13") {
+			periodNumber = 13
+		} else if strings.Contains(ref, "P14") {
+			periodNumber = 14
+		}
+		for _, period := range postingFiscalYear.Periods {
+			if (periodNumber != 0 && period.Number == periodNumber) ||
+				(periodNumber == 0 && period.Contains(date)) {
+				entry.PeriodID = period.ID
+				break
+			}
+		}
+		if entry.PeriodID == uuid.Nil {
+			t.Fatalf("no fiscal period found for posting %s", ref)
+		}
 		if err := driver.SaveDraft(entry); err != nil {
 			t.Fatalf("SaveDraft(%s): %v", ref, err)
 		}
@@ -349,28 +367,14 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		return posted
 	}
 
-	// Initial Capital Contribution in Year 1: 500,000 SAR
-	initDate := time.Date(2022, 1, 1, 10, 0, 0, 0, time.UTC)
-	capMoney, _ := financialtypes.NewMoneyFromString("500000", "SAR")
-	zero, _ := financialtypes.Zero("SAR")
-	postEntry(initDate, []posting.JournalEntryLine{
-		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Debit: capMoney, Credit: zero},
-		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["3000"], Credit: capMoney, Debit: zero},
-	}, "INIT-CAPITAL")
-
-	// Fixed Asset Purchase in Year 1: 100,000 SAR
-	assetMoney, _ := financialtypes.NewMoneyFromString("100000", "SAR")
-	postEntry(initDate.Add(time.Hour), []posting.JournalEntryLine{
-		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1500"], Debit: assetMoney, Credit: zero},
-		{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Credit: assetMoney, Debit: zero},
-	}, "ASSET-PURCHASE")
-
 	// 5-Year Simulation Loop (2022 to 2026)
 	salesPerMonth, _ := financialtypes.NewMoneyFromString("20000", "SAR")
 	collPerMonth, _ := financialtypes.NewMoneyFromString("15000", "SAR")
 	opexPerMonth, _ := financialtypes.NewMoneyFromString("10000", "SAR")
 	deprPeriod13, _ := financialtypes.NewMoneyFromString("5000", "SAR")
 	auditPeriod14, _ := financialtypes.NewMoneyFromString("1000", "SAR")
+	zero, _ := financialtypes.Zero("SAR")
+	var previousFiscalYearID uuid.UUID
 
 	for yearIndex := 0; yearIndex < 5; yearIndex++ {
 		yearNum := 2022 + yearIndex
@@ -410,6 +414,31 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		)
 		if err := driver.CreateFiscalYear(ctx, fiscalYear); err != nil {
 			t.Fatalf("CreateFiscalYear(FY%d): %v", yearNum, err)
+		}
+		postingFiscalYear = fiscalYear
+		if previousFiscalYearID != uuid.Nil {
+			closedYear, err := driver.GetFiscalYearForCompany(ctx, companyID, previousFiscalYearID)
+			if err != nil {
+				t.Fatalf("GetFiscalYearForCompany previous year: %v", err)
+			}
+			if err := reporting.NewClosingEngine(driver).CarryForwardBalances(
+				ctx, closedYear, fiscalYear.Periods[0].ID,
+			); err != nil {
+				t.Fatalf("CarryForwardBalances FY%d: %v", yearNum, err)
+			}
+		}
+		if yearIndex == 0 {
+			capMoney, _ := financialtypes.NewMoneyFromString("500000", "SAR")
+			assetMoney, _ := financialtypes.NewMoneyFromString("100000", "SAR")
+			initDate := time.Date(2022, 1, 1, 10, 0, 0, 0, time.UTC)
+			postEntry(initDate, []posting.JournalEntryLine{
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Debit: capMoney, Credit: zero},
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["3000"], Credit: capMoney, Debit: zero},
+			}, "INIT-CAPITAL")
+			postEntry(initDate.Add(time.Hour), []posting.JournalEntryLine{
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1500"], Debit: assetMoney, Credit: zero},
+				{CompanyID: companyID, ID: uuid.New(), AccountID: accounts["1000"], Credit: assetMoney, Debit: zero},
+			}, "ASSET-PURCHASE")
 		}
 
 		// Monthly postings (Months 1-12)
@@ -491,6 +520,12 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateClosingMove FY%d: %v", yearNum, err)
 		}
+		for _, period := range fiscalYear.Periods {
+			if period.Number == 13 {
+				closeEntry.PeriodID = period.ID
+				break
+			}
+		}
 		if err := driver.SaveDraft(closeEntry); err != nil {
 			t.Fatalf("SaveDraft(CloseEntry FY%d): %v", yearNum, err)
 		}
@@ -498,6 +533,10 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 		if _, err := driver.PostAndSequence(closeEntry); err != nil {
 			t.Fatalf("Post ClosingMove FY%d: %v", yearNum, err)
 		}
+		if err := closingEngine.ConfirmFiscalYearCloseContext(ctx, currentYear, closeEntry.ID); err != nil {
+			t.Fatalf("ConfirmFiscalYearClose FY%d: %v", yearNum, err)
+		}
+		previousFiscalYearID = fiscalYear.ID
 
 		// Verify Balance Sheet after closing
 		bsEngine := reporting.NewBalanceSheetEngine(driver)

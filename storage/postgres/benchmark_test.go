@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 )
 
 func getTestPostgresConn() string {
@@ -280,4 +281,21 @@ func TestPostgresConcurrentPostingIntegrity(t *testing.T) {
 	rate := float64(totalEntries) / elapsed.Seconds()
 	t.Logf("PostgreSQL Concurrent PostAndSequence: %d entries across %d journals in %v (%.2f entries/sec)",
 		totalEntries, numWorkers, elapsed, rate)
+	if err := driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var debitTotal, creditTotal decimal.Decimal
+		if err := tx.QueryRow(ctx, `SELECT
+			COALESCE(SUM(period_debit) FILTER (WHERE account_id=$2),0),
+			COALESCE(SUM(period_credit) FILTER (WHERE account_id=$3),0)
+			FROM account_balances WHERE company_id=$1 AND fiscal_period_id=$4 AND currency_id='SAR'`,
+			companyID, debitAccID, creditAccID, periodID).Scan(&debitTotal, &creditTotal); err != nil {
+			return err
+		}
+		expected := amount.Amount().Mul(decimal.NewFromInt(totalEntries))
+		if !debitTotal.Equal(expected) || !creditTotal.Equal(expected) {
+			t.Fatalf("concurrent materialized totals debit=%s credit=%s; want %s", debitTotal, creditTotal, expected)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

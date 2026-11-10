@@ -2,6 +2,7 @@ package reporting
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -18,6 +19,144 @@ import (
 type memoryRepository struct {
 	accounts []masterdata.Account
 	entries  []posting.JournalEntry
+}
+
+type fiscalYearAwareRepository struct {
+	*memoryRepository
+	firstYearID uuid.UUID
+}
+
+type materializedOnlyMemoryRepository struct {
+	*memory.Driver
+}
+
+type historicalOnlyMemoryRepository struct {
+	*memory.Driver
+}
+
+func (r materializedOnlyMemoryRepository) ListEntriesForCompanyContext(
+	ctx context.Context,
+	_ uuid.UUID,
+	_, _ time.Time,
+) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (r historicalOnlyMemoryRepository) ReadAccountPeriodBalancesForCompanyContext(
+	ctx context.Context,
+	_ uuid.UUID,
+	_, _ time.Time,
+	_ string,
+	_ bool,
+) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+func (r fiscalYearAwareRepository) IsFirstFiscalYearForCompanyContext(
+	_ context.Context,
+	_ uuid.UUID,
+	yearID uuid.UUID,
+) (bool, error) {
+	return yearID == r.firstYearID, nil
+}
+
+func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
+	ctx := context.Background()
+	driver := memory.New()
+	companyID := uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: "BAL-" + companyID.String()[:8], LegalName: "Materialized Balance Test",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
+		t.Fatal(err)
+	}
+	accounts := []masterdata.Account{
+		reportAccount(uuid.New(), "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
+		reportAccount(uuid.New(), "3000", "Capital", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital),
+		reportAccount(uuid.New(), "4000", "Revenue", masterdata.AccountTypeIncome, masterdata.SubClassOperatingRevenue),
+	}
+	for i := range accounts {
+		accounts[i].CompanyID = companyID
+		if accounts[i].AccountType == masterdata.AccountTypeIncome {
+			accounts[i].IFRSCategory = masterdata.IFRSCategoryOperating
+		}
+		if err := driver.CreateAccount(ctx, accounts[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cash, _ := financialtypes.NewMoneyFromString("100", "USD")
+	capital, _ := financialtypes.NewMoneyFromString("80", "USD")
+	revenue, _ := financialtypes.NewMoneyFromString("20", "USD")
+	zero, _ := financialtypes.Zero("USD")
+	entry, err := posting.NewJournalEntry(uuid.New(), year.StartDate.Add(time.Hour), "test",
+		[]posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts[0].ID, Debit: cash, Credit: zero},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts[1].ID, Debit: zero, Credit: capital},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts[2].ID, Debit: zero, Credit: revenue},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.CompanyID = companyID
+	entry.PeriodID = year.Periods[0].ID
+	if err := driver.SaveDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Status = posting.EntryPosted
+	if _, err := driver.PostAndSequence(entry); err != nil {
+		t.Fatal(err)
+	}
+
+	repository := materializedOnlyMemoryRepository{Driver: driver}
+	trialBalance, err := NewTrialBalanceEngine(repository).GenerateForCompany(
+		companyID, year.StartDate, year.EndDate, "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trialBalance.Balanced || !trialBalance.DebitTotal.Equal(decimal.NewFromInt(100)) ||
+		!trialBalance.CreditTotal.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("trial balance did not read posted balances: %+v", trialBalance)
+	}
+	historicalBalance, err := NewTrialBalanceEngine(historicalOnlyMemoryRepository{Driver: driver}).
+		GenerateForCompany(companyID, year.StartDate, year.EndDate, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trialBalancesEqual(trialBalance, historicalBalance) {
+		t.Fatalf("materialized trial balance differs from historical aggregation:\nmaterialized=%+v\nhistorical=%+v",
+			trialBalance, historicalBalance)
+	}
+	income, err := NewIncomeStatementEngine(repository).GenerateForCompany(
+		companyID, year.StartDate, year.EndDate, "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !income.Revenue.Equal(decimal.NewFromInt(20)) {
+		t.Fatalf("income statement revenue = %s, want 20", income.Revenue)
+	}
+	sheet, err := NewBalanceSheetEngine(repository).GenerateForCompany(
+		companyID, year.EndDate, "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sheet.Balanced || !sheet.TotalAssets.Equal(decimal.NewFromInt(100)) ||
+		!sheet.Equity.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("balance sheet did not read posted balances: %+v", sheet)
+	}
 }
 
 func TestDimensionProfitAndLossGroupsByAnalyticalIds(t *testing.T) {
@@ -234,6 +373,26 @@ func (r *memoryRepository) GetEntryByIDForCompanyContext(ctx context.Context, co
 		}
 	}
 	return posting.JournalEntry{}, posting.ErrEntryNotFound
+}
+
+func trialBalancesEqual(left, right TrialBalance) bool {
+	if !left.StartDate.Equal(right.StartDate) || !left.EndDate.Equal(right.EndDate) ||
+		left.Currency != right.Currency || left.IsAdjusted != right.IsAdjusted ||
+		!left.DebitTotal.Equal(right.DebitTotal) || !left.CreditTotal.Equal(right.CreditTotal) ||
+		left.Balanced != right.Balanced || len(left.Lines) != len(right.Lines) {
+		return false
+	}
+	for i := range left.Lines {
+		a, b := left.Lines[i], right.Lines[i]
+		if a.AccountID != b.AccountID || a.AccountCode != b.AccountCode || a.AccountName != b.AccountName ||
+			a.AccountType != b.AccountType || !a.OpeningDebit.Equal(b.OpeningDebit) ||
+			!a.OpeningCredit.Equal(b.OpeningCredit) || !a.PeriodDebit.Equal(b.PeriodDebit) ||
+			!a.PeriodCredit.Equal(b.PeriodCredit) || !a.EndingDebit.Equal(b.EndingDebit) ||
+			!a.EndingCredit.Equal(b.EndingCredit) {
+			return false
+		}
+	}
+	return true
 }
 
 func reportMoney(t *testing.T, amount, currency string) financialtypes.Money {
@@ -599,7 +758,9 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		),
 	}
 	nextYear := masterdata.GenerateFiscalYear(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
-	entry, err := NewClosingEngine(repository).GenerateOpeningMove(nextYear, uuid.New(), "USD")
+	entry, err := NewClosingEngine(fiscalYearAwareRepository{
+		memoryRepository: repository, firstYearID: nextYear.ID,
+	}).GenerateOpeningMove(nextYear, uuid.New(), "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,29 +812,37 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		t.Fatalf("trial balance double-counted balances after the opening move: %+v", trialBalance)
 	}
 	followingYear := masterdata.GenerateFiscalYear(time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC))
-	nextEntry, err := NewClosingEngine(repository).GenerateOpeningMove(followingYear, uuid.New(), "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	nextBalances := make(map[uuid.UUID]decimal.Decimal)
-	for _, line := range nextEntry.Lines {
-		nextBalances[line.AccountID] = nextBalances[line.AccountID].Add(line.Debit.Amount().Sub(line.Credit.Amount()))
-	}
-	if !nextBalances[cashID].Equal(decimal.NewFromInt(90)) ||
-		!nextBalances[payableID].Equal(decimal.NewFromInt(-30)) ||
-		!nextBalances[retainedID].Equal(decimal.NewFromInt(-60)) {
-		t.Fatalf("subsequent opening entry duplicated prior balances: %+v", nextBalances)
+	if _, err := NewClosingEngine(fiscalYearAwareRepository{
+		memoryRepository: repository, firstYearID: nextYear.ID,
+	}).GenerateOpeningMove(followingYear, uuid.New(), "USD"); !errors.Is(err, ErrOpeningMoveNotRequired) {
+		t.Fatalf("subsequent opening move error = %v, want %v", err, ErrOpeningMoveNotRequired)
 	}
 }
 
 func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) {
 	repository := memory.New()
 	companyID := uuid.New()
+	if err := repository.CreateCompany(context.Background(), masterdata.Company{
+		ID: companyID, Code: "CLOSE-" + companyID.String()[:8], LegalName: "Fiscal Close Test",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	year.CompanyID = companyID
 	ctx := context.Background()
 	if err := repository.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
+	}
+	debitAccountID, creditAccountID := uuid.New(), uuid.New()
+	for _, account := range []masterdata.Account{
+		reportAccount(debitAccountID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
+		reportAccount(creditAccountID, "3000", "Equity", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital),
+	} {
+		account.CompanyID = companyID
+		if err := repository.CreateAccount(ctx, account); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, period := range year.Periods {
 		if period.Number > 12 {
@@ -689,19 +858,22 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	period13 := year.Periods[12]
 	entry, err := posting.NewJournalEntry(uuid.New(), year.EndDate, "test",
 		[]posting.JournalEntryLine{
-			{AccountID: uuid.New(), Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
-			{AccountID: uuid.New(), Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
+			{AccountID: debitAccountID, Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
+			{AccountID: creditAccountID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
 		})
 	if err != nil {
 		t.Fatal(err)
 	}
 	entry.CompanyID = companyID
-	entry.Status = posting.EntryPosted
 	entry.Classification = posting.EntryClassClosing
 	entry.DocumentReference = "YEAR-END CLOSING"
 	entry.TargetPeriodNumber = 13
 	entry.AdjustmentAuthorized = true
 	entry.PeriodID = period13.ID
+	if err := repository.SaveDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Status = posting.EntryPosted
 	if err := repository.PostAtomic(entry); err != nil {
 		t.Fatal(err)
 	}

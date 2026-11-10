@@ -15,12 +15,14 @@ import (
 )
 
 var (
-	ErrUnbalancedTrialBalance = errors.New("trial balance is not balanced")
-	ErrUnbalancedBalanceSheet = errors.New("balance sheet is not balanced")
-	ErrUnbalancedCashFlow     = errors.New("cash flow does not reconcile to the cash balance")
-	ErrUnbalancedClosing      = errors.New("closing entry is not balanced")
-	ErrPeriodsNotHardClosed   = errors.New("all monthly fiscal periods must be hard closed")
-	ErrRetainedEarningsNotSet = errors.New("retained earnings account is required")
+	ErrUnbalancedTrialBalance              = errors.New("trial balance is not balanced")
+	ErrUnbalancedBalanceSheet              = errors.New("balance sheet is not balanced")
+	ErrUnbalancedCashFlow                  = errors.New("cash flow does not reconcile to the cash balance")
+	ErrUnbalancedClosing                   = errors.New("closing entry is not balanced")
+	ErrPeriodsNotHardClosed                = errors.New("all monthly fiscal periods must be hard closed")
+	ErrRetainedEarningsNotSet              = errors.New("retained earnings account is required")
+	ErrFiscalYearHistoryRepositoryRequired = errors.New("fiscal-year history repository is required")
+	ErrAccountBalanceRepositoryRequired    = errors.New("materialized account-balance repository is required")
 )
 
 type TrialBalanceLine struct {
@@ -89,53 +91,68 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 		return TrialBalance{}, err
 	}
 
-	started := make(map[uuid.UUID][2]decimal.Decimal)
-	period := make(map[uuid.UUID][2]decimal.Decimal)
-	accountMap := make(map[uuid.UUID]masterdata.Account, len(accounts))
-	for _, account := range accounts {
-		accountMap[account.ID] = account
-	}
-
-	allEntries, err := listPostedEntries(e.repository, time.Time{}, endDate)
+	materialized, available, err := readPeriodBalances(
+		e.repository, startDate, endDate, currency, adjusted,
+	)
 	if err != nil {
 		return TrialBalance{}, err
 	}
-	for _, entry := range allEntries {
-		if entry.Status != posting.EntryPosted ||
-			(!adjusted && postingClassification(entry) == posting.EntryClassAdjusting) {
-			continue
+	var started, period map[uuid.UUID][2]decimal.Decimal
+	if !available {
+		started = make(map[uuid.UUID][2]decimal.Decimal)
+		period = make(map[uuid.UUID][2]decimal.Decimal)
+		accountMap := make(map[uuid.UUID]masterdata.Account, len(accounts))
+		for _, account := range accounts {
+			accountMap[account.ID] = account
 		}
-		entryDate := entryEffectiveDate(entry)
-		for _, line := range entry.Lines {
-			_, ok := accountMap[line.AccountID]
-			if !ok {
-				return TrialBalance{}, ErrReportingAccountNotFound
+		allEntries, err := listPostedEntries(e.repository, time.Time{}, endDate)
+		if err != nil {
+			return TrialBalance{}, err
+		}
+		for _, entry := range allEntries {
+			if entry.Status != posting.EntryPosted ||
+				(!adjusted && postingClassification(entry) == posting.EntryClassAdjusting) {
+				continue
 			}
-			debit, credit, err := translateLineAmountsUsingRate(
-				line, currency, rateProvider(e.repository), valuation.SpotRate, entryDate,
-			)
-			if err != nil {
-				return TrialBalance{}, err
-			}
-			if entryDate.Before(startDate) {
-				values := started[line.AccountID]
-				values[0] = values[0].Add(debit)
-				values[1] = values[1].Add(credit)
-				started[line.AccountID] = values
-			} else if !entryDate.After(endDate) {
-				values := period[line.AccountID]
-				values[0] = values[0].Add(debit)
-				values[1] = values[1].Add(credit)
-				period[line.AccountID] = values
+			entryDate := entryEffectiveDate(entry)
+			for _, line := range entry.Lines {
+				_, ok := accountMap[line.AccountID]
+				if !ok {
+					return TrialBalance{}, ErrReportingAccountNotFound
+				}
+				debit, credit, err := translateLineAmountsUsingRate(
+					line, currency, rateProvider(e.repository), valuation.SpotRate, entryDate,
+				)
+				if err != nil {
+					return TrialBalance{}, err
+				}
+				if entryDate.Before(startDate) {
+					values := started[line.AccountID]
+					values[0] = values[0].Add(debit)
+					values[1] = values[1].Add(credit)
+					started[line.AccountID] = values
+				} else if !entryDate.After(endDate) {
+					values := period[line.AccountID]
+					values[0] = values[0].Add(debit)
+					values[1] = values[1].Add(credit)
+					period[line.AccountID] = values
+				}
 			}
 		}
 	}
 
 	result := TrialBalance{StartDate: startDate, EndDate: endDate, Currency: currency, IsAdjusted: adjusted,
+		Lines:      make([]TrialBalanceLine, 0, len(accounts)),
 		DebitTotal: decimal.Zero, CreditTotal: decimal.Zero}
 	for _, account := range accounts {
-		open := started[account.ID]
-		move := period[account.ID]
+		var open, move [2]decimal.Decimal
+		if available {
+			balance := materialized[account.ID]
+			open = [2]decimal.Decimal{balance.BeginningDebit, balance.BeginningCredit}
+			move = [2]decimal.Decimal{balance.PeriodDebit, balance.PeriodCredit}
+		} else {
+			open, move = started[account.ID], period[account.ID]
+		}
 		openingDebit, openingCredit := balancedSides(open[0], open[1], account.NormalBalance)
 		endingDebit, endingCredit := endingSides(openingDebit, openingCredit, move[0], move[1])
 		result.Lines = append(result.Lines, TrialBalanceLine{
@@ -143,8 +160,12 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 			OpeningDebit: openingDebit, OpeningCredit: openingCredit, PeriodDebit: move[0], PeriodCredit: move[1],
 			EndingDebit: endingDebit, EndingCredit: endingCredit,
 		})
-		result.DebitTotal = result.DebitTotal.Add(endingDebit)
-		result.CreditTotal = result.CreditTotal.Add(endingCredit)
+		if !endingDebit.IsZero() {
+			result.DebitTotal = result.DebitTotal.Add(endingDebit)
+		}
+		if !endingCredit.IsZero() {
+			result.CreditTotal = result.CreditTotal.Add(endingCredit)
+		}
 	}
 	result.DebitTotal = result.DebitTotal.Round(int32(4))
 	result.CreditTotal = result.CreditTotal.Round(int32(4))
@@ -156,7 +177,28 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 }
 
 func endingSides(openDebit, openCredit, periodDebit, periodCredit decimal.Decimal) (decimal.Decimal, decimal.Decimal) {
-	net := openDebit.Sub(openCredit).Add(periodDebit).Sub(periodCredit)
+	net := openDebit
+	if !openCredit.IsZero() {
+		if net.IsZero() {
+			net = openCredit.Neg()
+		} else {
+			net = net.Sub(openCredit)
+		}
+	}
+	if !periodDebit.IsZero() {
+		if net.IsZero() {
+			net = periodDebit
+		} else {
+			net = net.Add(periodDebit)
+		}
+	}
+	if !periodCredit.IsZero() {
+		if net.IsZero() {
+			net = periodCredit.Neg()
+		} else {
+			net = net.Sub(periodCredit)
+		}
+	}
 	if net.GreaterThanOrEqual(decimal.Zero) {
 		return net, decimal.Zero
 	}
@@ -164,6 +206,9 @@ func endingSides(openDebit, openCredit, periodDebit, periodCredit decimal.Decima
 }
 
 func balancedSides(debit, credit decimal.Decimal, normal masterdata.NormalBalance) (decimal.Decimal, decimal.Decimal) {
+	if debit.IsZero() && credit.IsZero() {
+		return decimal.Zero, decimal.Zero
+	}
 	net := debit.Sub(credit)
 	if net.IsZero() {
 		return decimal.Zero, decimal.Zero
@@ -192,6 +237,7 @@ func listAccounts(repository Repository) ([]masterdata.Account, error) {
 	return repository.ListAccounts(context.Background())
 }
 
+// Deprecated: Used when a report range cannot be represented by complete materialized periods.
 func listPostedEntries(repository Repository, start, end time.Time) ([]posting.JournalEntry, error) {
 	entries, err := repository.ListPostedEntries(context.Background(), start, end)
 	if err != nil {

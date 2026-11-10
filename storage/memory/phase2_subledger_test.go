@@ -66,6 +66,17 @@ func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	period := masterdata.FiscalPeriod{
+		CompanyID: companyID, ID: uuid.New(), FiscalYearID: uuid.New(), Number: 1,
+		StartDate: now.Add(-time.Hour), EndDate: now.Add(time.Hour), State: masterdata.PeriodOpen,
+	}
+	if err := driver.CreateFiscalYear(ctx, masterdata.FiscalYear{
+		CompanyID: companyID, ID: period.FiscalYearID, StartDate: period.StartDate,
+		EndDate: period.EndDate, Periods: []masterdata.FiscalPeriod{period},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	control := masterdata.Account{
 		CompanyID: companyID, ID: controlID, Code: "1200", Name: "Trade receivables",
 		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
@@ -94,6 +105,7 @@ func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T
 		t.Fatal(err)
 	}
 	entry.CompanyID = companyID
+	entry.PeriodID = period.ID
 	if err := driver.SaveDraft(entry); err != nil {
 		t.Fatal(err)
 	}

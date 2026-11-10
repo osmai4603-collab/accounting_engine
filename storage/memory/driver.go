@@ -22,24 +22,45 @@ import (
 )
 
 type Driver struct {
-	mu         sync.RWMutex
-	accounts   map[uuid.UUID]masterdata.Account
-	versions   map[uuid.UUID][]masterdata.AccountVersion
-	centers    map[uuid.UUID]masterdata.CostCenter
-	dimensions map[string]masterdata.AnalyticalDimensionValue
-	companies  map[uuid.UUID]masterdata.Company
-	years      map[uuid.UUID]masterdata.FiscalYear
-	periods    map[uuid.UUID]masterdata.FiscalPeriod
-	journalSeq map[string]int64
-	entries    map[uuid.UUID]posting.JournalEntry
-	events     map[string]subledgers.EconomicEvent
-	eventRules map[string][]subledgers.EventAccountingRule
-	lines      map[uuid.UUID]subledgers.OpenLine
-	assets     map[uuid.UUID]subledgers.FixedAsset
-	bank       map[string][]subledgers.BankItem
-	contracts  map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
-	audit      []*governance.FinancialAuditLog
-	rates      *valuation.RateRegistry
+	mu               sync.RWMutex
+	accounts         map[uuid.UUID]masterdata.Account
+	versions         map[uuid.UUID][]masterdata.AccountVersion
+	centers          map[uuid.UUID]masterdata.CostCenter
+	dimensions       map[string]masterdata.AnalyticalDimensionValue
+	companies        map[uuid.UUID]masterdata.Company
+	years            map[uuid.UUID]masterdata.FiscalYear
+	periods          map[uuid.UUID]masterdata.FiscalPeriod
+	journalSeq       map[string]int64
+	entries          map[uuid.UUID]posting.JournalEntry
+	balances         map[accountBalanceKey]accountBalance
+	adjustingPeriods map[companyPeriodKey]bool
+	events           map[string]subledgers.EconomicEvent
+	eventRules       map[string][]subledgers.EventAccountingRule
+	lines            map[uuid.UUID]subledgers.OpenLine
+	assets           map[uuid.UUID]subledgers.FixedAsset
+	bank             map[string][]subledgers.BankItem
+	contracts        map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
+	audit            []*governance.FinancialAuditLog
+	rates            *valuation.RateRegistry
+}
+
+type accountBalanceKey struct {
+	companyID uuid.UUID
+	accountID uuid.UUID
+	periodID  uuid.UUID
+	currency  string
+}
+
+type companyPeriodKey struct {
+	companyID uuid.UUID
+	periodID  uuid.UUID
+}
+
+type accountBalance struct {
+	beginningDebit  decimal.Decimal
+	beginningCredit decimal.Decimal
+	periodDebit     decimal.Decimal
+	periodCredit    decimal.Decimal
 }
 
 var (
@@ -49,22 +70,24 @@ var (
 
 func New() *Driver {
 	return &Driver{
-		accounts:   make(map[uuid.UUID]masterdata.Account),
-		versions:   make(map[uuid.UUID][]masterdata.AccountVersion),
-		centers:    make(map[uuid.UUID]masterdata.CostCenter),
-		dimensions: make(map[string]masterdata.AnalyticalDimensionValue),
-		companies:  make(map[uuid.UUID]masterdata.Company),
-		years:      make(map[uuid.UUID]masterdata.FiscalYear),
-		periods:    make(map[uuid.UUID]masterdata.FiscalPeriod),
-		journalSeq: make(map[string]int64),
-		entries:    make(map[uuid.UUID]posting.JournalEntry),
-		events:     make(map[string]subledgers.EconomicEvent),
-		eventRules: make(map[string][]subledgers.EventAccountingRule),
-		lines:      make(map[uuid.UUID]subledgers.OpenLine),
-		assets:     make(map[uuid.UUID]subledgers.FixedAsset),
-		bank:       make(map[string][]subledgers.BankItem),
-		contracts:  make(map[uuid.UUID]map[uuid.UUID]ifrs15.Contract),
-		rates:      valuation.NewRateRegistry(),
+		accounts:         make(map[uuid.UUID]masterdata.Account),
+		versions:         make(map[uuid.UUID][]masterdata.AccountVersion),
+		centers:          make(map[uuid.UUID]masterdata.CostCenter),
+		dimensions:       make(map[string]masterdata.AnalyticalDimensionValue),
+		companies:        make(map[uuid.UUID]masterdata.Company),
+		years:            make(map[uuid.UUID]masterdata.FiscalYear),
+		periods:          make(map[uuid.UUID]masterdata.FiscalPeriod),
+		journalSeq:       make(map[string]int64),
+		entries:          make(map[uuid.UUID]posting.JournalEntry),
+		balances:         make(map[accountBalanceKey]accountBalance),
+		adjustingPeriods: make(map[companyPeriodKey]bool),
+		events:           make(map[string]subledgers.EconomicEvent),
+		eventRules:       make(map[string][]subledgers.EventAccountingRule),
+		lines:            make(map[uuid.UUID]subledgers.OpenLine),
+		assets:           make(map[uuid.UUID]subledgers.FixedAsset),
+		bank:             make(map[string][]subledgers.BankItem),
+		contracts:        make(map[uuid.UUID]map[uuid.UUID]ifrs15.Contract),
+		rates:            valuation.NewRateRegistry(),
 	}
 }
 
@@ -194,7 +217,7 @@ func (d *Driver) ListAccounts(ctx context.Context) ([]masterdata.Account, error)
 func (d *Driver) ListAccountsForCompany(companyID uuid.UUID) ([]masterdata.Account, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	accounts := make([]masterdata.Account, 0)
+	accounts := make([]masterdata.Account, 0, len(d.accounts))
 	for _, account := range d.accounts {
 		if account.CompanyID == companyID {
 			accounts = append(accounts, account)
@@ -220,7 +243,7 @@ func (d *Driver) ListAccountsForCompanyAsOfContext(ctx context.Context, companyI
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	accounts := make([]masterdata.Account, 0)
+	accounts := make([]masterdata.Account, 0, len(d.accounts))
 	for _, account := range d.accounts {
 		if account.CompanyID != companyID {
 			continue
@@ -680,6 +703,21 @@ func (d *Driver) GetEntryByIDForCompanyContext(ctx context.Context, companyID, e
 func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	current, exists := d.entries[entry.ID]
+	if entry.Status == posting.EntryPosted {
+		if !exists {
+			return posting.ErrEntryNotFound
+		}
+		if current.Status != posting.EntryDraft {
+			return posting.ErrEntryNotDraft
+		}
+		if !posting.DraftContentMatches(current, entry) {
+			return financialtypes.ErrCannotModifyPostedMove
+		}
+		if err := d.updateAccountBalancesLocked(entry); err != nil {
+			return err
+		}
+	}
 	if current, ok := d.entries[entry.ID]; ok && current.Status == posting.EntryPosted && !reflect.DeepEqual(current.Lines, entry.Lines) {
 		return financialtypes.ErrCannotModifyPostedMove
 	}
@@ -699,6 +737,9 @@ func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEnt
 	}
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	if err := d.updateAccountBalancesLocked(entry); err != nil {
+		return posting.JournalEntry{}, err
 	}
 	key := sequenceKey(entry.CompanyID, entry.JournalID)
 	d.journalSeq[key]++
@@ -738,6 +779,9 @@ func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachm
 	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
 		return posting.JournalEntry{}, err
 	}
+	if err := d.updateAccountBalancesLocked(entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	key := sequenceKey(entry.CompanyID, entry.JournalID)
 	d.journalSeq[key]++
 	entry.SequenceNumber = d.journalSeq[key]
@@ -759,6 +803,9 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 	currentReversal, ok := d.entries[reversal.ID]
 	if !ok || currentReversal.Status != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+	}
+	if err := d.updateAccountBalancesLocked(reversal); err != nil {
+		return posting.JournalEntry{}, err
 	}
 	key := sequenceKey(reversal.CompanyID, reversal.JournalID)
 	d.journalSeq[key]++
@@ -837,8 +884,192 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) e
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	pending := make(map[accountBalanceKey]accountBalance)
+	adjustingPeriods := make(map[companyPeriodKey]bool)
+	seenEntries := make(map[uuid.UUID]struct{}, len(entries))
+	for _, entry := range entries {
+		if _, duplicate := seenEntries[entry.ID]; duplicate {
+			return posting.ErrEntryNotDraft
+		}
+		seenEntries[entry.ID] = struct{}{}
+		current, ok := d.entries[entry.ID]
+		if !ok {
+			return posting.ErrEntryNotFound
+		}
+		if current.Status != posting.EntryDraft {
+			return posting.ErrEntryNotDraft
+		}
+		if !posting.DraftContentMatches(current, entry) {
+			return financialtypes.ErrCannotModifyPostedMove
+		}
+		deltas, err := d.accountBalanceDeltasLocked(entry)
+		if err != nil {
+			return err
+		}
+		for key, delta := range deltas {
+			aggregate := pending[key]
+			aggregate.periodDebit = aggregate.periodDebit.Add(delta.periodDebit)
+			aggregate.periodCredit = aggregate.periodCredit.Add(delta.periodCredit)
+			pending[key] = aggregate
+		}
+		if entry.Classification == posting.EntryClassAdjusting && entry.CompanyID != uuid.Nil {
+			adjustingPeriods[companyPeriodKey{companyID: entry.CompanyID, periodID: entry.PeriodID}] = true
+		}
+	}
+	for key, delta := range pending {
+		balance := d.balances[key]
+		balance.periodDebit = balance.periodDebit.Add(delta.periodDebit)
+		balance.periodCredit = balance.periodCredit.Add(delta.periodCredit)
+		d.balances[key] = balance
+	}
+	for key := range adjustingPeriods {
+		d.adjustingPeriods[key] = true
+	}
 	for _, entry := range entries {
 		d.entries[entry.ID] = cloneEntry(entry)
+	}
+	return nil
+}
+
+func (d *Driver) updateAccountBalancesLocked(entry posting.JournalEntry) error {
+	deltas, err := d.accountBalanceDeltasLocked(entry)
+	if err != nil {
+		return err
+	}
+	for key, delta := range deltas {
+		balance := d.balances[key]
+		balance.periodDebit = balance.periodDebit.Add(delta.periodDebit)
+		balance.periodCredit = balance.periodCredit.Add(delta.periodCredit)
+		d.balances[key] = balance
+	}
+	if entry.Classification == posting.EntryClassAdjusting && entry.CompanyID != uuid.Nil {
+		d.adjustingPeriods[companyPeriodKey{companyID: entry.CompanyID, periodID: entry.PeriodID}] = true
+	}
+	return nil
+}
+
+func (d *Driver) accountBalanceDeltasLocked(entry posting.JournalEntry) (map[accountBalanceKey]accountBalance, error) {
+	if entry.Status != posting.EntryPosted {
+		return nil, posting.ErrInvalidEntryState
+	}
+	if entry.CompanyID == uuid.Nil {
+		return map[accountBalanceKey]accountBalance{}, nil
+	}
+	if entry.PeriodID == uuid.Nil {
+		return nil, masterdata.ErrFiscalPeriodNotFound
+	}
+	period, ok := d.periods[entry.PeriodID]
+	if !ok || period.CompanyID != entry.CompanyID {
+		return nil, masterdata.ErrFiscalPeriodNotFound
+	}
+	company, ok := d.companies[entry.CompanyID]
+	if !ok {
+		return nil, masterdata.ErrInvalidCompany
+	}
+	deltas := make(map[accountBalanceKey]accountBalance, len(entry.Lines))
+	for _, line := range entry.Lines {
+		account, ok := d.accounts[line.AccountID]
+		if !ok || account.CompanyID != entry.CompanyID {
+			return nil, masterdata.ErrAccountNotFound
+		}
+		debit, credit, currency := posting.LineFunctionalAmounts(line)
+		if currency != "" && currency != company.FunctionalCurrency {
+			return nil, posting.ErrFunctionalCurrencyMismatch
+		}
+		key := accountBalanceKey{
+			companyID: entry.CompanyID,
+			accountID: line.AccountID,
+			periodID:  entry.PeriodID,
+			currency:  company.FunctionalCurrency,
+		}
+		delta := deltas[key]
+		delta.periodDebit = delta.periodDebit.Add(debit)
+		delta.periodCredit = delta.periodCredit.Add(credit)
+		deltas[key] = delta
+	}
+	return deltas, nil
+}
+
+func (d *Driver) CarryForwardBalancesForCompanyContext(
+	ctx context.Context,
+	companyID, closedYearID, newPeriodID uuid.UUID,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	closedYear, ok := d.years[closedYearID]
+	if !ok || closedYear.CompanyID != companyID {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if closedYear.State != masterdata.FiscalYearHardClosed {
+		return masterdata.ErrInvalidFiscalYearTransition
+	}
+	destination, ok := d.periods[newPeriodID]
+	if !ok || destination.CompanyID != companyID || destination.Number != 1 {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	newYear, ok := d.years[destination.FiscalYearID]
+	if !ok || newYear.CompanyID != companyID || !newYear.StartDate.After(closedYear.EndDate) {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	var lastPeriod masterdata.FiscalPeriod
+	foundLastPeriod := false
+	for _, period := range d.periods {
+		if period.CompanyID == companyID && period.FiscalYearID == closedYearID &&
+			(!foundLastPeriod || period.Number > lastPeriod.Number) {
+			lastPeriod = period
+			foundLastPeriod = true
+		}
+	}
+	if !foundLastPeriod {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	type balanceKey struct {
+		accountID uuid.UUID
+		currency  string
+	}
+	sourceBalances := make(map[balanceKey]accountBalance)
+	periodNumbers := make(map[uuid.UUID]int, len(d.periods))
+	for _, period := range d.periods {
+		if period.CompanyID == companyID && period.FiscalYearID == closedYearID {
+			periodNumbers[period.ID] = period.Number
+		}
+	}
+	for key, source := range d.balances {
+		periodNumber, inClosedYear := periodNumbers[key.periodID]
+		if key.companyID != companyID || !inClosedYear || periodNumber > lastPeriod.Number {
+			continue
+		}
+		account, ok := d.accounts[key.accountID]
+		if !ok {
+			return masterdata.ErrAccountNotFound
+		}
+		switch account.AccountType {
+		case masterdata.AccountTypeAsset, masterdata.AccountTypeLiability, masterdata.AccountTypeEquity:
+		default:
+			continue
+		}
+		sourceKey := balanceKey{accountID: key.accountID, currency: key.currency}
+		balance := sourceBalances[sourceKey]
+		balance.beginningDebit = balance.beginningDebit.Add(source.beginningDebit)
+		balance.beginningCredit = balance.beginningCredit.Add(source.beginningCredit)
+		balance.periodDebit = balance.periodDebit.Add(source.periodDebit)
+		balance.periodCredit = balance.periodCredit.Add(source.periodCredit)
+		sourceBalances[sourceKey] = balance
+	}
+	for sourceKey, source := range sourceBalances {
+		destinationKey := accountBalanceKey{
+			companyID: companyID,
+			accountID: sourceKey.accountID,
+			periodID:  newPeriodID,
+			currency:  sourceKey.currency,
+		}
+		balance := d.balances[destinationKey]
+		balance.beginningDebit = source.beginningDebit.Add(source.periodDebit)
+		balance.beginningCredit = source.beginningCredit.Add(source.periodCredit)
+		d.balances[destinationKey] = balance
 	}
 	return nil
 }
@@ -894,6 +1125,153 @@ func (d *Driver) ListEntriesForCompanyContext(ctx context.Context, companyID uui
 		return nil, err
 	}
 	return d.ListEntriesForCompany(companyID, start, end)
+}
+
+func (d *Driver) ReadAccountPeriodBalancesForCompanyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	start, end time.Time,
+	currency string,
+	includeAdjusting bool,
+) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if companyID == uuid.Nil || end.IsZero() || (!start.IsZero() && end.Before(start)) {
+		return nil, false, nil
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	company, ok := d.companies[companyID]
+	if !ok {
+		return nil, false, nil
+	}
+	if company.FunctionalCurrency != currency {
+		return nil, false, nil
+	}
+	var year masterdata.FiscalYear
+	foundYear := false
+	for _, candidate := range d.years {
+		if candidate.CompanyID == companyID &&
+			!end.Before(candidate.StartDate) && !end.After(candidate.EndDate) {
+			year, foundYear = candidate, true
+			break
+		}
+	}
+	if !foundYear {
+		return nil, false, nil
+	}
+	if !start.IsZero() && start.Before(year.StartDate) {
+		return nil, false, nil
+	}
+
+	periods := append([]masterdata.FiscalPeriod(nil), year.Periods...)
+	if len(periods) == 0 {
+		for _, period := range d.periods {
+			if period.CompanyID == companyID && period.FiscalYearID == year.ID {
+				periods = append(periods, period)
+			}
+		}
+	}
+	sort.Slice(periods, func(i, j int) bool {
+		if periods[i].StartDate.Equal(periods[j].StartDate) {
+			return periods[i].Number < periods[j].Number
+		}
+		return periods[i].StartDate.Before(periods[j].StartDate)
+	})
+	if len(periods) == 0 {
+		return nil, false, nil
+	}
+	periodIndexes := make(map[uuid.UUID]int, len(periods))
+	for i, period := range periods {
+		periodIndexes[period.ID] = i
+	}
+	rangeStart := start
+	if rangeStart.IsZero() {
+		rangeStart = year.StartDate
+	}
+	first, last := -1, -1
+	for i, period := range periods {
+		if period.StartDate.Before(rangeStart) && !period.EndDate.Before(rangeStart) {
+			return nil, false, nil
+		}
+		if !period.StartDate.After(end) && period.EndDate.After(end) {
+			return nil, false, nil
+		}
+		if !period.StartDate.Before(rangeStart) && !period.EndDate.After(end) {
+			if first == -1 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first == -1 || last == -1 {
+		return nil, false, nil
+	}
+	if !includeAdjusting {
+		for i := 0; i <= last; i++ {
+			if d.adjustingPeriods[companyPeriodKey{companyID: companyID, periodID: periods[i].ID}] {
+				return nil, false, nil
+			}
+		}
+	}
+
+	balances := make(map[uuid.UUID]posting.AccountPeriodBalance, len(d.balances))
+	for key, stored := range d.balances {
+		if key.companyID != companyID || key.currency != currency {
+			continue
+		}
+		periodIndex, ok := periodIndexes[key.periodID]
+		if !ok || periodIndex > last {
+			continue
+		}
+		balance := balances[key.accountID]
+		balance.AccountID = key.accountID
+		if !stored.beginningDebit.IsZero() {
+			balance.BeginningDebit = balance.BeginningDebit.Add(stored.beginningDebit)
+		}
+		if !stored.beginningCredit.IsZero() {
+			balance.BeginningCredit = balance.BeginningCredit.Add(stored.beginningCredit)
+		}
+		if periodIndex < first {
+			if !stored.periodDebit.IsZero() {
+				balance.BeginningDebit = balance.BeginningDebit.Add(stored.periodDebit)
+			}
+			if !stored.periodCredit.IsZero() {
+				balance.BeginningCredit = balance.BeginningCredit.Add(stored.periodCredit)
+			}
+		} else {
+			if balance.PeriodDebit.IsZero() {
+				balance.PeriodDebit = stored.periodDebit
+			} else if !stored.periodDebit.IsZero() {
+				balance.PeriodDebit = balance.PeriodDebit.Add(stored.periodDebit)
+			}
+			if balance.PeriodCredit.IsZero() {
+				balance.PeriodCredit = stored.periodCredit
+			} else if !stored.periodCredit.IsZero() {
+				balance.PeriodCredit = balance.PeriodCredit.Add(stored.periodCredit)
+			}
+		}
+		balance.EndingDebit = balance.BeginningDebit
+		if !balance.PeriodDebit.IsZero() {
+			if balance.EndingDebit.IsZero() {
+				balance.EndingDebit = balance.PeriodDebit
+			} else {
+				balance.EndingDebit = balance.EndingDebit.Add(balance.PeriodDebit)
+			}
+		}
+		balance.EndingCredit = balance.BeginningCredit
+		if !balance.PeriodCredit.IsZero() {
+			if balance.EndingCredit.IsZero() {
+				balance.EndingCredit = balance.PeriodCredit
+			} else {
+				balance.EndingCredit = balance.EndingCredit.Add(balance.PeriodCredit)
+			}
+		}
+		balances[key.accountID] = balance
+	}
+	return balances, true, nil
 }
 
 func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
@@ -1650,6 +2028,29 @@ func (d *Driver) GetFiscalYearForCompanyContext(ctx context.Context, companyID, 
 		return masterdata.FiscalYear{}, err
 	}
 	return d.GetFiscalYearForCompany(ctx, companyID, fiscalYearID)
+}
+
+func (d *Driver) IsFirstFiscalYearForCompanyContext(
+	ctx context.Context,
+	companyID, fiscalYearID uuid.UUID,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	year, ok := d.years[fiscalYearID]
+	if !ok || year.CompanyID != companyID {
+		return false, masterdata.ErrFiscalYearNotFound
+	}
+	for id, candidate := range d.years {
+		if id != fiscalYearID && candidate.CompanyID == companyID &&
+			(candidate.StartDate.Before(year.StartDate) ||
+				(candidate.StartDate.Equal(year.StartDate) && id.String() < fiscalYearID.String())) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (d *Driver) GetPeriodByDateForCompanyContext(ctx context.Context, companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {

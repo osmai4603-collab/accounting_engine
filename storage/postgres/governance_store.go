@@ -119,6 +119,97 @@ func (d *Driver) GetFiscalYearForCompanyContext(ctx context.Context, companyID, 
 	return year, err
 }
 
+func (d *Driver) IsFirstFiscalYearForCompanyContext(
+	ctx context.Context,
+	companyID, fiscalYearID uuid.UUID,
+) (bool, error) {
+	var first bool
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
+			SELECT 1 FROM fiscal_years current_year
+			JOIN fiscal_years prior_year
+			  ON prior_year.company_id=current_year.company_id
+			 AND prior_year.start_date < current_year.start_date
+			WHERE current_year.company_id=$1 AND current_year.id=$2
+		) FROM fiscal_years WHERE company_id=$1 AND id=$2`, companyID, fiscalYearID).Scan(&first)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalYearNotFound
+		}
+		return err
+	})
+	return first, err
+}
+
+func (d *Driver) CarryForwardBalancesForCompanyContext(
+	ctx context.Context,
+	companyID, closedYearID, newPeriodID uuid.UUID,
+) error {
+	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var closedState masterdata.FiscalYearState
+		var closedEnd time.Time
+		err := tx.QueryRow(ctx, `SELECT state,end_date FROM fiscal_years
+			WHERE company_id=$1 AND id=$2`, companyID, closedYearID).
+			Scan(&closedState, &closedEnd)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalYearNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if closedState != masterdata.FiscalYearHardClosed {
+			return masterdata.ErrInvalidFiscalYearTransition
+		}
+
+		var destinationYearID uuid.UUID
+		var destinationStart time.Time
+		err = tx.QueryRow(ctx, `SELECT year_id,start_date FROM fiscal_periods
+			WHERE company_id=$1 AND id=$2 AND period_number=1`, companyID, newPeriodID).
+			Scan(&destinationYearID, &destinationStart)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if destinationYearID == closedYearID || !destinationStart.After(closedEnd) {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+
+		var lastPeriodNumber int
+		err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(period_number),0) FROM fiscal_periods
+			WHERE company_id=$1 AND year_id=$2`, companyID, closedYearID).Scan(&lastPeriodNumber)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if lastPeriodNumber == 0 {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO account_balances (
+			company_id,account_id,fiscal_period_id,currency_id,beginning_debit,beginning_credit
+		)
+		SELECT balances.company_id,balances.account_id,$3,balances.currency_id,
+			SUM(balances.beginning_debit+balances.period_debit),
+			SUM(balances.beginning_credit+balances.period_credit)
+		FROM account_balances balances
+		JOIN fiscal_periods period
+		  ON period.company_id=balances.company_id AND period.id=balances.fiscal_period_id
+		JOIN accounts ON accounts.company_id=balances.company_id AND accounts.id=balances.account_id
+		WHERE balances.company_id=$1 AND period.year_id=$2 AND period.period_number <= $4
+		  AND accounts.account_type IN ('asset','liability','equity')
+		GROUP BY balances.company_id,balances.account_id,balances.currency_id
+		ON CONFLICT (company_id,account_id,fiscal_period_id,currency_id)
+		DO UPDATE SET
+			beginning_debit=EXCLUDED.beginning_debit,
+			beginning_credit=EXCLUDED.beginning_credit,
+			version=account_balances.version+1,
+			updated_at=now()`, companyID, closedYearID, newPeriodID, lastPeriodNumber)
+		return err
+	})
+}
+
 func (d *Driver) GetPeriodByDateForCompanyContext(ctx context.Context, companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {
 	var period masterdata.FiscalPeriod
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {

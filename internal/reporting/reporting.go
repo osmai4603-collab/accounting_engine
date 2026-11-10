@@ -18,6 +18,21 @@ var ErrReportingAccountNotFound = errors.New("posted journal line references an 
 type accountSide struct{ debit, credit decimal.Decimal }
 
 func accountBalances(repository Repository, start, end time.Time, currency string) (map[uuid.UUID]accountSide, error) {
+	balances, available, err := readPeriodBalances(repository, start, end, currency, true)
+	if err != nil {
+		return nil, err
+	}
+	if available {
+		result := make(map[uuid.UUID]accountSide, len(balances))
+		for accountID, balance := range balances {
+			side := accountSide{debit: balance.PeriodDebit, credit: balance.PeriodCredit}
+			if start.IsZero() {
+				side = accountSide{debit: balance.EndingDebit, credit: balance.EndingCredit}
+			}
+			result[accountID] = side
+		}
+		return result, nil
+	}
 	accounts, err := listAccounts(repository)
 	if err != nil {
 		return nil, err
@@ -27,6 +42,21 @@ func accountBalances(repository Repository, start, end time.Time, currency strin
 		return nil, err
 	}
 	return accountBalancesFromEntries(repository, accounts, entries, start, end, currency)
+}
+
+func readPeriodBalances(
+	repository Repository,
+	start, end time.Time,
+	currency string,
+	includeAdjusting bool,
+) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
+	reader, ok := repository.(MaterializedBalanceReader)
+	if !ok {
+		return nil, false, nil
+	}
+	return reader.ReadAccountPeriodBalancesContext(
+		context.Background(), start, end, currency, includeAdjusting,
+	)
 }
 
 func accountBalancesFromEntries(
