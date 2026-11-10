@@ -121,3 +121,4 @@ func (d *Driver) CurrentSessionTraceparent(ctx context.Context, tx pgx.Tx) (stri
 	}
 	return *val, nil
 }
+

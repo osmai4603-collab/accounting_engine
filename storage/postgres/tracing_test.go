@@ -163,3 +163,4 @@ func TestPostgresSessionTraceparentPropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+

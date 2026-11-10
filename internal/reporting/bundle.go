@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"accounting_engine/internal/consolidation"
 	"accounting_engine/internal/subledgers"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -56,10 +57,26 @@ type StatementBundle struct {
 	AgedReceivables AgedReceivablesReport
 }
 
-type BundleEngine struct{ repository Repository }
+type ConsolidatedStatementBundle struct {
+	Statements    consolidation.Result
+	TrialBalances []consolidation.TrialBalance
+}
+
+type ConsolidationAccessChecker interface {
+	AuthorizeConsolidation(context.Context, string, []uuid.UUID) error
+}
+
+type BundleEngine struct {
+	repository                 Repository
+	consolidationAccessChecker ConsolidationAccessChecker
+}
 
 func NewBundleEngine(repository Repository) *BundleEngine {
 	return &BundleEngine{repository: repository}
+}
+
+func (e *BundleEngine) SetConsolidationAccessChecker(checker ConsolidationAccessChecker) {
+	e.consolidationAccessChecker = checker
 }
 
 func (e *BundleEngine) Generate(start, end time.Time, currency string) (StatementBundle, error) {
