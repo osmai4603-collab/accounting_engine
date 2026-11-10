@@ -1,4 +1,5 @@
 # المرحلة 3: توحيد طبقات العملات الثلاث ونموذج سطر القيد
+
 ## Phase 3: Three-Tier Currency Architecture & Journal Entry Line Modernization
 
 **القرار المعماري:** القرار 2 — ما هو عمق تعدد العملات المعتمد؟  
@@ -34,6 +35,7 @@
 ## 2. تحليل الفجوة الحالية في سطر القيد
 
 ### 2.1 الوضع الراهن في `internal/posting/entry.go`
+
 ```go
 type JournalEntryLine struct {
     Debit               financialtypes.Money // وظيفية أم معاملة؟ غير واضح
@@ -50,6 +52,7 @@ type JournalEntryLine struct {
 ```
 
 ### 2.2 مخاطر الوضع الراهن
+
 - عند التحقق من التوازن في `Validate()`، يضطر المحرك للبحث التخميني: هل القيد معبأ بحقول `FunctionalDebit` أم `Debit` أم `AmountCurrency`؟
 - في قاعدة بيانات PostgreSQL (`account_move_lines`)، توجد أعمدة:
   - `debit numeric(28,4)`
@@ -285,6 +288,7 @@ ALTER TABLE account_move_lines DROP CONSTRAINT IF EXISTS chk_currency_layers_con
 > عملة العرض (`Presentation Currency`) **لا تُخزن أبداً** في أسطر القيود المحاسبية (`account_move_lines`)، لأن أسعار الصرف متغيرة، والترجمة تخضع لمتطلبات تاريخية ومتوسطة وإقفال بحسب طبيعة الحساب وفق **IAS 21**.
 
 المعالجة المعتمدة:
+
 1. يتم استخراج ميزان المراجعة والقوائم المالية أولاً **بالعملة الوظيفية**.
 2. إذا طُلب التقرير بعملة عرض مختلفة عن العملة الوظيفية، يتم تمرير النتائج فوراً إلى `CurrencyTranslator` في `internal/reporting/currency_translation.go`:
    - الأصول والالتزامات: تُترجم بسعر الإقفال التاريخي لتاريخ القائمة (`ClosingRate`).
@@ -338,4 +342,3 @@ gantt
 - [ ] مخطط PostgreSQL يطبق قيد النزاهة `chk_currency_layers_consistency`.
 - [ ] عملة العرض مطبقة كـ Dynamic Projection فقط عبر `CurrencyTranslator`.
 - [ ] جميع اختبارات T3.1 — T3.6 تمر بنجاح دون أي تراجع.
-

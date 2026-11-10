@@ -121,23 +121,52 @@ func GenerateRevaluationEntry(result FXResult, accounts FXJournalAccounts, date 
 	}
 	amount := result.Difference
 	if amount.IsNegative() {
-		amount, _ = financialtypes.NewMoney(amount.Amount().Abs(), amount.Currency())
+		var err error
+		amount, err = financialtypes.NewMoney(amount.Amount().Abs(), amount.Currency())
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
 	}
 	entry := posting.JournalEntry{
 		ID: uuid.New(), JournalID: accounts.JournalID, EntryDate: date, Date: date,
 		Status: posting.EntryDraft, CreatedAt: time.Now().UTC(),
 	}
+	lineForSide := func(accountID uuid.UUID, debit bool) (posting.JournalEntryLine, error) {
+		zero, err := financialtypes.Zero(amount.Currency())
+		if err != nil {
+			return posting.JournalEntryLine{}, err
+		}
+		line := posting.JournalEntryLine{
+			ID: uuid.New(), AccountID: accountID,
+			TransactionAmount: amount, TransactionCurrency: amount.Currency(),
+			ExchangeRate: decimal.NewFromInt(1),
+		}
+		if debit {
+			line.Debit, line.FunctionalDebit = amount, amount
+			line.Credit, line.FunctionalCredit = zero, zero
+		} else {
+			line.Debit, line.FunctionalDebit = zero, zero
+			line.Credit, line.FunctionalCredit = amount, amount
+		}
+		return line, nil
+	}
+	var debitLine, creditLine posting.JournalEntryLine
+	var err error
 	if result.IsGain {
-		entry.Lines = []posting.JournalEntryLine{
-			{ID: uuid.New(), AccountID: result.AccountID, Debit: amount},
-			{ID: uuid.New(), AccountID: accounts.UnrealizedGainID, Credit: amount},
+		debitLine, err = lineForSide(result.AccountID, true)
+		if err == nil {
+			creditLine, err = lineForSide(accounts.UnrealizedGainID, false)
 		}
 	} else {
-		entry.Lines = []posting.JournalEntryLine{
-			{ID: uuid.New(), AccountID: accounts.UnrealizedLossID, Debit: amount},
-			{ID: uuid.New(), AccountID: result.AccountID, Credit: amount},
+		debitLine, err = lineForSide(accounts.UnrealizedLossID, true)
+		if err == nil {
+			creditLine, err = lineForSide(result.AccountID, false)
 		}
 	}
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entry.Lines = []posting.JournalEntryLine{debitLine, creditLine}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, err
 	}

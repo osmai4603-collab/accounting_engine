@@ -2,6 +2,7 @@ package posting
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,13 +12,17 @@ import (
 )
 
 var (
-	ErrInvalidEntry         = errors.New("invalid journal entry")
-	ErrMinimumLines         = errors.New("journal entry must contain at least two lines")
-	ErrLineMustHaveOneSide  = errors.New("journal entry line cannot have debit and credit amounts")
-	ErrEntryNotDraft        = errors.New("journal entry is not a draft")
-	ErrEntryNotPosted       = errors.New("journal entry is not posted")
-	ErrEntryAlreadyReversed = errors.New("journal entry already reversed")
-	ErrInvalidReversal      = errors.New("invalid reversal entry")
+	ErrInvalidEntry               = errors.New("invalid journal entry")
+	ErrMinimumLines               = errors.New("journal entry must contain at least two lines")
+	ErrLineMustHaveOneSide        = errors.New("journal entry line cannot have debit and credit amounts")
+	ErrEntryNotDraft              = errors.New("journal entry is not a draft")
+	ErrEntryNotPosted             = errors.New("journal entry is not posted")
+	ErrEntryAlreadyReversed       = errors.New("journal entry already reversed")
+	ErrInvalidReversal            = errors.New("invalid reversal entry")
+	ErrMissingTransactionCurrency = errors.New("transaction currency is required")
+	ErrMissingFunctionalCurrency  = errors.New("functional currency is required")
+	ErrInvalidExchangeRate        = errors.New("exchange rate must be strictly positive")
+	ErrFunctionalBalanceMismatch  = errors.New("functional debit and credit totals must balance")
 )
 
 type EntryStatus string
@@ -45,129 +50,83 @@ const (
 )
 
 type JournalEntryLine struct {
-	CompanyID           uuid.UUID
-	ID                  uuid.UUID
-	AccountID           uuid.UUID
-	PartnerID           *uuid.UUID
-	CostCenterID        *uuid.UUID
-	ProjectID           *uuid.UUID
-	SegmentID           *uuid.UUID
-	BusinessUnitID      *uuid.UUID
-	MatchingNumber      string
-	ReconciledAmount    decimal.Decimal
-	Debit               financialtypes.Money
+	CompanyID        uuid.UUID
+	ID               uuid.UUID
+	AccountID        uuid.UUID
+	PartnerID        *uuid.UUID
+	CostCenterID     *uuid.UUID
+	ProjectID        *uuid.UUID
+	SegmentID        *uuid.UUID
+	BusinessUnitID   *uuid.UUID
+	MatchingNumber   string
+	ReconciledAmount decimal.Decimal
+	// Deprecated: use FunctionalDebit and FunctionalCredit.
+	Debit financialtypes.Money
+	// Deprecated: use FunctionalDebit and FunctionalCredit.
 	Credit              financialtypes.Money
 	TransactionAmount   financialtypes.Money
 	TransactionCurrency string
 	ExchangeRate        decimal.Decimal
 	FunctionalDebit     financialtypes.Money
 	FunctionalCredit    financialtypes.Money
-	AmountCurrency      financialtypes.Money
-	Currency            string
-	ForeignAmount       decimal.Decimal
+	// Deprecated: use FunctionalDebit and FunctionalCredit.
+	AmountCurrency financialtypes.Money
+	// Deprecated: use TransactionCurrency.
+	Currency string
+	// Deprecated: use TransactionAmount.
+	ForeignAmount decimal.Decimal
 }
 
 func (l JournalEntryLine) Validate() error {
-	debitSet := l.Debit.Currency() != "" && !l.Debit.Amount().IsZero()
-	creditSet := l.Credit.Currency() != "" && !l.Credit.Amount().IsZero()
-	debitPresent := l.Debit.Currency() != ""
-	creditPresent := l.Credit.Currency() != ""
-
-	if debitPresent && l.Debit.IsNegative() {
+	resolved, err := normalizeLineCurrencies(l)
+	if err != nil {
+		return err
+	}
+	if resolved.TransactionAmount.IsNegative() || resolved.FunctionalDebit.IsNegative() ||
+		resolved.FunctionalCredit.IsNegative() {
 		return financialtypes.ErrNegativeAmountProhibited
 	}
-	if creditPresent && l.Credit.IsNegative() {
-		return financialtypes.ErrNegativeAmountProhibited
+	if resolved.TransactionCurrency == "" {
+		return ErrMissingTransactionCurrency
 	}
-	if debitSet && creditSet {
-		return ErrLineMustHaveOneSide
-	}
-	if !debitSet && !creditSet {
+	if resolved.TransactionAmount.Amount().IsZero() {
 		return financialtypes.ErrZeroAmountLine
 	}
-	if l.Debit.Currency() != "" && l.Credit.Currency() != "" && l.Debit.Currency() != l.Credit.Currency() {
+	if resolved.FunctionalDebit.Currency() == "" || resolved.FunctionalCredit.Currency() == "" {
+		return ErrMissingFunctionalCurrency
+	}
+	if resolved.FunctionalDebit.Currency() != resolved.FunctionalCredit.Currency() {
 		return financialtypes.ErrCurrencyMismatch
 	}
-	if l.AmountCurrency.IsNegative() || l.FunctionalDebit.IsNegative() || l.FunctionalCredit.IsNegative() ||
-		l.TransactionAmount.IsNegative() || l.ExchangeRate.IsNegative() {
-		return financialtypes.ErrNegativeAmountProhibited
-	}
-	if (l.FunctionalDebit.Currency() != "" || l.FunctionalCredit.Currency() != "") &&
-		(l.FunctionalDebit.Currency() == "" || l.FunctionalCredit.Currency() == "" ||
-			l.FunctionalDebit.Currency() != l.FunctionalCredit.Currency()) {
-		return financialtypes.ErrCurrencyMismatch
-	}
-	if (l.FunctionalDebit.Currency() != "" || l.FunctionalCredit.Currency() != "") &&
-		l.FunctionalDebit.Amount().IsZero() && l.FunctionalCredit.Amount().IsZero() {
-		return financialtypes.ErrZeroAmountLine
-	}
-	functionalDebitSet := l.FunctionalDebit.Currency() != "" && !l.FunctionalDebit.Amount().IsZero()
-	functionalCreditSet := l.FunctionalCredit.Currency() != "" && !l.FunctionalCredit.Amount().IsZero()
-	amountCurrencyDebitSet := l.AmountCurrency.Currency() != "" && debitSet
-	amountCurrencyCreditSet := l.AmountCurrency.Currency() != "" && creditSet
-	if (functionalDebitSet && functionalCreditSet) ||
-		(functionalDebitSet && !debitSet) || (functionalCreditSet && !creditSet) ||
-		(amountCurrencyDebitSet && amountCurrencyCreditSet) {
-		return ErrLineMustHaveOneSide
-	}
-	if l.AmountCurrency.Currency() != "" && l.AmountCurrency.Amount().IsZero() {
-		return financialtypes.ErrZeroAmountLine
-	}
-	if l.TransactionAmount.Currency() != "" {
-		if l.TransactionAmount.Amount().IsZero() {
+	if resolved.FunctionalDebit.Amount().IsZero() == resolved.FunctionalCredit.Amount().IsZero() {
+		if resolved.FunctionalDebit.Amount().IsZero() {
 			return financialtypes.ErrZeroAmountLine
 		}
-		if l.TransactionCurrency != "" && !strings.EqualFold(l.TransactionCurrency, l.TransactionAmount.Currency()) {
-			return financialtypes.ErrCurrencyMismatch
-		}
-		if l.Debit.Currency() != "" && !l.Debit.Amount().IsZero() &&
-			(!strings.EqualFold(l.Debit.Currency(), l.TransactionAmount.Currency()) ||
-				!l.Debit.Amount().Equal(l.TransactionAmount.Amount())) {
-			return financialtypes.ErrCurrencyMismatch
-		}
-		if l.Credit.Currency() != "" && !l.Credit.Amount().IsZero() &&
-			(!strings.EqualFold(l.Credit.Currency(), l.TransactionAmount.Currency()) ||
-				!l.Credit.Amount().Equal(l.TransactionAmount.Amount())) {
-			return financialtypes.ErrCurrencyMismatch
-		}
-		if l.ExchangeRate.IsZero() && (l.FunctionalDebit.Currency() != "" || l.AmountCurrency.Currency() != "") {
-			return financialtypes.ErrInvalidAmount
-		}
-		if (l.FunctionalDebit.Currency() != "" || l.AmountCurrency.Currency() != "") &&
-			!l.ExchangeRate.IsPositive() {
-			return financialtypes.ErrInvalidAmount
-		}
-		if l.FunctionalDebit.Currency() != "" {
-			functionalDebit, functionalCredit, functionalCurrency, _ := lineFunctionalAmounts(l)
-			expected, err := financialtypes.NewMoney(
-				l.TransactionAmount.Amount().Mul(l.ExchangeRate), functionalCurrency,
-			)
-			if err != nil {
-				return err
-			}
-			expected, err = expected.Rounded()
-			if err != nil {
-				return err
-			}
-			actualAmount := functionalDebit
-			if functionalCreditSet {
-				actualAmount = functionalCredit
-			}
-			actual, err := financialtypes.NewMoney(actualAmount, functionalCurrency)
-			if err != nil {
-				return err
-			}
-			actual, err = actual.Rounded()
-			if err != nil {
-				return err
-			}
-			if !expected.Equal(actual) {
-				return financialtypes.ErrInvalidAmount
-			}
-		}
+		return ErrLineMustHaveOneSide
 	}
-	if (l.FunctionalDebit.Currency() != "" || l.FunctionalCredit.Currency() != "") &&
-		l.TransactionAmount.Currency() == "" {
+	if !resolved.ExchangeRate.IsPositive() {
+		return ErrInvalidExchangeRate
+	}
+	expected, err := financialtypes.NewMoney(
+		resolved.TransactionAmount.Amount().Mul(resolved.ExchangeRate),
+		resolved.FunctionalDebit.Currency(),
+	)
+	if err != nil {
+		return err
+	}
+	expected, err = expected.Rounded()
+	if err != nil {
+		return err
+	}
+	actual := resolved.FunctionalDebit
+	if resolved.FunctionalCredit.Amount().IsPositive() {
+		actual = resolved.FunctionalCredit
+	}
+	actual, err = actual.Rounded()
+	if err != nil {
+		return err
+	}
+	if !expected.Equal(actual) {
 		return financialtypes.ErrInvalidAmount
 	}
 	return nil
@@ -209,6 +168,11 @@ type AccountPeriodBalance struct {
 }
 
 func LineFunctionalAmounts(line JournalEntryLine) (decimal.Decimal, decimal.Decimal, string) {
+	resolved, err := normalizeLineCurrencies(line)
+	if err == nil {
+		return resolved.FunctionalDebit.Amount(), resolved.FunctionalCredit.Amount(),
+			resolved.FunctionalDebit.Currency()
+	}
 	debit, credit, currency, present := lineFunctionalAmounts(line)
 	if present {
 		return debit, credit, currency
@@ -250,12 +214,13 @@ func (e *JournalEntry) Validate() error {
 	}
 
 	totals := make(map[string]decimal.Decimal)
-	currencies := make(map[string]struct{})
-	hasDebit, hasCredit := false, false
-	hasFunctionalAmounts := false
-	linesWithFunctionalAmounts := 0
+	hasDebit, hasCredit, layered := false, false, false
 	for _, line := range e.Lines {
 		if err := line.Validate(); err != nil {
+			return err
+		}
+		resolved, err := normalizeLineCurrencies(line)
+		if err != nil {
 			return err
 		}
 		if e.CompanyID != uuid.Nil && line.CompanyID != uuid.Nil && line.CompanyID != e.CompanyID {
@@ -264,62 +229,156 @@ func (e *JournalEntry) Validate() error {
 		if line.AccountID == uuid.Nil {
 			return ErrInvalidEntry
 		}
-		if line.Debit.Currency() != "" {
-			currency := line.Debit.Currency()
-			currencies[currency] = struct{}{}
-			hasDebit = true
-		}
-		if line.Credit.Currency() != "" {
-			currency := line.Credit.Currency()
-			currencies[currency] = struct{}{}
-			hasCredit = true
-		}
-		functionalDebit, functionalCredit, functionalCurrency, hasFunctional := lineFunctionalAmounts(line)
-		if hasFunctional {
-			hasFunctionalAmounts = true
-			linesWithFunctionalAmounts++
-			totals[functionalCurrency] = totals[functionalCurrency].Add(functionalDebit).Sub(functionalCredit)
-		} else {
-			currency := line.Debit.Currency()
-			if line.Credit.Currency() != "" {
-				currency = line.Credit.Currency()
-			}
-			totals[currency] = totals[currency].Add(line.Debit.Amount()).Sub(line.Credit.Amount())
-		}
+		hasDebit = hasDebit || resolved.FunctionalDebit.Amount().IsPositive()
+		hasCredit = hasCredit || resolved.FunctionalCredit.Amount().IsPositive()
+		currency := resolved.FunctionalDebit.Currency()
+		totals[currency] = totals[currency].Add(
+			resolved.FunctionalDebit.Amount().Sub(resolved.FunctionalCredit.Amount()),
+		)
+		layered = layered || hasExplicitCurrencyLayers(line)
 	}
 	if !hasDebit || !hasCredit {
 		return ErrMinimumLines
 	}
-
-	if hasFunctionalAmounts {
-		if linesWithFunctionalAmounts != len(e.Lines) || len(totals) != 1 {
-			return financialtypes.ErrCurrencyMismatch
-		}
-	} else if len(currencies) != 1 {
+	if len(totals) != 1 {
 		return financialtypes.ErrCurrencyMismatch
 	}
 	for _, total := range totals {
 		if !total.IsZero() {
+			if layered {
+				return fmt.Errorf("%w: %w", ErrFunctionalBalanceMismatch, financialtypes.ErrUnbalancedMove)
+			}
 			return financialtypes.ErrUnbalancedMove
 		}
 	}
 	return nil
 }
 
-func lineFunctionalAmounts(line JournalEntryLine) (debit, credit decimal.Decimal, currency string, present bool) {
-	if line.FunctionalDebit.Currency() != "" || line.FunctionalCredit.Currency() != "" {
-		currency = line.FunctionalDebit.Currency()
-		if currency == "" {
-			currency = line.FunctionalCredit.Currency()
-		}
-		return line.FunctionalDebit.Amount(), line.FunctionalCredit.Amount(), currency, true
+func NormalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
+	return normalizeLineCurrencies(line)
+}
+
+func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
+	resolved := line
+	legacySide := line.Debit
+	if legacySide.Amount().IsZero() {
+		legacySide = line.Credit
 	}
-	if line.AmountCurrency.Currency() != "" {
-		currency = line.AmountCurrency.Currency()
-		if line.Debit.Currency() != "" && !line.Debit.Amount().IsZero() {
-			return line.AmountCurrency.Amount(), decimal.Zero, currency, true
+	transactionCurrency := strings.ToUpper(strings.TrimSpace(line.TransactionCurrency))
+	if transactionCurrency == "" {
+		transactionCurrency = strings.ToUpper(strings.TrimSpace(line.Currency))
+	}
+	if transactionCurrency == "" && line.TransactionAmount.Currency() != "" {
+		transactionCurrency = line.TransactionAmount.Currency()
+	}
+	if transactionCurrency == "" && legacySide.Currency() != "" {
+		transactionCurrency = legacySide.Currency()
+	}
+	if transactionCurrency == "" && !line.ForeignAmount.IsZero() {
+		transactionCurrency = line.TransactionCurrency
+	}
+	if line.Currency != "" && transactionCurrency != "" &&
+		!strings.EqualFold(strings.TrimSpace(line.Currency), transactionCurrency) {
+		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
+	}
+	if _, ok := financialtypes.LookupCurrency(transactionCurrency); !ok {
+		if transactionCurrency == "" {
+			return JournalEntryLine{}, ErrMissingTransactionCurrency
 		}
-		return decimal.Zero, line.AmountCurrency.Amount(), currency, true
+		return JournalEntryLine{}, financialtypes.ErrInvalidCurrency
+	}
+
+	transactionAmount := line.TransactionAmount
+	if transactionAmount.Currency() == "" {
+		switch {
+		case !legacySide.Amount().IsZero():
+			transactionAmount = legacySide
+		case !line.ForeignAmount.IsZero():
+			var err error
+			transactionAmount, err = financialtypes.NewMoney(line.ForeignAmount.Abs(), transactionCurrency)
+			if err != nil {
+				return JournalEntryLine{}, err
+			}
+		}
+	}
+	if transactionAmount.Currency() == "" || transactionAmount.Amount().IsZero() {
+		return JournalEntryLine{}, financialtypes.ErrZeroAmountLine
+	}
+	if transactionAmount.Currency() != transactionCurrency {
+		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
+	}
+	if !line.ForeignAmount.IsZero() && !line.ForeignAmount.Abs().Equal(transactionAmount.Amount()) {
+		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
+	}
+
+	functionalDebit, functionalCredit := line.FunctionalDebit, line.FunctionalCredit
+	if functionalDebit.Currency() == "" && functionalCredit.Currency() == "" {
+		switch {
+		case line.AmountCurrency.Currency() != "":
+			if !legacySide.Amount().IsZero() && line.Debit.Amount().IsPositive() {
+				functionalDebit = line.AmountCurrency
+			} else {
+				functionalCredit = line.AmountCurrency
+			}
+		case !hasExplicitCurrencyLayers(line):
+			functionalDebit, functionalCredit = line.Debit, line.Credit
+		default:
+			return JournalEntryLine{}, ErrMissingFunctionalCurrency
+		}
+	}
+	functionalCurrency := functionalDebit.Currency()
+	if functionalCurrency == "" {
+		functionalCurrency = functionalCredit.Currency()
+	}
+	if functionalCurrency == "" {
+		return JournalEntryLine{}, ErrMissingFunctionalCurrency
+	}
+	if functionalDebit.Currency() == "" {
+		var err error
+		functionalDebit, err = financialtypes.Zero(functionalCurrency)
+		if err != nil {
+			return JournalEntryLine{}, err
+		}
+	}
+	if functionalCredit.Currency() == "" {
+		var err error
+		functionalCredit, err = financialtypes.Zero(functionalCurrency)
+		if err != nil {
+			return JournalEntryLine{}, err
+		}
+	}
+
+	exchangeRate := line.ExchangeRate
+	if exchangeRate.IsZero() {
+		if hasExplicitCurrencyLayers(line) {
+			return JournalEntryLine{}, ErrInvalidExchangeRate
+		}
+		functionalAmount := functionalDebit.Amount()
+		if functionalAmount.IsZero() {
+			functionalAmount = functionalCredit.Amount()
+		}
+		exchangeRate = functionalAmount.Div(transactionAmount.Amount())
+	}
+
+	resolved.TransactionCurrency = transactionCurrency
+	resolved.TransactionAmount = transactionAmount
+	resolved.ExchangeRate = exchangeRate
+	resolved.FunctionalDebit = functionalDebit
+	resolved.FunctionalCredit = functionalCredit
+	return resolved, nil
+}
+
+func hasExplicitCurrencyLayers(line JournalEntryLine) bool {
+	return line.TransactionCurrency != "" || line.TransactionAmount.Currency() != "" ||
+		!line.ExchangeRate.IsZero() || line.FunctionalDebit.Currency() != "" ||
+		line.FunctionalCredit.Currency() != ""
+}
+
+func lineFunctionalAmounts(line JournalEntryLine) (debit, credit decimal.Decimal, currency string, present bool) {
+	resolved, err := normalizeLineCurrencies(line)
+	if err == nil {
+		return resolved.FunctionalDebit.Amount(), resolved.FunctionalCredit.Amount(),
+			resolved.FunctionalDebit.Currency(), true
 	}
 	return decimal.Zero, decimal.Zero, "", false
 }

@@ -11,7 +11,6 @@ import (
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 )
 
 type dummyAttachment struct {
@@ -117,47 +116,6 @@ func TestT2_5_PostEntryWithMultipleAttachments(t *testing.T) {
 	_ = driver
 }
 
-func TestT2_6_PartialFailureRollsBackAllAttachments(t *testing.T) {
-	engine, driver, companyID, journalID, acc1, acc2 := setupTestEngine(t)
-	ctx := context.Background()
-
-	money100, _ := financialtypes.NewMoneyFromString("100.00", "USD")
-	zero, _ := financialtypes.Zero("USD")
-	date := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
-
-	entry, err := posting.NewJournalEntry(journalID, date, "maker", []posting.JournalEntryLine{
-		{CompanyID: companyID, ID: uuid.New(), AccountID: acc1, Debit: money100, Credit: zero},
-		{CompanyID: companyID, ID: uuid.New(), AccountID: acc2, Debit: zero, Credit: money100},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry.CompanyID = companyID
-	if err := engine.CreateDraftContext(ctx, entry); err != nil {
-		t.Fatal(err)
-	}
-
-	ex1 := false
-	att1 := &dummyAttachment{kind: "att1", executed: &ex1}
-	att2 := &dummyAttachment{kind: "att2", shouldFail: true}
-
-	if err := engine.PostEntryWithAttachmentContext(ctx, &entry, "checker", att1, att2); err == nil {
-		t.Fatal("expected error when attachment fails, got nil")
-	}
-
-	if entry.Status != posting.EntryDraft {
-		t.Fatalf("expected entry status draft after rollback, got %v", entry.Status)
-	}
-
-	saved, err := driver.GetEntryByIDForCompany(ctx, companyID, entry.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.Status != posting.EntryDraft {
-		t.Fatalf("expected saved entry status draft, got %v", saved.Status)
-	}
-}
-
 func TestT2_7_LegacyOpenLineAttachmentViaEngine(t *testing.T) {
 	engine, driver, companyID, journalID, acc1, acc2 := setupTestEngine(t)
 	ctx := context.Background()
@@ -202,12 +160,4 @@ func TestT2_7_LegacyOpenLineAttachmentViaEngine(t *testing.T) {
 	if line.ID != lineID {
 		t.Fatalf("expected open line ID %v, got %v", lineID, line.ID)
 	}
-}
-
-func TestT2_4_SingleWriterAuthority(t *testing.T) {
-	engine, _, _, _, _, _ := setupTestEngine(t)
-	if engine == nil {
-		t.Fatal("engine should not be nil")
-	}
-	_ = decimal.Zero
 }

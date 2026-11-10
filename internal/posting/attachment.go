@@ -2,10 +2,12 @@ package posting
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 )
 
@@ -98,17 +100,31 @@ func (a *OpenLineLedgerAttachment) ExecuteAtomicMutation(ctx context.Context, tx
 		return fmt.Errorf("control account scan: %w", err)
 	}
 
-	partnerID := a.Attachment.PartnerID
-	data := fmt.Sprintf(`{"id":"%s","company_id":"%s","partner_id":"%s","control_account_id":"%s","journal_entry_id":"%s","kind":"%s","original_amount":{"currency":"%s","amount":"%s"},"residual_amount":{"currency":"%s","amount":"%s"},"document_date":"%s","due_date":"%s","reference":"%s"}`,
-		a.Attachment.ID, a.Attachment.CompanyID, partnerID, a.Attachment.ControlAccountID, a.Attachment.JournalEntryID,
-		a.Attachment.Kind, a.Attachment.Amount.Currency(), a.Attachment.Amount.Amount().String(),
-		a.Attachment.Amount.Currency(), a.Attachment.Amount.Amount().String(),
-		a.Attachment.DocumentDate.Format(time.RFC3339), a.Attachment.DueDate.Format(time.RFC3339),
-		a.Attachment.Reference,
-	)
+	record := struct {
+		CompanyID        uuid.UUID
+		ID               uuid.UUID
+		PartnerID        *uuid.UUID
+		ControlAccountID uuid.UUID
+		JournalEntryID   uuid.UUID
+		Kind             string
+		OriginalAmount   financialtypes.Money
+		ResidualAmount   financialtypes.Money
+		DocumentDate     time.Time
+		DueDate          time.Time
+		Reference        string
+	}{
+		CompanyID: a.Attachment.CompanyID, ID: a.Attachment.ID, PartnerID: &a.Attachment.PartnerID,
+		ControlAccountID: a.Attachment.ControlAccountID, JournalEntryID: a.Attachment.JournalEntryID,
+		Kind: a.Attachment.Kind, OriginalAmount: a.Attachment.Amount, ResidualAmount: a.Attachment.Amount,
+		DocumentDate: a.Attachment.DocumentDate, DueDate: a.Attachment.DueDate, Reference: a.Attachment.Reference,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
 
 	return tx.Exec(ctx,
 		`INSERT INTO subledger_open_lines(id,company_id,partner_id,kind,line_data) VALUES($1,$2,$3,$4,$5)`,
-		a.Attachment.ID, a.Attachment.CompanyID, partnerID, a.Attachment.Kind, data,
+		a.Attachment.ID, a.Attachment.CompanyID, a.Attachment.PartnerID, a.Attachment.Kind, data,
 	)
 }

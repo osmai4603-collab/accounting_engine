@@ -175,12 +175,51 @@ CREATE TABLE IF NOT EXISTS account_move_lines (
         (functional_debit_minor > 0 AND functional_credit_minor = 0) OR
         (functional_credit_minor > 0 AND functional_debit_minor = 0)
     ),
+    CONSTRAINT chk_currency_layers_consistency CHECK (
+        exchange_rate > 0 AND
+        transaction_currency IS NOT NULL AND
+        (
+            (functional_debit_minor > 0 AND functional_credit_minor = 0) OR
+            (functional_credit_minor > 0 AND functional_debit_minor = 0)
+        )
+    ),
     PRIMARY KEY (move_id, line_id),
     FOREIGN KEY (company_id, move_id) REFERENCES account_moves(company_id, id) ON DELETE RESTRICT,
     FOREIGN KEY (company_id, account_id) REFERENCES accounts(company_id, id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS account_move_lines_account_date_idx ON account_move_lines(account_id, move_id);
 CREATE INDEX IF NOT EXISTS account_move_lines_matching_idx ON account_move_lines(matching_number) WHERE matching_number IS NOT NULL;
+COMMENT ON COLUMN account_move_lines.debit IS 'Deprecated compatibility column; stores functional-currency debit.';
+COMMENT ON COLUMN account_move_lines.credit IS 'Deprecated compatibility column; stores functional-currency credit.';
+COMMENT ON COLUMN account_move_lines.amount_currency IS 'Deprecated compatibility column; transaction amount is authoritative.';
+COMMENT ON COLUMN account_move_lines.currency_id IS 'Deprecated compatibility column; mirrors transaction_currency.';
+
+CREATE OR REPLACE VIEW v_account_move_lines_dual_currency AS
+SELECT
+    aml.move_id,
+    aml.line_id,
+    aml.company_id,
+    aml.account_id,
+    aml.partner_id,
+    aml.transaction_currency,
+    COALESCE(
+        NULLIF(CASE
+            WHEN aml.functional_credit_minor > 0 THEN -ABS(aml.transaction_amount_minor)
+            ELSE ABS(aml.transaction_amount_minor)
+        END, 0)::numeric /
+            power(10::numeric, transaction_currency.minor_units),
+        CASE WHEN aml.credit > 0 THEN -aml.credit ELSE aml.debit END
+    ) AS transaction_amount,
+    aml.exchange_rate,
+    company.functional_currency,
+    aml.functional_debit_minor::numeric /
+        power(10::numeric, functional_currency.minor_units) AS functional_debit,
+    aml.functional_credit_minor::numeric /
+        power(10::numeric, functional_currency.minor_units) AS functional_credit
+FROM account_move_lines aml
+JOIN companies company ON company.id = aml.company_id
+JOIN currencies transaction_currency ON transaction_currency.code = aml.transaction_currency
+JOIN currencies functional_currency ON functional_currency.code = company.functional_currency;
 
 CREATE OR REPLACE FUNCTION prevent_posted_move_mutation() RETURNS trigger AS $$
 BEGIN

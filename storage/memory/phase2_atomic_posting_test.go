@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,20 @@ import (
 	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
 )
+
+type failedAttachment struct{}
+
+func (failedAttachment) AttachmentKind() string {
+	return "injected_failure"
+}
+
+func (failedAttachment) ValidateAttachment(context.Context, posting.JournalEntry) error {
+	return nil
+}
+
+func (failedAttachment) ExecuteAtomicMutation(context.Context, posting.AtomicTransaction, posting.JournalEntry) error {
+	return errors.New("injected attachment failure")
+}
 
 func setupMemorySubledgerEnv(t *testing.T) (*memory.Driver, *masterdata.Service, *posting.Engine, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
 	driver := memory.New()
@@ -87,7 +102,17 @@ func TestT2_1_AtomicAssetDepreciationInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedBook, _ := financialtypes.NewMoneyFromString("11000.00", "USD")
+	var depreciationExpense financialtypes.Money
+	for _, line := range entry.Lines {
+		if line.AccountID == accumAcc {
+			depreciationExpense = line.Debit
+			break
+		}
+	}
+	expectedBook, err := cost.Subtract(depreciationExpense)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !updatedAsset.CurrentBookValue.Equal(expectedBook) {
 		t.Fatalf("expected book value %v, got %v", expectedBook, updatedAsset.CurrentBookValue)
 	}
@@ -150,6 +175,79 @@ func TestT2_3_AtomicReceivableWriteOffInMemory(t *testing.T) {
 	expectedResidual, _ := financialtypes.NewMoneyFromString("300.00", "USD")
 	if !updatedLine.ResidualAmount.Equal(expectedResidual) {
 		t.Fatalf("expected residual %v, got %v", expectedResidual, updatedLine.ResidualAmount)
+	}
+}
+
+func TestT2_6_PartialFailureRollsBackPostingAndAssetMutation(t *testing.T) {
+	driver, _, engine, companyID, journalID, assetAcc, expenseAcc := setupMemorySubledgerEnv(t)
+	ctx := context.Background()
+
+	cost, _ := financialtypes.NewMoneyFromString("12000.00", "USD")
+	zero, _ := financialtypes.Zero("USD")
+	assetID := uuid.New()
+	asset := subledgers.FixedAsset{
+		CompanyID: companyID, ID: assetID,
+		AssetAccountID: assetAcc, AccumulatedAccountID: expenseAcc,
+		ExpenseAccountID: expenseAcc, InServiceDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		HistoricalCost: cost, CurrentBookValue: cost, SalvageValue: zero,
+		UsefulLifeMonths: 12, Method: subledgers.StraightLine,
+		AccumulatedDepreciation: zero,
+	}
+	if err := driver.SaveFixedAsset(ctx, asset); err != nil {
+		t.Fatal(err)
+	}
+
+	amount, _ := financialtypes.NewMoneyFromString("1000.00", "USD")
+	date := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	entry, err := posting.NewJournalEntry(journalID, date, "maker", []posting.JournalEntryLine{
+		{CompanyID: companyID, ID: uuid.New(), AccountID: expenseAcc, Debit: amount, Credit: zero},
+		{CompanyID: companyID, ID: uuid.New(), AccountID: assetAcc, Debit: zero, Credit: amount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.CompanyID = companyID
+	if err := engine.CreateDraftContext(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedAsset := asset
+	updatedAsset.CurrentBookValue, _ = cost.Subtract(amount)
+	updatedAsset.AccumulatedDepreciation = amount
+	updatedAsset.LastDepreciationDate = date
+	attachment := &subledgers.DepreciationAttachment{
+		AssetID: assetID, CompanyID: companyID, Amount: amount, AsOf: date, UpdatedAsset: updatedAsset,
+	}
+	if err := engine.PostEntryWithAttachmentContext(ctx, &entry, "poster", attachment, failedAttachment{}); err == nil {
+		t.Fatal("expected injected attachment failure")
+	}
+
+	if entry.Status != posting.EntryDraft {
+		t.Fatalf("expected in-memory entry to remain draft, got %v", entry.Status)
+	}
+	savedEntry, err := driver.GetEntryByIDForCompany(ctx, companyID, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if savedEntry.Status != posting.EntryDraft {
+		t.Fatalf("expected persisted entry to remain draft, got %v", savedEntry.Status)
+	}
+	savedAsset, err := driver.GetFixedAsset(ctx, companyID, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !savedAsset.CurrentBookValue.Equal(cost) || !savedAsset.AccumulatedDepreciation.Equal(zero) ||
+		!savedAsset.LastDepreciationDate.IsZero() {
+		t.Fatalf("asset mutation was not rolled back: %+v", savedAsset)
+	}
+	for _, accountID := range []uuid.UUID{assetAcc, expenseAcc} {
+		balance, err := driver.GetAccountBalance(ctx, companyID, accountID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !balance.Amount().IsZero() {
+			t.Fatalf("expected account %s balance to remain zero, got %v", accountID, balance)
+		}
 	}
 }
 

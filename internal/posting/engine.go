@@ -348,27 +348,11 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 
 func validateFunctionalCurrency(entry JournalEntry, expectedCurrency string) error {
 	for _, line := range entry.Lines {
-		functionalCurrency := line.FunctionalDebit.Currency()
-		if functionalCurrency == "" {
-			functionalCurrency = line.FunctionalCredit.Currency()
+		resolved, err := normalizeLineCurrencies(line)
+		if err != nil {
+			return err
 		}
-		if functionalCurrency == "" {
-			functionalCurrency = line.AmountCurrency.Currency()
-		}
-		if functionalCurrency == "" {
-			transactionCurrency := line.TransactionCurrency
-			if transactionCurrency == "" {
-				transactionCurrency = line.TransactionAmount.Currency()
-			}
-			if transactionCurrency == "" {
-				transactionCurrency = line.Debit.Currency()
-				if transactionCurrency == "" || line.Debit.Amount().IsZero() {
-					transactionCurrency = line.Credit.Currency()
-				}
-			}
-			functionalCurrency = transactionCurrency
-		}
-		if functionalCurrency != expectedCurrency {
+		if resolved.FunctionalDebit.Currency() != expectedCurrency {
 			return ErrFunctionalCurrencyMismatch
 		}
 	}
