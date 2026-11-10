@@ -1,10 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -499,7 +501,14 @@ func (d *Driver) GetNextSequence(ctx context.Context, companyID, id uuid.UUID) (
 func (d *Driver) GetNextSequenceForCompanyContext(ctx context.Context, companyID, journalID uuid.UUID) (int64, error) {
 	return d.GetNextSequenceWithLock(ctx, companyID, journalID)
 }
-func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) error {
+
+// PostBulk atomically posts a batch of same-company entries. Sequence numbers
+// are reserved as one contiguous range per journal (a single
+// UPDATE ... RETURNING per journal under the journal row lock), drafts are
+// verified against the caller's entries to prevent tampering, and the moves
+// themselves are updated through a pipelined batch so the whole group commits
+// or rolls back together.
+func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (resultErr error) {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -507,20 +516,238 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) e
 	if companyID == uuid.Nil {
 		return posting.ErrInvalidEntry
 	}
-	for _, entry := range entries {
-		if entry.CompanyID != companyID {
-			return masterdata.ErrCompanyScopeRequired
+	seen := make(map[uuid.UUID]struct{}, len(entries))
+	for i := range entries {
+		if entries[i].CompanyID != companyID {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: masterdata.ErrCompanyScopeRequired}
+		}
+		if entries[i].ID == uuid.Nil || entries[i].JournalID == uuid.Nil {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: posting.ErrInvalidEntry}
+		}
+		if _, duplicate := seen[entries[i].ID]; duplicate {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: posting.ErrEntryNotDraft}
+		}
+		seen[entries[i].ID] = struct{}{}
+		if entries[i].Status != posting.EntryDraft && entries[i].Status != posting.EntryPosted {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: posting.ErrInvalidEntry}
+		}
+		if err := entries[i].Validate(); err != nil {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
 		}
 	}
+
 	tx, err := d.beginCompanyTx(ctx, companyID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	for _, entry := range entries {
-		if err := d.saveEntryTx(ctx, tx, entry); err != nil {
-			return err
+	defer func() {
+		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("rollback bulk posting transaction: %w", rollbackErr))
+		}
+	}()
+
+	for i := range entries {
+		if entries[i].Status != posting.EntryPosted || entries[i].PeriodID != uuid.Nil {
+			continue
+		}
+		entryDate := entries[i].EntryDate
+		if entryDate.IsZero() {
+			entryDate = entries[i].Date
+		}
+		period, err := d.GetPeriodByDateForCompany(ctx, companyID, entryDate)
+		if err != nil {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
+		}
+		entries[i].PeriodID = period.ID
+	}
+
+	posted := make([]int, 0, len(entries))
+	journalGroups := make(map[uuid.UUID][]int)
+	journalOrder := make([]uuid.UUID, 0)
+	for i := range entries {
+		if entries[i].Status != posting.EntryPosted {
+			continue
+		}
+		journalID := entries[i].JournalID
+		if _, known := journalGroups[journalID]; !known {
+			journalOrder = append(journalOrder, journalID)
+		}
+		journalGroups[journalID] = append(journalGroups[journalID], i)
+		posted = append(posted, i)
+	}
+	// Reserve journal locks in a deterministic (sorted) order so concurrent
+	// bulk posts of multi-journal batches can never deadlock each other.
+	sort.Slice(journalOrder, func(a, b int) bool {
+		return bytes.Compare(journalOrder[a][:], journalOrder[b][:]) < 0
+	})
+	for _, journalID := range journalOrder {
+		indexes := journalGroups[journalID]
+		var first int64
+		if err := tx.QueryRow(ctx,
+			`UPDATE journals
+			 SET current_sequence = current_sequence + $3
+			 WHERE company_id=$1 AND id=$2
+			 RETURNING current_sequence - $3 + 1`,
+			companyID, journalID, len(indexes)).Scan(&first); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = masterdata.ErrJournalNotFound
+			}
+			return &posting.BulkPostError{Index: indexes[0], EntryID: entries[indexes[0]].ID, Err: err}
+		}
+		for offset, idx := range indexes {
+			entries[idx].SequenceNumber = first + int64(offset)
 		}
 	}
-	return tx.Commit(ctx)
+
+	if len(posted) > 0 {
+		ids := make([]uuid.UUID, len(posted))
+		for k, idx := range posted {
+			ids[k] = entries[idx].ID
+		}
+		drafts, err := fetchDraftsForBulk(ctx, tx, companyID, ids)
+		if err != nil {
+			return err
+		}
+		for _, idx := range posted {
+			saved, ok := drafts[entries[idx].ID]
+			if !ok {
+				return &posting.BulkPostError{Index: idx, EntryID: entries[idx].ID, Err: posting.ErrEntryNotDraft}
+			}
+			if !posting.DraftContentMatches(saved, entries[idx]) {
+				return &posting.BulkPostError{Index: idx, EntryID: entries[idx].ID, Err: financialtypes.ErrCannotModifyPostedMove}
+			}
+		}
+
+		// Flip every draft to posted in one set-based UPDATE so the balance
+		// and integrity triggers aggregate the whole batch once instead of
+		// running per entry.
+		records := make([]bulkMoveRecord, len(posted))
+		for k, idx := range posted {
+			entry := entries[idx]
+			classification := entry.Classification
+			if classification == "" {
+				classification = posting.EntryClassRegular
+			}
+			date := entry.EntryDate
+			if date.IsZero() {
+				date = entry.Date
+			}
+			records[k] = bulkMoveRecord{
+				ID: entry.ID, JournalID: entry.JournalID, PeriodID: entry.PeriodID,
+				EntryDate: date, EntryNumber: entry.SequenceNumber, Status: entry.Status,
+				Classification: classification, ReversedMoveID: entry.ReversedEntryID,
+				Entry: entry,
+			}
+		}
+		payload, err := json.Marshal(records)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE account_moves m
+			SET journal_id = v.journal_id, period_id = v.period_id, entry_date = v.entry_date,
+				entry_number = v.entry_number, status = v.status, classification = v.classification,
+				reversed_move_id = v.reversed_move_id, entry = v.entry
+			FROM jsonb_to_recordset($1::jsonb) AS v(
+				id uuid, journal_id uuid, period_id uuid, entry_date date, entry_number bigint,
+				status varchar, classification varchar, reversed_move_id uuid, entry jsonb)
+			WHERE m.id = v.id AND m.company_id = $2 AND m.status = 'draft'`,
+			string(payload), companyID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != int64(len(posted)) {
+			// A concurrent transaction posted one of our drafts between the
+			// verification read and this UPDATE inside READ COMMITTED.
+			if err := d.bulkIdentifyNonDrafts(ctx, tx, companyID, posted, entries); err != nil {
+				return err
+			}
+			return &posting.BulkPostError{Index: posted[0], EntryID: entries[posted[0]].ID, Err: posting.ErrEntryNotDraft}
+		}
+	}
+
+	for i := range entries {
+		if entries[i].Status != posting.EntryDraft {
+			continue
+		}
+		if err := d.saveEntryTx(ctx, tx, entries[i]); err != nil {
+			return &posting.BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fetchDraftsForBulk(ctx context.Context, tx pgx.Tx, companyID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]posting.JournalEntry, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT id, entry FROM account_moves WHERE company_id=$1 AND id=ANY($2) AND status='draft'`,
+		companyID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	drafts := make(map[uuid.UUID]posting.JournalEntry, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		var entry posting.JournalEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return nil, err
+		}
+		drafts[id] = entry
+	}
+	return drafts, rows.Err()
+}
+
+// bulkMoveRecord is the row shape handed to jsonb_to_recordset for the
+// set-based draft->posted flip inside PostBulk.
+type bulkMoveRecord struct {
+	ID             uuid.UUID                   `json:"id"`
+	JournalID      uuid.UUID                   `json:"journal_id"`
+	PeriodID       uuid.UUID                   `json:"period_id"`
+	EntryDate      time.Time                   `json:"entry_date"`
+	EntryNumber    int64                       `json:"entry_number"`
+	Status         posting.EntryStatus         `json:"status"`
+	Classification posting.EntryClassification `json:"classification"`
+	ReversedMoveID *uuid.UUID                  `json:"reversed_move_id"`
+	Entry          posting.JournalEntry        `json:"entry"`
+}
+
+// bulkIdentifyNonDrafts pinpoints which bulk entries are no longer stored as
+// drafts after a set-based UPDATE skipped them, so the caller gets an error
+// attributed to the offending entry rather than the whole batch.
+func (d *Driver) bulkIdentifyNonDrafts(ctx context.Context, tx pgx.Tx, companyID uuid.UUID, posted []int, entries []posting.JournalEntry) error {
+	ids := make([]uuid.UUID, len(posted))
+	for k, idx := range posted {
+		ids[k] = entries[idx].ID
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM account_moves WHERE company_id=$1 AND id=ANY($2) AND status <> 'draft'`,
+		companyID, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	nonDrafts := make(map[uuid.UUID]struct{}, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		nonDrafts[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, idx := range posted {
+		if _, notDraft := nonDrafts[entries[idx].ID]; notDraft {
+			return &posting.BulkPostError{Index: idx, EntryID: entries[idx].ID, Err: posting.ErrEntryNotDraft}
+		}
+	}
+	return nil
 }

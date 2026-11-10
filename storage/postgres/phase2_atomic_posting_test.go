@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shopspring/decimal"
 )
 
 type postgresMarkerAttachment struct {
@@ -121,6 +124,163 @@ func createDraftTestEntry(
 		t.Fatal(err)
 	}
 	return entry
+}
+
+// TestMultiCurrencyTriggerPostingBalance verifies the posted-move balance
+// trigger sums the authoritative functional minor-unit columns: a multi-
+// currency entry whose transaction legs are EUR and USD but whose functional
+// SAR totals balance must post, while a functionally unbalanced entry must be
+// rejected at the database boundary.
+func TestMultiCurrencyTriggerPostingBalance(t *testing.T) {
+	ctx := context.Background()
+	driver, err := postgres.New(ctx, getTestPostgresConn())
+	if err != nil {
+		t.Skipf("Skipping PostgreSQL test: %v", err)
+	}
+	defer driver.Close()
+
+	companyID, journalID := uuid.New(), uuid.New()
+	masterData := masterdata.NewService(masterdata.NewRepositoryAdapter(driver))
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: fmt.Sprintf("MC-%s", companyID.String()[:8]),
+		LegalName: "Multi-Currency Trigger Co", FunctionalCurrency: "SAR",
+		PresentationCurrency: "SAR", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO journals(id, company_id, code) VALUES($1, $2, $3)`,
+			journalID, companyID, fmt.Sprintf("J-%s", journalID.String()[:8]))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cashID, revenueID := uuid.New(), uuid.New()
+	for _, account := range []masterdata.Account{
+		{CompanyID: companyID, ID: cashID, Code: "1010", Name: "Cash",
+			AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit, IsActive: true},
+		{CompanyID: companyID, ID: revenueID, Code: "4010", Name: "Revenue",
+			AccountType: masterdata.AccountTypeIncome, NormalBalance: masterdata.NormalBalanceCredit, IsActive: true},
+	} {
+		if err := driver.CreateAccount(ctx, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := posting.NewEngine(driver, masterData)
+
+	eurAmount, err := financialtypes.NewMoneyFromString("50.00", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usdAmount, err := financialtypes.NewMoneyFromString("41.00", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	functionalSAR, err := financialtypes.NewMoneyFromString("205.00", "SAR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroSAR, err := financialtypes.Zero("SAR")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entryDate := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	balanced := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID,
+		EntryDate: entryDate, Date: entryDate, Status: posting.EntryDraft,
+		CreatedBy: "maker", CreatedAt: time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{
+				CompanyID: companyID, ID: uuid.New(), AccountID: cashID,
+				TransactionAmount: eurAmount, TransactionCurrency: "EUR",
+				ExchangeRate:    decimal.NewFromFloat(4.10),
+				FunctionalDebit: functionalSAR, FunctionalCredit: zeroSAR,
+			},
+			{
+				CompanyID: companyID, ID: uuid.New(), AccountID: revenueID,
+				TransactionAmount: usdAmount, TransactionCurrency: "USD",
+				ExchangeRate:    decimal.NewFromFloat(5.00),
+				FunctionalDebit: zeroSAR, FunctionalCredit: functionalSAR,
+			},
+		},
+	}
+	if err := engine.CreateDraftContext(ctx, balanced); err != nil {
+		t.Fatalf("create multi-currency draft: %v", err)
+	}
+	if err := engine.PostForCompany(ctx, companyID, balanced.ID, "poster"); err != nil {
+		t.Fatalf("expected functionally balanced multi-currency entry to post, got: %v", err)
+	}
+	posted, err := driver.GetEntryByIDForCompany(ctx, companyID, balanced.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted.Status != posting.EntryPosted {
+		t.Fatalf("expected posted status, got %v", posted.Status)
+	}
+
+	// A draft whose stored functional credit no longer matches the functional
+	// debit must be rejected by the balance trigger itself.
+	unbalancedDraft := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID,
+		EntryDate: entryDate, Date: entryDate, Status: posting.EntryDraft,
+		CreatedBy: "maker", CreatedAt: time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{
+				CompanyID: companyID, ID: uuid.New(), AccountID: cashID,
+				TransactionAmount: eurAmount, TransactionCurrency: "EUR",
+				ExchangeRate:    decimal.NewFromFloat(4.10),
+				FunctionalDebit: functionalSAR, FunctionalCredit: zeroSAR,
+			},
+			{
+				CompanyID: companyID, ID: uuid.New(), AccountID: revenueID,
+				TransactionAmount: usdAmount, TransactionCurrency: "USD",
+				ExchangeRate:    decimal.NewFromFloat(5.00),
+				FunctionalDebit: zeroSAR, FunctionalCredit: functionalSAR,
+			},
+		},
+	}
+	if err := engine.CreateDraftContext(ctx, unbalancedDraft); err != nil {
+		t.Fatalf("create second multi-currency draft: %v", err)
+	}
+	if err := driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `UPDATE account_move_lines
+			SET functional_credit_minor = 20000
+			WHERE company_id=$1 AND move_id=$2 AND line_id=$3`,
+			companyID, unbalancedDraft.ID, unbalancedDraft.Lines[1].ID)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() != 1 {
+			return fmt.Errorf("expected one corrupted line, got %d", ct.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE account_moves
+			SET status='posted', entry=jsonb_set(entry, '{Status}', '"posted"', true)
+			WHERE company_id=$1 AND id=$2`,
+			companyID, unbalancedDraft.ID)
+		return err
+	})
+	if err == nil {
+		t.Fatal("expected the balance trigger to reject the functionally unbalanced move")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("expected check_violation from balance trigger, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unbalanced") {
+		t.Fatalf("expected unbalanced move error, got: %v", err)
+	}
 }
 
 func TestT2_1_AtomicAssetDepreciationPostgres(t *testing.T) {

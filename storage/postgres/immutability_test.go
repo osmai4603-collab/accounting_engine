@@ -49,7 +49,7 @@ func TestPostgresPhase0LedgerIntegrity(t *testing.T) {
 	if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{schemaName}.Sanitize()+", public"); err != nil {
 		t.Fatal(err)
 	}
-	schemaSQL, err := os.ReadFile("schema.sql")
+	schemaSQL, err := os.ReadFile("migrations/202611010001_baseline_schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

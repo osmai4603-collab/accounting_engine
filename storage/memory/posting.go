@@ -494,6 +494,17 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) e
 	for key := range adjustingPeriods {
 		d.adjustingPeriods[key] = true
 	}
+	// Sequence numbers are allocated only after every entry in the batch has
+	// been validated, mirroring the atomic range reservation semantics of the
+	// PostgreSQL driver: a failed bulk post consumes no sequence numbers.
+	for i := range entries {
+		if entries[i].Status != posting.EntryPosted {
+			continue
+		}
+		key := sequenceKey(entries[i].CompanyID, entries[i].JournalID)
+		d.journalSeq[key]++
+		entries[i].SequenceNumber = d.journalSeq[key]
+	}
 	for _, entry := range entries {
 		d.entries[entry.ID] = cloneEntry(entry)
 	}

@@ -413,15 +413,21 @@ func (d *Driver) UpdatePeriodStateForCompanyContext(ctx context.Context, company
 	return d.UpdatePeriodState(ctx, companyID, id, state)
 }
 
+// GetNextSequenceWithLock atomically increments and returns the next journal
+// sequence number. The UPDATE ... RETURNING form takes the journal row lock
+// and advances the counter in a single statement, so concurrent callers can
+// never observe (or hand out) the same sequence number.
 func (d *Driver) GetNextSequenceWithLock(ctx context.Context, companyID, journalID uuid.UUID) (int64, error) {
 	var sequence int64
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx,
-			`SELECT current_sequence + 1 FROM journals WHERE company_id=$1 AND id=$2`,
+			`UPDATE journals
+			 SET current_sequence = current_sequence + 1
+			 WHERE company_id=$1 AND id=$2
+			 RETURNING current_sequence`,
 			companyID, journalID).Scan(&sequence)
 		if errors.Is(err, pgx.ErrNoRows) {
-			sequence = 1
-			return nil
+			return masterdata.ErrJournalNotFound
 		}
 		return err
 	})

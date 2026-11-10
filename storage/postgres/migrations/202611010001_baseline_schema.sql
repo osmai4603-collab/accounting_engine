@@ -1,3 +1,11 @@
+-- Baseline schema migration.
+--
+-- This is the numbered, rollback-capable form of the original schema.sql.
+-- The schema is applied exclusively through the ordered migration system in
+-- storage/postgres/migrations.go; no raw unnumbered DDL is executed anywhere
+-- else. Later migrations (202611100001+) are written to be idempotent on top
+-- of this baseline so a single linear history is preserved.
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS currencies (
@@ -333,8 +341,8 @@ DECLARE
 BEGIN
     SELECT posted_moves.id,
            posted_moves.entry->>'Status' AS entry_status,
-           COALESCE(SUM(lines.debit), 0) AS total_debit,
-           COALESCE(SUM(lines.credit), 0) AS total_credit
+           COALESCE(SUM(lines.functional_debit_minor), 0) AS total_debit,
+           COALESCE(SUM(lines.functional_credit_minor), 0) AS total_credit
     INTO unbalanced_move
     FROM new_rows AS posted_moves
     JOIN old_rows AS prior_moves ON prior_moves.id = posted_moves.id
@@ -343,7 +351,7 @@ BEGIN
       AND posted_moves.status = 'posted'
     GROUP BY posted_moves.id, posted_moves.entry->>'Status'
     HAVING posted_moves.entry->>'Status' IS DISTINCT FROM 'posted'
-        OR COALESCE(SUM(lines.debit), 0) <> COALESCE(SUM(lines.credit), 0)
+        OR COALESCE(SUM(lines.functional_debit_minor), 0) <> COALESCE(SUM(lines.functional_credit_minor), 0)
     LIMIT 1;
 
     IF FOUND THEN

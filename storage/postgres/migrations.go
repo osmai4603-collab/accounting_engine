@@ -97,6 +97,18 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 	if err != nil {
 		return err
 	}
+	if err := ensureSchemaMigrationsTable(ctx, pool); err != nil {
+		return err
+	}
+	pending, err := pendingMigrations(ctx, pool, migrations)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		// Nothing to apply: skip the advisory lock entirely so that opening a
+		// new connection pool never contends on the migration lock.
+		return nil
+	}
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -110,30 +122,15 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 			result = errors.Join(result, fmt.Errorf("release migration lock: %w", unlockErr))
 		}
 	}()
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version bigint PRIMARY KEY,
-		name text NOT NULL,
-		checksum char(64) NOT NULL,
-		applied_at timestamptz NOT NULL DEFAULT now()
-	)`); err != nil {
+	// Re-evaluate pending work under the lock: a concurrent runner may have
+	// applied the same migrations in the meantime.
+	pending, err = pendingMigrations(ctx, pool, migrations)
+	if err != nil {
 		return err
 	}
-	for _, migration := range migrations {
+	for _, migration := range pending {
 		content, err := os.ReadFile(migration.upPath)
 		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(content)
-		checksum := hex.EncodeToString(digest[:])
-		var appliedChecksum string
-		err = conn.QueryRow(ctx, "SELECT checksum FROM schema_migrations WHERE version=$1", migration.version).Scan(&appliedChecksum)
-		if err == nil {
-			if appliedChecksum != checksum {
-				return fmt.Errorf("applied migration %d checksum differs from source", migration.version)
-			}
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		tx, err := conn.Begin(ctx)
@@ -143,7 +140,7 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 		if _, err = tx.Exec(ctx, string(content)); err == nil {
 			_, err = tx.Exec(ctx,
 				"INSERT INTO schema_migrations(version,name,checksum) VALUES($1,$2,$3)",
-				migration.version, migration.name, checksum)
+				migration.version, migration.name, migrationChecksum(content))
 		}
 		if err != nil {
 			if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
@@ -158,9 +155,65 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 	return nil
 }
 
+func ensureSchemaMigrationsTable(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version bigint PRIMARY KEY,
+		name text NOT NULL,
+		checksum char(64) NOT NULL,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`)
+	return err
+}
+
+// pendingMigrations validates applied checksums and returns the migrations
+// that still have to run, in version order.
+func pendingMigrations(ctx context.Context, pool *pgxpool.Pool, migrations []migrationFile) ([]migrationFile, error) {
+	rows, err := pool.Query(ctx, "SELECT version, checksum FROM schema_migrations")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := make(map[int64]string, len(migrations))
+	for rows.Next() {
+		var version int64
+		var checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return nil, err
+		}
+		applied[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	pending := make([]migrationFile, 0, len(migrations))
+	for _, migration := range migrations {
+		appliedChecksum, ok := applied[migration.version]
+		if !ok {
+			pending = append(pending, migration)
+			continue
+		}
+		content, err := os.ReadFile(migration.upPath)
+		if err != nil {
+			return nil, err
+		}
+		if appliedChecksum != migrationChecksum(content) {
+			return nil, fmt.Errorf("applied migration %d checksum differs from source", migration.version)
+		}
+	}
+	return pending, nil
+}
+
+func migrationChecksum(content []byte) string {
+	digest := sha256.Sum256(content)
+	return hex.EncodeToString(digest[:])
+}
+
 func MigrateDown(ctx context.Context, pool *pgxpool.Pool, steps int) (result error) {
 	if steps < 1 {
 		return errors.New("migration rollback steps must be positive")
+	}
+	if err := ensureSchemaMigrationsTable(ctx, pool); err != nil {
+		return err
 	}
 	directory, err := migrationDirectory()
 	if err != nil {

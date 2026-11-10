@@ -3,9 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -49,19 +46,12 @@ func New(ctx context.Context, connectionString string) (*Driver, error) {
 	return &Driver{pool: pool}, nil
 }
 
+// EnsureSchema brings a database up to date using only the numbered,
+// checksum-protected migration chain in storage/postgres/migrations. It never
+// executes raw unnumbered DDL: the legacy schema.sql was converted into the
+// baseline migration 202611010001_baseline_schema.sql. When no migration is
+// pending the call acquires no advisory lock and issues no DDL at all.
 func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return errors.New("unable to locate postgres schema files")
-	}
-	baseDir := filepath.Dir(file)
-	content, err := os.ReadFile(filepath.Join(baseDir, "schema.sql"))
-	if err != nil {
-		return err
-	}
-	if _, err := pool.Exec(ctx, string(content)); err != nil {
-		return err
-	}
 	return MigrateUp(ctx, pool)
 }
 
