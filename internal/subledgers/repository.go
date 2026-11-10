@@ -31,10 +31,14 @@ var (
 	ErrCompanyScopedOpenLinesRequired   = errors.New("company-scoped open-line storage is required")
 	ErrCompanyScopedBankItemsRequired   = errors.New("company-scoped bank-item storage is required")
 	ErrAtomicBankReconciliationRequired = errors.New("atomic bank-item updates are required for reconciliation")
+	ErrAmbiguousBankReconciliation      = errors.New("multiple ledger groups match the bank statement")
+	ErrBankReconciliationTooComplex     = errors.New("bank reconciliation candidate set is too large")
 	ErrAtomicEventRequired              = errors.New("atomic event and journal-draft storage is required")
 	ErrEventResultMissing               = errors.New("stored economic event has no result entry")
 	ErrCompanyScopedEventsRequired      = errors.New("company-scoped event storage is required")
 	ErrEventRulesRequired               = errors.New("persistent event accounting rules are required")
+	ErrWriteOffPending                  = errors.New("subledger open line already has a pending write-off")
+	ErrNoPendingWriteOff                = errors.New("subledger open line has no pending write-off")
 )
 
 type Repository interface {
@@ -109,6 +113,10 @@ type ConditionalOpenLineRepository interface {
 
 type ConditionalOpenLinesAndDraftRepository interface {
 	CompareAndSaveOpenLinesAndDraft(expected, updated []OpenLine, draft posting.JournalEntry) error
+}
+
+type AtomicOpenLineWriteOffConfirmationRepository interface {
+	ConfirmOpenLineWriteOff(expected, updated OpenLine, postedEntry posting.JournalEntry) error
 }
 
 type ConditionalBankItemsAndDraftRepository interface {
@@ -324,6 +332,43 @@ func (r *MemoryRepository) GetOpenLine(id uuid.UUID) (OpenLine, error) {
 	return cloneOpenLine(line), nil
 }
 
+func (r *MemoryRepository) GetEntryByID(id uuid.UUID) (posting.JournalEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.drafts[id]
+	if !ok {
+		return posting.JournalEntry{}, posting.ErrEntryNotFound
+	}
+	entry.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
+	return entry, nil
+}
+
+func (r *MemoryRepository) ConfirmOpenLineWriteOff(expected, updated OpenLine, postedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || postedEntry.CompanyID != expected.CompanyID ||
+		postedEntry.Status != posting.EntryPosted {
+		return ErrInvalidOpenLine
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, ok := r.lines[expected.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return ErrConcurrentMatch
+	}
+	actual, ok := r.drafts[postedEntry.ID]
+	if !ok {
+		return posting.ErrEntryNotFound
+	}
+	if !FixedAssetEntryMatches(actual, postedEntry) {
+		return posting.ErrEntryNotPosted
+	}
+	r.lines[updated.ID] = cloneOpenLine(updated)
+	return nil
+}
+
 func (r *MemoryRepository) ListOpenLines(partnerID string) ([]OpenLine, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -379,7 +424,8 @@ func (r *MemoryRepository) SaveFixedAssetDraft(expected FixedAsset, entry postin
 	if _, exists := r.drafts[entry.ID]; exists {
 		return ErrAlreadyExists
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
+		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
 		for _, current := range r.drafts {
 			if current.DocumentReference == entry.DocumentReference &&
 				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {
@@ -615,6 +661,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 
 func cloneFixedAsset(asset FixedAsset) FixedAsset {
 	asset.AppliedEntryIDs = append([]uuid.UUID(nil), asset.AppliedEntryIDs...)
+	asset.Components = append([]AssetComponent(nil), asset.Components...)
 	if asset.DisposedAt != nil {
 		disposedAt := *asset.DisposedAt
 		asset.DisposedAt = &disposedAt

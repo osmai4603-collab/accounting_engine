@@ -192,18 +192,43 @@ func listAccounts(repository Repository) ([]masterdata.Account, error) {
 }
 
 func listPostedEntries(repository Repository, start, end time.Time) ([]posting.JournalEntry, error) {
+	var (
+		entries []posting.JournalEntry
+		err     error
+	)
 	if repo, ok := repository.(LedgerRepository); ok {
-		return repo.ListPostedEntries(start, end)
-	}
-	if repo, ok := repository.(EntryDateRepository); ok {
-		return repo.ListEntries(start, end)
-	}
-	if repo, ok := repository.(interface {
+		entries, err = repo.ListPostedEntries(start, end)
+	} else if repo, ok := repository.(EntryDateRepository); ok {
+		entries, err = repo.ListEntries(start, end)
+	} else if repo, ok := repository.(interface {
 		ListJournalEntries(time.Time, time.Time) ([]posting.JournalEntry, error)
 	}); ok {
-		return repo.ListJournalEntries(start, end)
+		entries, err = repo.ListJournalEntries(start, end)
+	} else {
+		return nil, errors.New("repository does not provide posted ledger entries")
 	}
-	return nil, errors.New("repository does not provide posted ledger entries")
+	if err != nil {
+		return nil, err
+	}
+	var latestOpening time.Time
+	for _, entry := range entries {
+		if entry.Status == posting.EntryPosted && postingClassification(entry) == posting.EntryClassOpening {
+			date := entryEffectiveDate(entry)
+			if latestOpening.IsZero() || date.After(latestOpening) {
+				latestOpening = date
+			}
+		}
+	}
+	if latestOpening.IsZero() {
+		return entries, nil
+	}
+	currentPeriod := make([]posting.JournalEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entryEffectiveDate(entry).Before(latestOpening) {
+			currentPeriod = append(currentPeriod, entry)
+		}
+	}
+	return currentPeriod, nil
 }
 
 func normalizeClassification(value string) string {

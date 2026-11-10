@@ -174,6 +174,9 @@ func (d *Driver) HasChildren(id uuid.UUID) (bool, error) {
 func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if year.State == "" {
+		year.State = masterdata.FiscalYearOpen
+	}
 	for i := range year.Periods {
 		if year.Periods[i].CompanyID == uuid.Nil {
 			year.Periods[i].CompanyID = year.CompanyID
@@ -189,6 +192,21 @@ func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 	for _, period := range year.Periods {
 		d.periods[period.ID] = period
 	}
+	return nil
+}
+
+func (d *Driver) UpdateFiscalYearState(id uuid.UUID, state masterdata.FiscalYearState) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	year, ok := d.years[id]
+	if !ok {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if err := masterdata.ValidateFiscalYearTransition(year.State, state); err != nil {
+		return err
+	}
+	year.State = state
+	d.years[id] = year
 	return nil
 }
 
@@ -304,6 +322,7 @@ func cloneEntry(entry posting.JournalEntry) posting.JournalEntry {
 
 func cloneFixedAsset(asset subledgers.FixedAsset) subledgers.FixedAsset {
 	asset.AppliedEntryIDs = append([]uuid.UUID(nil), asset.AppliedEntryIDs...)
+	asset.Components = append([]subledgers.AssetComponent(nil), asset.Components...)
 	if asset.DisposedAt != nil {
 		disposedAt := *asset.DisposedAt
 		asset.DisposedAt = &disposedAt
@@ -372,6 +391,44 @@ func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEnt
 	d.journalSeq[entry.JournalID]++
 	entry.SequenceNumber = d.journalSeq[entry.JournalID]
 	d.entries[entry.ID] = cloneEntry(entry)
+	return cloneEntry(entry), nil
+}
+
+func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachment posting.OpenLineAttachment) (posting.JournalEntry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	current, ok := d.entries[entry.ID]
+	if !ok {
+		return posting.JournalEntry{}, posting.ErrEntryNotFound
+	}
+	if current.Status != posting.EntryDraft || entry.Status != posting.EntryPosted {
+		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+	}
+	if !posting.DraftContentMatches(current, entry) {
+		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	account, ok := d.accounts[attachment.ControlAccountID]
+	if !ok || account.CompanyID != entry.CompanyID {
+		return posting.JournalEntry{}, masterdata.ErrAccountNotFound
+	}
+	if _, exists := d.lines[attachment.ID]; exists {
+		return posting.JournalEntry{}, subledgers.ErrAlreadyExists
+	}
+	partnerID := attachment.PartnerID
+	line := subledgers.OpenLine{
+		CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
+		ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
+		Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
+		ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+		DueDate: attachment.DueDate, Reference: attachment.Reference,
+	}
+	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	d.journalSeq[entry.JournalID]++
+	entry.SequenceNumber = d.journalSeq[entry.JournalID]
+	d.entries[entry.ID] = cloneEntry(entry)
+	d.lines[line.ID] = line
 	return cloneEntry(entry), nil
 }
 
@@ -452,6 +509,29 @@ func (d *Driver) ListEntriesForCompany(companyID uuid.UUID, start, end time.Time
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].EntryDate.Before(entries[j].EntryDate) })
 	return entries, nil
+}
+
+func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return financialtypes.Money{}, err
+	}
+	d.mu.RLock()
+	account, exists := d.accounts[accountID]
+	company, companyExists := d.companies[companyID]
+	entries := make([]posting.JournalEntry, 0)
+	for _, entry := range d.entries {
+		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted {
+			entries = append(entries, cloneEntry(entry))
+		}
+	}
+	d.mu.RUnlock()
+	if !exists || account.CompanyID != companyID {
+		return financialtypes.Money{}, masterdata.ErrAccountNotFound
+	}
+	if !companyExists {
+		return financialtypes.Money{}, masterdata.ErrInvalidCompany
+	}
+	return subledgers.ControlAccountBalanceFromEntries(account, entries, company.FunctionalCurrency)
 }
 
 func (d *Driver) SaveEvent(event subledgers.EconomicEvent) error {
@@ -572,6 +652,32 @@ func (d *Driver) SaveOpenLine(line subledgers.OpenLine) error {
 	return nil
 }
 
+func (d *Driver) SaveOpenLineForPostedEntry(line subledgers.OpenLine) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	account, accountExists := d.accounts[line.ControlAccountID]
+	entry, entryExists := d.entries[line.JournalEntryID]
+	if !accountExists {
+		return masterdata.ErrAccountNotFound
+	}
+	if !entryExists {
+		return posting.ErrEntryNotFound
+	}
+	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
+		return err
+	}
+	if existing, exists := d.lines[line.ID]; exists && existing.CompanyID != line.CompanyID {
+		return subledgers.ErrCompanyMismatch
+	}
+	if _, exists := d.lines[line.ID]; exists {
+		return subledgers.ErrAlreadyExists
+	}
+	line.MatchIDs = append([]uuid.UUID(nil), line.MatchIDs...)
+	line.Matches = append([]subledgers.OpenLineMatch(nil), line.Matches...)
+	d.lines[line.ID] = line
+	return nil
+}
+
 func (d *Driver) SaveOpenLines(lines []subledgers.OpenLine) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -673,6 +779,35 @@ func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
 	line.Matches = append([]subledgers.OpenLineMatch(nil), line.Matches...)
 	return line, nil
 }
+
+func (d *Driver) ConfirmOpenLineWriteOff(expected, updated subledgers.OpenLine, postedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || postedEntry.CompanyID != expected.CompanyID ||
+		postedEntry.Status != posting.EntryPosted {
+		return subledgers.ErrInvalidOpenLine
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	current, ok := d.lines[expected.ID]
+	if !ok {
+		return subledgers.ErrNotFound
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentMatch
+	}
+	actual, ok := d.entries[postedEntry.ID]
+	if !ok {
+		return posting.ErrEntryNotFound
+	}
+	if !subledgers.FixedAssetEntryMatches(actual, postedEntry) {
+		return posting.ErrEntryNotPosted
+	}
+	updated.MatchIDs = append([]uuid.UUID(nil), updated.MatchIDs...)
+	updated.Matches = append([]subledgers.OpenLineMatch(nil), updated.Matches...)
+	d.lines[updated.ID] = updated
+	return nil
+}
+
 func (d *Driver) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -731,7 +866,8 @@ func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posti
 	if _, exists := d.entries[entry.ID]; exists {
 		return subledgers.ErrAlreadyExists
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
+		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
 		for _, current := range d.entries {
 			if current.DocumentReference == entry.DocumentReference &&
 				(current.Status == posting.EntryDraft || current.Status == posting.EntryPosted) {

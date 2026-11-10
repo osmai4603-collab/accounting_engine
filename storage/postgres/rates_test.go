@@ -19,6 +19,7 @@ func TestPostgresExchangeRatesAreCompanyScoped(t *testing.T) {
 	if err != nil {
 		t.Skipf("Skipping PostgreSQL exchange-rate test: unable to connect (%v)", err)
 	}
+
 	defer driver.Close()
 
 	companyIDs := []uuid.UUID{uuid.New(), uuid.New()}
@@ -65,5 +66,44 @@ func TestPostgresExchangeRatesAreCompanyScoped(t *testing.T) {
 	}
 	if !inverse.Equal(decimal.NewFromInt(1).DivRound(decimal.RequireFromString("0.20"), 12)) {
 		t.Fatalf("inverse company rate = %s", inverse)
+	}
+}
+
+func TestPostgresFiscalYearCloseStatePersists(t *testing.T) {
+	ctx := context.Background()
+	driver, err := postgres.New(ctx, getTestPostgresConn())
+	if err != nil {
+		t.Skipf("Skipping PostgreSQL fiscal-year test: unable to connect (%v)", err)
+	}
+	defer driver.Close()
+
+	companyID := uuid.New()
+	if err := driver.CreateCompany(masterdata.Company{
+		ID: companyID, Code: fmt.Sprintf("FY-%s", companyID.String()[:8]),
+		LegalName: "Fiscal Year Test", FunctionalCurrency: "SAR",
+		PresentationCurrency: "SAR", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := driver.CreateFiscalYear(year); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearSoftClosed); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearHardClosed); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := driver.GetFiscalYearForCompany(companyID, year.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != masterdata.FiscalYearHardClosed {
+		t.Fatalf("stored fiscal-year state = %s, want hard closed", stored.State)
+	}
+	if err := driver.UpdateFiscalYearState(year.ID, masterdata.FiscalYearOpen); err != masterdata.ErrInvalidFiscalYearTransition {
+		t.Fatalf("invalid fiscal-year transition error = %v", err)
 	}
 }

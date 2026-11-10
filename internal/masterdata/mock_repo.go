@@ -132,6 +132,9 @@ func (r *MockRepository) HasChildren(id uuid.UUID) (bool, error) {
 func (r *MockRepository) CreateFiscalYear(year FiscalYear) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if year.State == "" {
+		year.State = FiscalYearOpen
+	}
 	for i := range year.Periods {
 		if year.Periods[i].CompanyID == uuid.Nil {
 			year.Periods[i].CompanyID = year.CompanyID
@@ -141,6 +144,21 @@ func (r *MockRepository) CreateFiscalYear(year FiscalYear) error {
 	for _, period := range year.Periods {
 		r.periods[period.ID] = period
 	}
+	return nil
+}
+
+func (r *MockRepository) UpdateFiscalYearState(id uuid.UUID, state FiscalYearState) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	year, ok := r.years[id]
+	if !ok {
+		return ErrFiscalYearNotFound
+	}
+	if err := ValidateFiscalYearTransition(year.State, state); err != nil {
+		return err
+	}
+	year.State = state
+	r.years[id] = year
 	return nil
 }
 

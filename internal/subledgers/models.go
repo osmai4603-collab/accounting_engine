@@ -82,21 +82,25 @@ func (r EventAccountingRule) Validate() error {
 }
 
 type OpenLine struct {
-	CompanyID        uuid.UUID
-	ID               uuid.UUID
-	PartnerID        *uuid.UUID
-	ControlAccountID uuid.UUID
-	JournalEntryID   uuid.UUID
-	Kind             LineKind
-	OriginalAmount   financialtypes.Money
-	ResidualAmount   financialtypes.Money
-	DueDate          time.Time
-	DocumentDate     time.Time
-	Reference        string
-	MatchingNumber   string
-	MatchIDs         []uuid.UUID
-	Matches          []OpenLineMatch
-	Closed           bool
+	CompanyID                   uuid.UUID
+	ID                          uuid.UUID
+	PartnerID                   *uuid.UUID
+	ControlAccountID            uuid.UUID
+	JournalEntryID              uuid.UUID
+	Kind                        LineKind
+	OriginalAmount              financialtypes.Money
+	ResidualAmount              financialtypes.Money
+	DueDate                     time.Time
+	DocumentDate                time.Time
+	Reference                   string
+	MatchingNumber              string
+	MatchIDs                    []uuid.UUID
+	Matches                     []OpenLineMatch
+	Closed                      bool
+	WrittenOffAmount            financialtypes.Money
+	PendingWriteOffID           uuid.UUID
+	PendingWriteOffAmount       financialtypes.Money
+	WriteOffAdjustmentAccountID uuid.UUID
 }
 
 type OpenLineMatch struct {
@@ -139,6 +143,13 @@ type BankFeeParams struct {
 	Description   string
 }
 
+type WriteOffParams struct {
+	JournalID           uuid.UUID
+	AdjustmentAccountID uuid.UUID
+	Date                time.Time
+	Description         string
+}
+
 type AgingBucket string
 
 const (
@@ -152,13 +163,22 @@ const (
 type AgingSchedule map[AgingBucket]financialtypes.Money
 
 type BankItem struct {
-	CompanyID uuid.UUID
-	ID        uuid.UUID
-	AccountID uuid.UUID
-	Date      time.Time
-	Amount    financialtypes.Money
-	Reference string
-	Status    BankItemStatus
+	CompanyID      uuid.UUID
+	ID             uuid.UUID
+	AccountID      uuid.UUID
+	JournalEntryID uuid.UUID
+	Date           time.Time
+	Amount         financialtypes.Money
+	Reference      string
+	Status         BankItemStatus
+}
+
+type BankReconciliationMatch struct {
+	StatementLineIDs []uuid.UUID
+	JournalEntryIDs  []uuid.UUID
+	LedgerItemIDs    []uuid.UUID
+	BankFeesAmount   financialtypes.Money
+	Difference       decimal.Decimal
 }
 
 type BankItemStatus string
@@ -182,6 +202,7 @@ type FixedAsset struct {
 	HistoricalCost                 financialtypes.Money
 	SalvageValue                   financialtypes.Money
 	UsefulLifeMonths               int
+	RemainingUsefulLifeMonths      int
 	Method                         DepreciationMethod
 	InServiceDate                  time.Time
 	AccumulatedDepreciation        financialtypes.Money
@@ -204,6 +225,7 @@ type FixedAsset struct {
 	RevaluationSurplus             financialtypes.Money
 	RevaluationSurplusAccountID    uuid.UUID
 	RevaluationLossAccountID       uuid.UUID
+	LastRevaluationDate            time.Time
 }
 
 type AssetComponent struct {

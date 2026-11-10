@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -51,6 +52,31 @@ func (l *ReceivableLedger) AddInvoiceForCompanyWithControl(companyID, partnerID,
 		return OpenLine{}, ErrInvalidOpenLine
 	}
 	return l.addInvoice(companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *ReceivableLedger) AddInvoiceFromPostedEntry(partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	return addPostedInvoice(l.repo, l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LineReceivable)
+}
+
+func (l *ReceivableLedger) AddInvoiceFromPostedEntryForCompany(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return addPostedInvoice(l.repo, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LineReceivable)
+}
+
+func (l *ReceivableLedger) PostInvoiceEntry(
+	engine *posting.Engine,
+	entry *posting.JournalEntry,
+	partnerID, controlAccountID uuid.UUID,
+	amount financialtypes.Money,
+	documentDate, dueDate time.Time,
+	reference, posterID string,
+) (OpenLine, error) {
+	return postInvoiceEntry(
+		engine, entry, l.companyID, partnerID, controlAccountID, LineReceivable,
+		amount, documentDate, dueDate, reference, posterID,
+	)
 }
 
 func (l *ReceivableLedger) addInvoice(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {

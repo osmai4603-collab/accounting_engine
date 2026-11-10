@@ -375,4 +375,3 @@ type AccountBalanceReader interface {
 | **AICPA SOC 1 / SOC 2** | 55% | **85%** | +30% |
 | **ISO/IEC 27001** | 50% | **90%** | +40% |
 | **ISO/IEC 25010 (Reliability)** | 70% | **90%** | +20% |
-

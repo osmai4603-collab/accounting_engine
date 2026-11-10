@@ -149,7 +149,7 @@ func (d *Driver) GetCompanyByID(id uuid.UUID) (masterdata.Company, error) {
 }
 
 const accountSelect = `SELECT id, company_id, code, name, account_type, normal_balance, currency_id, parent_id,
-	is_reconcilable, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
+	is_reconcilable, is_control_account, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
 	cash_flow_activity, sub_classification, ifrs_category, display_order, created_at, updated_at
 	FROM accounts`
 
@@ -157,7 +157,8 @@ func scanAccount(row pgx.Row) (masterdata.Account, error) {
 	var account masterdata.Account
 	err := row.Scan(
 		&account.ID, &account.CompanyID, &account.Code, &account.Name, &account.AccountType, &account.NormalBalance,
-		&account.CurrencyID, &account.ParentID, &account.IsReconcilable, &account.IsContraAccount, &account.IsActive,
+		&account.CurrencyID, &account.ParentID, &account.IsReconcilable, &account.IsControlAccount,
+		&account.IsContraAccount, &account.IsActive,
 		&account.IsCashEquivalent, &account.IsNonCashAdjustment, &account.CashFlowActivity,
 		&account.SubClassification, &account.IFRSCategory, &account.DisplayOrder,
 		&account.CreatedAt, &account.UpdatedAt,
@@ -169,13 +170,14 @@ func (d *Driver) CreateAccount(account masterdata.Account) error {
 	_, err := d.pool.Exec(context.Background(),
 		`INSERT INTO accounts (
 			id, company_id, code, name, account_type, normal_balance, currency_id, parent_id,
-			is_reconcilable, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
+			is_reconcilable, is_control_account, is_contra_account, is_active, is_cash_equivalent, is_non_cash_adjustment,
 			cash_flow_activity, sub_classification, ifrs_category, display_order, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT(id) DO UPDATE SET
 			company_id=EXCLUDED.company_id, code=EXCLUDED.code, name=EXCLUDED.name, account_type=EXCLUDED.account_type,
 			normal_balance=EXCLUDED.normal_balance, currency_id=EXCLUDED.currency_id,
 			parent_id=EXCLUDED.parent_id, is_reconcilable=EXCLUDED.is_reconcilable,
+			is_control_account=EXCLUDED.is_control_account,
 			is_contra_account=EXCLUDED.is_contra_account,
 			is_active=EXCLUDED.is_active, is_cash_equivalent=EXCLUDED.is_cash_equivalent,
 			is_non_cash_adjustment=EXCLUDED.is_non_cash_adjustment,
@@ -184,7 +186,7 @@ func (d *Driver) CreateAccount(account masterdata.Account) error {
 			display_order=EXCLUDED.display_order, updated_at=EXCLUDED.updated_at`,
 		account.ID, account.CompanyID, account.Code, account.Name, account.AccountType, account.NormalBalance,
 		nullableString(account.CurrencyID, "SAR"), account.ParentID, account.IsReconcilable,
-		account.IsContraAccount, account.IsActive, account.IsCashEquivalent, account.IsNonCashAdjustment,
+		account.IsControlAccount, account.IsContraAccount, account.IsActive, account.IsCashEquivalent, account.IsNonCashAdjustment,
 		nullableString(account.CashFlowActivity, "unclassified"),
 		nullableString(account.SubClassification, "unclassified"),
 		nullableString(account.IFRSCategory, "unclassified"), account.DisplayOrder,
@@ -279,6 +281,9 @@ func (d *Driver) HasChildren(id uuid.UUID) (bool, error) {
 }
 
 func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
+	if year.State == "" {
+		year.State = masterdata.FiscalYearOpen
+	}
 	data, err := json.Marshal(year)
 	if err != nil {
 		return err
@@ -289,11 +294,13 @@ func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `INSERT INTO fiscal_years(id,company_id,code,year,start_date,end_date,year_data)
-		VALUES($1,$2,$3,$4,$5,$6,$7)
+	if _, err := tx.Exec(ctx, `INSERT INTO fiscal_years(id,company_id,code,year,start_date,end_date,state,is_closed,year_data)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT(id) DO UPDATE SET company_id=EXCLUDED.company_id,code=EXCLUDED.code,
-		year=EXCLUDED.year,start_date=EXCLUDED.start_date,end_date=EXCLUDED.end_date,year_data=EXCLUDED.year_data`,
-		year.ID, year.CompanyID, year.Name, year.StartDate.UTC().Year(), year.StartDate, year.EndDate, data); err != nil {
+		year=EXCLUDED.year,start_date=EXCLUDED.start_date,end_date=EXCLUDED.end_date,state=EXCLUDED.state,
+		is_closed=EXCLUDED.is_closed,year_data=EXCLUDED.year_data`,
+		year.ID, year.CompanyID, year.Name, year.StartDate.UTC().Year(), year.StartDate, year.EndDate,
+		year.State, year.State == masterdata.FiscalYearHardClosed, data); err != nil {
 		return err
 	}
 	for _, period := range year.Periods {
@@ -331,7 +338,8 @@ func (d *Driver) CreateFiscalYear(year masterdata.FiscalYear) error {
 func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
 	var data []byte
 	var companyID uuid.UUID
-	err := d.pool.QueryRow(context.Background(), `SELECT company_id, year_data FROM fiscal_years WHERE id=$1`, id).Scan(&companyID, &data)
+	var state masterdata.FiscalYearState
+	err := d.pool.QueryRow(context.Background(), `SELECT company_id,state,year_data FROM fiscal_years WHERE id=$1`, id).Scan(&companyID, &state, &data)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.FiscalYear{}, masterdata.ErrFiscalYearNotFound
@@ -343,13 +351,15 @@ func (d *Driver) GetFiscalYear(id uuid.UUID) (masterdata.FiscalYear, error) {
 		return masterdata.FiscalYear{}, err
 	}
 	year.CompanyID = companyID
+	year.State = state
 	return d.loadFiscalPeriods(year)
 }
 
 func (d *Driver) GetFiscalYearForCompany(companyID, fiscalYearID uuid.UUID) (masterdata.FiscalYear, error) {
 	var data []byte
+	var state masterdata.FiscalYearState
 	err := d.pool.QueryRow(context.Background(),
-		`SELECT year_data FROM fiscal_years WHERE company_id=$1 AND id=$2`, companyID, fiscalYearID).Scan(&data)
+		`SELECT state,year_data FROM fiscal_years WHERE company_id=$1 AND id=$2`, companyID, fiscalYearID).Scan(&state, &data)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.FiscalYear{}, masterdata.ErrFiscalYearNotFound
@@ -361,7 +371,37 @@ func (d *Driver) GetFiscalYearForCompany(companyID, fiscalYearID uuid.UUID) (mas
 		return masterdata.FiscalYear{}, err
 	}
 	year.CompanyID = companyID
+	year.State = state
 	return d.loadFiscalPeriods(year)
+}
+
+func (d *Driver) UpdateFiscalYearState(id uuid.UUID, state masterdata.FiscalYearState) error {
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var current masterdata.FiscalYearState
+	err = tx.QueryRow(ctx, `SELECT state FROM fiscal_years WHERE id=$1 FOR UPDATE`, id).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := masterdata.ValidateFiscalYearTransition(current, state); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE fiscal_years
+		 SET state=$2::varchar,is_closed=$3,year_data=jsonb_set(year_data,'{State}',to_jsonb($2::varchar),TRUE)
+		 WHERE id=$1`,
+		id, state, state == masterdata.FiscalYearHardClosed)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *Driver) loadFiscalPeriods(year masterdata.FiscalYear) (masterdata.FiscalYear, error) {
@@ -520,6 +560,17 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 }
 
 func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEntry, error) {
+	return d.postAndSequence(entry, nil)
+}
+
+func (d *Driver) PostAndSequenceWithOpenLine(
+	entry posting.JournalEntry,
+	attachment posting.OpenLineAttachment,
+) (posting.JournalEntry, error) {
+	return d.postAndSequence(entry, &attachment)
+}
+
+func (d *Driver) postAndSequence(entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (posting.JournalEntry, error) {
 	ctx := context.Background()
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
@@ -567,6 +618,36 @@ func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEnt
 	entry.SequenceNumber = sequence
 	if err := d.saveEntryTx(ctx, tx, entry); err != nil {
 		return posting.JournalEntry{}, err
+	}
+	if attachment != nil {
+		partnerID := attachment.PartnerID
+		line := subledgers.OpenLine{
+			CompanyID: attachment.CompanyID, ID: attachment.ID, PartnerID: &partnerID,
+			ControlAccountID: attachment.ControlAccountID, JournalEntryID: attachment.JournalEntryID,
+			Kind: subledgers.LineKind(attachment.Kind), OriginalAmount: attachment.Amount,
+			ResidualAmount: attachment.Amount, DocumentDate: attachment.DocumentDate,
+			DueDate: attachment.DueDate, Reference: attachment.Reference,
+		}
+		account, err := scanAccount(tx.QueryRow(ctx,
+			accountSelect+` WHERE company_id=$1 AND id=$2 FOR SHARE`, entry.CompanyID, attachment.ControlAccountID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return posting.JournalEntry{}, masterdata.ErrAccountNotFound
+		}
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+		if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
+			return posting.JournalEntry{}, err
+		}
+		data, err := json.Marshal(line)
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO subledger_open_lines(id,company_id,partner_id,kind,line_data) VALUES($1,$2,$3,$4,$5)`,
+			line.ID, line.CompanyID, partnerID, line.Kind, data); err != nil {
+			return posting.JournalEntry{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return posting.JournalEntry{}, err
@@ -805,6 +886,25 @@ func (d *Driver) ListEntriesForCompany(companyID uuid.UUID, start, end time.Time
 	return d.listEntries(&companyID, start, end)
 }
 
+func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return financialtypes.Money{}, err
+	}
+	account, err := d.GetAccountByIDForCompany(companyID, accountID)
+	if err != nil {
+		return financialtypes.Money{}, err
+	}
+	var functionalCurrency string
+	if err := d.pool.QueryRow(ctx, `SELECT functional_currency FROM companies WHERE id=$1`, companyID).Scan(&functionalCurrency); err != nil {
+		return financialtypes.Money{}, err
+	}
+	entries, err := d.ListEntriesForCompany(companyID, time.Time{}, time.Now().UTC())
+	if err != nil {
+		return financialtypes.Money{}, err
+	}
+	return subledgers.ControlAccountBalanceFromEntries(account, entries, functionalCurrency)
+}
+
 func (d *Driver) listEntries(companyID *uuid.UUID, start, end time.Time) ([]posting.JournalEntry, error) {
 	query := `SELECT entry FROM account_moves WHERE status=$1 AND entry_date BETWEEN $2 AND $3`
 	args := []any{posting.EntryPosted, start, end}
@@ -958,6 +1058,57 @@ func (d *Driver) GetEventByIdempotencyKeyForCompany(companyID uuid.UUID, key str
 }
 func (d *Driver) SaveOpenLine(line subledgers.OpenLine) error {
 	return d.SaveOpenLines([]subledgers.OpenLine{line})
+}
+
+func (d *Driver) SaveOpenLineForPostedEntry(line subledgers.OpenLine) error {
+	if line.ID == uuid.Nil || line.CompanyID == uuid.Nil {
+		return subledgers.ErrInvalidOpenLine
+	}
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	account, err := scanAccount(tx.QueryRow(ctx,
+		accountSelect+` WHERE company_id=$1 AND id=$2 FOR SHARE`, line.CompanyID, line.ControlAccountID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return masterdata.ErrAccountNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var entryData []byte
+	err = tx.QueryRow(ctx,
+		`SELECT entry FROM account_moves WHERE id=$1 AND company_id=$2 AND status='posted' FOR SHARE`,
+		line.JournalEntryID, line.CompanyID).Scan(&entryData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return posting.ErrEntryNotPosted
+	}
+	if err != nil {
+		return err
+	}
+	var entry posting.JournalEntry
+	if err := json.Unmarshal(entryData, &entry); err != nil {
+		return err
+	}
+	if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
+		return err
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		return err
+	}
+	var partner any
+	if line.PartnerID != nil {
+		partner = *line.PartnerID
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO subledger_open_lines(id,company_id,partner_id,kind,line_data) VALUES($1,$2,$3,$4,$5)`,
+		line.ID, line.CompanyID, partner, line.Kind, data); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *Driver) SaveOpenLines(lines []subledgers.OpenLine) error {
@@ -1196,6 +1347,69 @@ func (d *Driver) GetOpenLine(id uuid.UUID) (subledgers.OpenLine, error) {
 	var line subledgers.OpenLine
 	return line, json.Unmarshal(data, &line)
 }
+
+func (d *Driver) ConfirmOpenLineWriteOff(expected, updated subledgers.OpenLine, postedEntry posting.JournalEntry) error {
+	if expected.ID == uuid.Nil || expected.CompanyID == uuid.Nil || updated.ID != expected.ID ||
+		updated.CompanyID != expected.CompanyID || postedEntry.CompanyID != expected.CompanyID ||
+		postedEntry.Status != posting.EntryPosted {
+		return subledgers.ErrInvalidOpenLine
+	}
+	ctx := context.Background()
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var currentData []byte
+	err = tx.QueryRow(ctx,
+		`SELECT line_data FROM subledger_open_lines WHERE id=$1 AND company_id=$2 FOR UPDATE`,
+		expected.ID, expected.CompanyID).Scan(&currentData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return subledgers.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var current subledgers.OpenLine
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentMatch
+	}
+	var entryData []byte
+	err = tx.QueryRow(ctx,
+		`SELECT entry FROM account_moves WHERE id=$1 AND company_id=$2 AND status='posted' FOR SHARE`,
+		postedEntry.ID, postedEntry.CompanyID).Scan(&entryData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return posting.ErrEntryNotPosted
+	}
+	if err != nil {
+		return err
+	}
+	var actualEntry posting.JournalEntry
+	if err := json.Unmarshal(entryData, &actualEntry); err != nil {
+		return err
+	}
+	if !subledgers.FixedAssetEntryMatches(actualEntry, postedEntry) {
+		return posting.ErrEntryNotPosted
+	}
+	data, err := json.Marshal(updated)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx,
+		`UPDATE subledger_open_lines SET line_data=$3 WHERE id=$1 AND company_id=$2`,
+		updated.ID, updated.CompanyID, data)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return subledgers.ErrConcurrentMatch
+	}
+	return tx.Commit(ctx)
+}
+
 func (d *Driver) ListOpenLines(partnerID string) ([]subledgers.OpenLine, error) {
 	query := `SELECT line_data FROM subledger_open_lines`
 	args := []interface{}{}
@@ -1293,7 +1507,8 @@ func (d *Driver) SaveFixedAssetDraft(expected subledgers.FixedAsset, entry posti
 	if !reflect.DeepEqual(current, expected) {
 		return subledgers.ErrConcurrentAssetUpdate
 	}
-	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") {
+	if strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:DEPRECIATION:") ||
+		strings.HasPrefix(entry.DocumentReference, "FIXED_ASSET:REVALUATION:") {
 		var exists bool
 		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (

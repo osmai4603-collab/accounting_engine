@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     currency_id VARCHAR(3) NOT NULL DEFAULT 'SAR' REFERENCES currencies(code) ON DELETE RESTRICT,
     parent_id UUID,
     is_reconcilable BOOLEAN NOT NULL DEFAULT FALSE,
+    is_control_account BOOLEAN NOT NULL DEFAULT FALSE,
     is_contra_account BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     is_cash_equivalent BOOLEAN NOT NULL DEFAULT FALSE,

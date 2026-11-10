@@ -46,7 +46,7 @@ func (e *CashFlowEngine) Generate(start, end time.Time, currency string) (CashFl
 	if err != nil {
 		return CashFlow{}, err
 	}
-	periodBalances, err := accountBalances(e.repository, start, end, currency)
+	periodBalances, err := accountMovementBalances(e.repository, start, end, currency)
 	if err != nil {
 		return CashFlow{}, err
 	}
@@ -149,7 +149,7 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 	}
 	report := CashFlow{StartDate: start, EndDate: end, Currency: currency}
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if entry.Status != posting.EntryPosted || postingClassification(entry) == posting.EntryClassOpening {
 			continue
 		}
 		entryDate := entryEffectiveDate(entry)

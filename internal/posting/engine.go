@@ -14,6 +14,7 @@ import (
 var (
 	ErrEntryNotFound                         = errors.New("journal entry not found")
 	ErrInvalidEntryState                     = errors.New("invalid journal entry state")
+	ErrAtomicPostingOpenLineRequired         = errors.New("atomic journal posting with an open line is required")
 	ErrAdjustmentPeriodAuthorizationRequired = errors.New("adjustment period requires explicit authorization")
 	ErrFunctionalCurrencyMismatch            = errors.New("journal entry functional currency does not match company")
 )
@@ -117,6 +118,44 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 		entry.SequenceNumber = 0
 		return err
 	}
+	return nil
+}
+
+func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachment, posterID string) error {
+	if entry.Status != EntryDraft {
+		if entry.Status == EntryPosted {
+			return financialtypes.ErrMoveAlreadyPosted
+		}
+		return ErrEntryNotDraft
+	}
+	if entry.CompanyID == uuid.Nil || line.ID == uuid.Nil || line.CompanyID != entry.CompanyID ||
+		line.JournalEntryID != entry.ID ||
+		line.PartnerID == uuid.Nil || line.ControlAccountID == uuid.Nil ||
+		(line.Kind != "receivable" && line.Kind != "payable") ||
+		line.Amount.Currency() == "" || line.Amount.IsNegative() || line.Amount.Amount().IsZero() {
+		return ErrInvalidEntry
+	}
+	repository, ok := e.repo.(AtomicPostingWithOpenLineRepository)
+	if !ok {
+		return ErrAtomicPostingOpenLineRequired
+	}
+	if err := e.prepareForPosting(entry, posterID); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	original := *entry
+	now := time.Now().UTC()
+	entry.PostedBy = posterID
+	entry.PostedAt = &now
+	entry.Status = EntryPosted
+	entry.UpdatedAt = now
+	posted, err := repository.PostAndSequenceWithOpenLine(*entry, line)
+	if err != nil {
+		*entry = original
+		return err
+	}
+	*entry = posted
 	return nil
 }
 

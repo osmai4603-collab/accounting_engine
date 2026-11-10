@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 
+	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
 var (
-	ErrMixedCurrencyReconciliation = errors.New("subledger: control account contains multiple currencies")
-	ErrInvalidReconciliationKind   = errors.New("subledger: invalid reconciliation line kind")
-	ErrReconciliationNotConfigured = errors.New("subledger: reconciliation engine is not configured")
+	ErrMixedCurrencyReconciliation    = errors.New("subledger: control account contains multiple currencies")
+	ErrInvalidReconciliationKind      = errors.New("subledger: invalid reconciliation line kind")
+	ErrReconciliationNotConfigured    = errors.New("subledger: reconciliation engine is not configured")
+	ErrControlBalanceCurrencyMismatch = errors.New("subledger: GL control balance cannot be expressed in its functional currency")
 )
 
 // ReconciliationDiscrepancy is returned when a subledger balance does not match
@@ -111,7 +114,7 @@ func (e *LedgerReconciliationEngine) reconcileControl(ctx context.Context, compa
 	if err != nil {
 		return nil, err
 	}
-	if glBalance.Currency() == "" || glBalance.IsNegative() {
+	if glBalance.Currency() == "" {
 		return nil, ErrInvalidOpenLine
 	}
 	if currency == "" {
@@ -135,4 +138,44 @@ func (e *LedgerReconciliationEngine) reconcileControl(ctx context.Context, compa
 		GLBalance:        glBalance.Amount(),
 		Difference:       difference,
 	}, fmt.Errorf("%s subledger mismatch for account %s: diff=%s", errorText, controlAccountID, difference)
+}
+
+func ControlAccountBalanceFromEntries(account masterdata.Account, entries []posting.JournalEntry, functionalCurrency string) (financialtypes.Money, error) {
+	if account.ID == uuid.Nil || account.CompanyID == uuid.Nil || functionalCurrency == "" {
+		return financialtypes.Money{}, ErrInvalidOpenLine
+	}
+	balance := decimal.Zero
+	for _, entry := range entries {
+		if entry.Status != posting.EntryPosted {
+			continue
+		}
+		if entry.CompanyID != account.CompanyID {
+			return financialtypes.Money{}, ErrCompanyMismatch
+		}
+		for _, line := range entry.Lines {
+			if line.AccountID != account.ID {
+				continue
+			}
+			debit, credit := line.Debit, line.Credit
+			if line.FunctionalDebit.Currency() != "" || line.FunctionalCredit.Currency() != "" {
+				debit, credit = line.FunctionalDebit, line.FunctionalCredit
+			}
+			if debit.Currency() != "" && debit.Currency() != functionalCurrency ||
+				credit.Currency() != "" && credit.Currency() != functionalCurrency {
+				return financialtypes.Money{}, ErrControlBalanceCurrencyMismatch
+			}
+			currency := debit.Currency()
+			if currency == "" {
+				currency = credit.Currency()
+			}
+			if currency != functionalCurrency {
+				return financialtypes.Money{}, ErrControlBalanceCurrencyMismatch
+			}
+			balance = balance.Add(debit.Amount()).Sub(credit.Amount())
+		}
+	}
+	if account.NormalBalance == masterdata.NormalBalanceCredit {
+		balance = balance.Neg()
+	}
+	return financialtypes.NewMoney(balance, functionalCurrency)
 }

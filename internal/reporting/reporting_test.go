@@ -445,6 +445,114 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		!balanceByAccount[retainedID].Equal(decimal.NewFromInt(-30)) {
 		t.Fatalf("opening balances are incorrect: %+v", balanceByAccount)
 	}
+
+	entry.Status = posting.EntryPosted
+	repository.entries = append(repository.entries, entry,
+		reportEntry(t, time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC),
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "50", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: incomeID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "50", "USD")},
+		),
+		reportEntry(t, time.Date(2027, 7, 1, 0, 0, 0, 0, time.UTC),
+			posting.JournalEntryLine{AccountID: expenseID, Debit: reportMoney(t, "20", "USD"), Credit: reportMoney(t, "0", "USD")},
+			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "20", "USD")},
+		),
+	)
+	asOf := time.Date(2027, 12, 31, 23, 59, 59, 0, time.UTC)
+	sheet, err := NewBalanceSheetEngine(repository).Generate(asOf, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sheet.TotalAssets.Equal(decimal.NewFromInt(90)) ||
+		!sheet.TotalLiabilities.Equal(decimal.NewFromInt(30)) ||
+		!sheet.Equity.Equal(decimal.NewFromInt(60)) {
+		t.Fatalf("balance sheet double-counted balances after the opening move: %+v", sheet)
+	}
+	trialBalance, err := NewTrialBalanceEngine(repository).Generate(
+		time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), asOf, "USD",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trialBalance.DebitTotal.Equal(decimal.NewFromInt(110)) ||
+		!trialBalance.CreditTotal.Equal(decimal.NewFromInt(110)) {
+		t.Fatalf("trial balance double-counted balances after the opening move: %+v", trialBalance)
+	}
+	followingYear := masterdata.GenerateFiscalYear(time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC))
+	nextEntry, err := NewClosingEngine(repository).GenerateOpeningMove(followingYear, uuid.New(), "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextBalances := make(map[uuid.UUID]decimal.Decimal)
+	for _, line := range nextEntry.Lines {
+		nextBalances[line.AccountID] = nextBalances[line.AccountID].Add(line.Debit.Amount().Sub(line.Credit.Amount()))
+	}
+	if !nextBalances[cashID].Equal(decimal.NewFromInt(90)) ||
+		!nextBalances[payableID].Equal(decimal.NewFromInt(-30)) ||
+		!nextBalances[retainedID].Equal(decimal.NewFromInt(-60)) {
+		t.Fatalf("subsequent opening entry duplicated prior balances: %+v", nextBalances)
+	}
+}
+
+func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) {
+	repository := memory.New()
+	companyID := uuid.New()
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := repository.CreateFiscalYear(year); err != nil {
+		t.Fatal(err)
+	}
+	for _, period := range year.Periods {
+		if period.Number > 12 {
+			continue
+		}
+		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodSoftClosed); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.UpdatePeriodState(period.ID, masterdata.PeriodHardClosed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	period13 := year.Periods[12]
+	entry, err := posting.NewJournalEntry(uuid.New(), year.EndDate, "test",
+		[]posting.JournalEntryLine{
+			{AccountID: uuid.New(), Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
+			{AccountID: uuid.New(), Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.CompanyID = companyID
+	entry.Status = posting.EntryPosted
+	entry.Classification = posting.EntryClassClosing
+	entry.DocumentReference = "YEAR-END CLOSING"
+	entry.TargetPeriodNumber = 13
+	entry.AdjustmentAuthorized = true
+	entry.PeriodID = period13.ID
+	if err := repository.PostAtomic(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
+		t.Fatal(err)
+	}
+	closedYear, err := repository.GetFiscalYear(year.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closedYear.State != masterdata.FiscalYearHardClosed {
+		t.Fatalf("fiscal year state = %s, want hard closed", closedYear.State)
+	}
+	for _, number := range []int{13, 14} {
+		period, err := repository.GetPeriodByNumberForCompany(companyID, year.ID, number)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if period.State != masterdata.PeriodHardClosed {
+			t.Fatalf("period %d state = %s, want hard closed", number, period.State)
+		}
+	}
+	if err := NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
+		t.Fatalf("repeated fiscal year close should be idempotent: %v", err)
+	}
 }
 
 func TestClosingHandlesContraIncomeAndExpenseAccounts(t *testing.T) {

@@ -7,7 +7,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrPeriodOutsideFiscalYear = errors.New("period dates must be within the fiscal year")
+var (
+	ErrPeriodOutsideFiscalYear     = errors.New("period dates must be within the fiscal year")
+	ErrInvalidFiscalYearTransition = errors.New("invalid fiscal year transition")
+)
 
 type PeriodState string
 
@@ -20,12 +23,21 @@ const (
 	FiscalPeriodHardClosed             = PeriodHardClosed
 )
 
+type FiscalYearState string
+
+const (
+	FiscalYearOpen       FiscalYearState = "open"
+	FiscalYearSoftClosed FiscalYearState = "soft_closed"
+	FiscalYearHardClosed FiscalYearState = "hard_closed"
+)
+
 type FiscalYear struct {
 	CompanyID uuid.UUID
 	ID        uuid.UUID
 	Name      string
 	StartDate time.Time
 	EndDate   time.Time
+	State     FiscalYearState
 	Periods   []FiscalPeriod
 }
 
@@ -65,6 +77,7 @@ func GenerateFiscalYear(start time.Time) FiscalYear {
 		Name:      start.Format("2006"),
 		StartDate: start,
 		EndDate:   start.AddDate(1, 0, 0).Add(-time.Nanosecond),
+		State:     FiscalYearOpen,
 	}
 	for i := 1; i <= 12; i++ {
 		periodStart := start.AddDate(0, i-1, 0)
@@ -88,6 +101,16 @@ func ValidatePeriodTransition(from, to PeriodState) error {
 	case from == PeriodSoftClosed && to == PeriodHardClosed:
 	default:
 		return errors.New("invalid fiscal period transition")
+	}
+	return nil
+}
+
+func ValidateFiscalYearTransition(from, to FiscalYearState) error {
+	switch {
+	case from == FiscalYearOpen && to == FiscalYearSoftClosed:
+	case from == FiscalYearSoftClosed && to == FiscalYearHardClosed:
+	default:
+		return ErrInvalidFiscalYearTransition
 	}
 	return nil
 }

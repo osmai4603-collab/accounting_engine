@@ -28,6 +28,7 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 		asset.SalvageValue.Currency() != asset.HistoricalCost.Currency() ||
 		asset.SalvageValue.GreaterThan(asset.HistoricalCost) ||
 		asset.UsefulLifeMonths <= 0 ||
+		asset.RemainingUsefulLifeMonths < 0 || asset.RemainingUsefulLifeMonths > asset.UsefulLifeMonths ||
 		(asset.Method != StraightLine && asset.Method != DecliningBalance) ||
 		(asset.Method == DecliningBalance &&
 			(asset.DecliningRate.IsNegative() || asset.DecliningRate.GreaterThan(decimal.NewFromInt(1)))) {
@@ -47,8 +48,25 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 		}
 		asset.AccumulatedImpairment = zero
 	}
+	if asset.RevaluationAdjustment.Currency() == "" {
+		zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+		if err != nil {
+			return err
+		}
+		asset.RevaluationAdjustment = zero
+	}
+	if asset.RevaluationSurplus.Currency() == "" {
+		zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+		if err != nil {
+			return err
+		}
+		asset.RevaluationSurplus = zero
+	}
 	if asset.AccumulatedDepreciation.Currency() != asset.HistoricalCost.Currency() ||
-		asset.AccumulatedImpairment.Currency() != asset.HistoricalCost.Currency() {
+		asset.AccumulatedImpairment.Currency() != asset.HistoricalCost.Currency() ||
+		asset.RevaluationAdjustment.Currency() != asset.HistoricalCost.Currency() ||
+		asset.RevaluationSurplus.Currency() != asset.HistoricalCost.Currency() ||
+		asset.RevaluationSurplus.IsNegative() {
 		return ErrInvalidAsset
 	}
 	bookValue, err := asset.HistoricalCost.Subtract(asset.AccumulatedDepreciation)
@@ -59,15 +77,60 @@ func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 	if err != nil {
 		return err
 	}
+	bookValue, err = bookValue.Add(asset.RevaluationAdjustment)
+	if err != nil {
+		return err
+	}
 	if asset.CurrentBookValue.Currency() == "" {
 		asset.CurrentBookValue = bookValue
 	}
 	if asset.CurrentBookValue.Currency() != asset.HistoricalCost.Currency() ||
 		asset.CurrentBookValue.IsNegative() || asset.AccumulatedDepreciation.IsNegative() ||
 		asset.AccumulatedImpairment.IsNegative() ||
-		asset.CurrentBookValue.GreaterThan(asset.HistoricalCost) ||
 		!asset.CurrentBookValue.Equal(bookValue) {
 		return ErrInvalidAsset
+	}
+	for i := range asset.Components {
+		component := &asset.Components[i]
+		if component.ID == uuid.Nil {
+			component.ID = uuid.New()
+		}
+		if component.InServiceDate.IsZero() {
+			component.InServiceDate = asset.InServiceDate
+		}
+		if component.AccumulatedDepreciation.Currency() == "" {
+			component.AccumulatedDepreciation, err = financialtypes.Zero(asset.HistoricalCost.Currency())
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if len(asset.Components) > 0 {
+		if _, err := depreciationComponents(asset); err != nil {
+			return err
+		}
+	}
+	if asset.RemainingUsefulLifeMonths == 0 && asset.CurrentBookValue.GreaterThan(asset.SalvageValue) {
+		remainingBasis, err := asset.CurrentBookValue.Subtract(asset.SalvageValue)
+		if err != nil {
+			return err
+		}
+		originalBasis, err := asset.HistoricalCost.Subtract(asset.SalvageValue)
+		if err != nil {
+			return err
+		}
+		if originalBasis.Amount().IsZero() {
+			return ErrInvalidAsset
+		}
+		months := remainingBasis.Amount().Mul(decimal.NewFromInt(int64(asset.UsefulLifeMonths))).
+			DivRound(originalBasis.Amount(), 12).Ceil().IntPart()
+		if months < 1 {
+			months = 1
+		}
+		if months > int64(asset.UsefulLifeMonths) {
+			months = int64(asset.UsefulLifeMonths)
+		}
+		asset.RemainingUsefulLifeMonths = int(months)
 	}
 	return l.repo.SaveFixedAsset(asset)
 }
@@ -95,14 +158,15 @@ func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid
 		return posting.JournalEntry{}, financialtypes.Money{}, err
 	}
 
+	lines, err := depreciationJournalLines(asset, asOf, expense)
+	if err != nil {
+		return posting.JournalEntry{}, financialtypes.Money{}, err
+	}
 	entry := posting.JournalEntry{
 		CompanyID: asset.CompanyID, ID: uuid.New(), JournalID: journalID, EntryDate: asOf, Date: asOf,
 		Status: posting.EntryDraft, CreatedAt: time.Now().UTC(),
 		DocumentReference: depreciationReference(asset.ID, asOf),
-		Lines: []posting.JournalEntryLine{
-			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.ExpenseAccountID, Debit: expense},
-			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Credit: expense},
-		},
+		Lines:             lines,
 	}
 	if err := entry.Validate(); err != nil {
 		return posting.JournalEntry{}, financialtypes.Money{}, err
@@ -136,21 +200,32 @@ func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID,
 	if !depAmount.Equal(expectedAmount) {
 		return ErrInvalidAsset
 	}
+	lines, err := depreciationJournalLines(asset, asOf, expectedAmount)
+	if err != nil {
+		return err
+	}
 	expectedEntry := posting.JournalEntry{
 		CompanyID: asset.CompanyID, ID: postedEntryID, EntryDate: asOf, Date: asOf,
 		Status: posting.EntryPosted, DocumentReference: depreciationReference(asset.ID, asOf),
-		Lines: []posting.JournalEntryLine{
-			{CompanyID: asset.CompanyID, AccountID: asset.ExpenseAccountID, Debit: expectedAmount},
-			{CompanyID: asset.CompanyID, AccountID: asset.AccumulatedAccountID, Credit: expectedAmount},
-		},
+		Lines: lines,
 	}
 	return l.confirmAssetMutation(asset, updated, expectedEntry)
 }
 
 func depreciationUpdate(asset FixedAsset, asOf time.Time) (financialtypes.Money, FixedAsset, error) {
-	expense, err := calculateDepreciationAmount(asset, asOf)
+	expense, updated, err := componentDepreciationUpdate(asset, asOf)
 	if err != nil {
 		return financialtypes.Money{}, FixedAsset{}, err
+	}
+	if len(asset.Components) == 0 {
+		expense, err = calculateDepreciationAmount(asset, asOf)
+		if err != nil {
+			return financialtypes.Money{}, FixedAsset{}, err
+		}
+		updated = asset
+	}
+	if expense.Amount().IsZero() {
+		return financialtypes.Money{}, FixedAsset{}, ErrInvalidAsset
 	}
 	assetAccumulated, err := asset.AccumulatedDepreciation.Add(expense)
 	if err != nil {
@@ -171,11 +246,110 @@ func depreciationUpdate(asset FixedAsset, asOf time.Time) (financialtypes.Money,
 		}
 		bookValue = asset.SalvageValue
 	}
-	updated := asset
 	updated.AccumulatedDepreciation = assetAccumulated
 	updated.CurrentBookValue = bookValue
 	updated.LastDepreciationDate = asOf.UTC()
+	if len(asset.Components) == 0 {
+		updated.RemainingUsefulLifeMonths = remainingUsefulLifeMonths(asset, asOf)
+	}
 	return expense, updated, nil
+}
+
+func componentDepreciationUpdate(asset FixedAsset, asOf time.Time) (financialtypes.Money, FixedAsset, error) {
+	if len(asset.Components) == 0 {
+		return financialtypes.Money{}, asset, nil
+	}
+	schedule, err := GenerateDepreciationSchedule(asset)
+	if err != nil {
+		return financialtypes.Money{}, FixedAsset{}, err
+	}
+	total, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+	if err != nil {
+		return financialtypes.Money{}, FixedAsset{}, err
+	}
+	updated := cloneFixedAsset(asset)
+	for _, line := range schedule {
+		if line.Period.Year() != asOf.UTC().Year() || line.Period.Month() != asOf.UTC().Month() {
+			continue
+		}
+		total, err = total.Add(line.Amount)
+		if err != nil {
+			return financialtypes.Money{}, FixedAsset{}, err
+		}
+		for i := range updated.Components {
+			component := &updated.Components[i]
+			if component.ID != line.ComponentID {
+				continue
+			}
+			if component.AccumulatedDepreciation.Currency() == "" {
+				component.AccumulatedDepreciation, err = financialtypes.Zero(line.Amount.Currency())
+				if err != nil {
+					return financialtypes.Money{}, FixedAsset{}, err
+				}
+			}
+			component.AccumulatedDepreciation, err = component.AccumulatedDepreciation.Add(line.Amount)
+			if err != nil {
+				return financialtypes.Money{}, FixedAsset{}, err
+			}
+			break
+		}
+	}
+	return total, updated, nil
+}
+
+func depreciationJournalLines(asset FixedAsset, asOf time.Time, total financialtypes.Money) ([]posting.JournalEntryLine, error) {
+	zero, err := financialtypes.Zero(total.Currency())
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]posting.JournalEntryLine, 0)
+	if len(asset.Components) == 0 {
+		if asset.ExpenseAccountID == uuid.Nil || asset.AccumulatedAccountID == uuid.Nil {
+			return nil, ErrInvalidAsset
+		}
+		return []posting.JournalEntryLine{
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.ExpenseAccountID, Debit: total, Credit: zero},
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Debit: zero, Credit: total},
+		}, nil
+	}
+	schedule, err := GenerateDepreciationSchedule(asset)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range schedule {
+		if line.Period.Year() != asOf.UTC().Year() || line.Period.Month() != asOf.UTC().Month() {
+			continue
+		}
+		var component *AssetComponent
+		for i := range asset.Components {
+			if asset.Components[i].ID == line.ComponentID {
+				component = &asset.Components[i]
+				break
+			}
+		}
+		if component == nil {
+			return nil, ErrInvalidAsset
+		}
+		expenseAccount := component.ExpenseAccountID
+		if expenseAccount == uuid.Nil {
+			expenseAccount = asset.ExpenseAccountID
+		}
+		accumulatedAccount := component.AccumulatedAccountID
+		if accumulatedAccount == uuid.Nil {
+			accumulatedAccount = asset.AccumulatedAccountID
+		}
+		if expenseAccount == uuid.Nil || accumulatedAccount == uuid.Nil {
+			return nil, ErrInvalidAsset
+		}
+		lines = append(lines,
+			posting.JournalEntryLine{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: expenseAccount, Debit: line.Amount, Credit: zero},
+			posting.JournalEntryLine{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: accumulatedAccount, Debit: zero, Credit: line.Amount},
+		)
+	}
+	if len(lines) == 0 {
+		return nil, ErrInvalidAsset
+	}
+	return lines, nil
 }
 
 func depreciationReference(assetID uuid.UUID, asOf time.Time) string {
@@ -186,22 +360,99 @@ func calculateDepreciationAmount(asset FixedAsset, asOf time.Time) (financialtyp
 	if asOf.Before(asset.InServiceDate) {
 		return financialtypes.Zero(asset.HistoricalCost.Currency())
 	}
-	switch asset.Method {
-	case StraightLine:
-		depreciable, err := asset.HistoricalCost.Subtract(asset.SalvageValue)
+	if asset.RevaluationAdjustment.Amount().IsZero() && asset.AccumulatedImpairment.Amount().IsZero() {
+		schedule, err := GenerateDepreciationSchedule(asset)
 		if err != nil {
 			return financialtypes.Money{}, err
 		}
-		return depreciable.Divide(decimal.NewFromInt(int64(asset.UsefulLifeMonths)))
+		total, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		for _, line := range schedule {
+			if line.Period.Year() == asOf.UTC().Year() && line.Period.Month() == asOf.UTC().Month() {
+				total, err = total.Add(line.Amount)
+				if err != nil {
+					return financialtypes.Money{}, err
+				}
+			}
+		}
+		return total, nil
+	}
+	zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
+	if err != nil {
+		return financialtypes.Money{}, err
+	}
+	lifeEnd := asset.InServiceDate.AddDate(0, asset.UsefulLifeMonths, 0)
+	monthStart := time.Date(asOf.UTC().Year(), asOf.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	periodStart := monthStart
+	if periodStart.Before(asset.InServiceDate) {
+		periodStart = asset.InServiceDate
+	}
+	if !asset.LastRevaluationDate.IsZero() && asset.LastRevaluationDate.After(periodStart) &&
+		asset.LastRevaluationDate.Before(periodStart.AddDate(0, 1, 0)) {
+		periodStart = asset.LastRevaluationDate
+	}
+	periodEnd := monthStart.AddDate(0, 1, 0)
+	if periodEnd.After(lifeEnd) {
+		periodEnd = lifeEnd
+	}
+	if !periodEnd.After(periodStart) {
+		return zero, nil
+	}
+	activeDays := decimal.NewFromInt(int64(periodEnd.Sub(periodStart).Hours() / 24))
+	switch asset.Method {
+	case StraightLine:
+		depreciable, err := asset.CurrentBookValue.Subtract(asset.SalvageValue)
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		remainingDays := decimal.NewFromInt(int64(lifeEnd.Sub(periodStart).Hours() / 24))
+		if remainingDays.IsZero() || !depreciable.Amount().IsPositive() {
+			return zero, nil
+		}
+		amount := depreciable.Amount().Mul(activeDays).Div(remainingDays)
+		money, err := financialtypes.NewMoney(amount, asset.HistoricalCost.Currency())
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		return money.RoundForPosting(), nil
 	case DecliningBalance:
 		rate := asset.DecliningRate
 		if rate.IsZero() {
 			rate = decimal.NewFromFloat(2.0).Div(decimal.NewFromInt(int64(asset.UsefulLifeMonths)))
 		}
-		return asset.CurrentBookValue.Multiply(rate)
+		daysInPeriod := decimal.NewFromInt(int64(monthStart.AddDate(0, 1, 0).Sub(monthStart).Hours() / 24))
+		if daysInPeriod.IsZero() {
+			return zero, nil
+		}
+		amount := asset.CurrentBookValue.Amount().Mul(rate).Mul(activeDays).Div(daysInPeriod)
+		remaining, err := asset.CurrentBookValue.Subtract(asset.SalvageValue)
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		if amount.GreaterThan(remaining.Amount()) || !periodEnd.Before(lifeEnd) {
+			amount = remaining.Amount()
+		}
+		money, err := financialtypes.NewMoney(amount, asset.HistoricalCost.Currency())
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		return money.RoundForPosting(), nil
 	default:
 		return financialtypes.Money{}, ErrInvalidAsset
 	}
+}
+
+func remainingUsefulLifeMonths(asset FixedAsset, asOf time.Time) int {
+	lifeEnd := asset.InServiceDate.AddDate(0, asset.UsefulLifeMonths, 0)
+	cursor := time.Date(asOf.UTC().Year(), asOf.UTC().Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	months := 0
+	for cursor.Before(lifeEnd) {
+		months++
+		cursor = cursor.AddDate(0, 1, 0)
+	}
+	return months
 }
 
 func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) error {
@@ -352,14 +603,18 @@ func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Tim
 }
 
 func disposalLines(asset FixedAsset, proceeds financialtypes.Money) ([]posting.JournalEntryLine, error) {
-	netBookValue, err := asset.HistoricalCost.Subtract(asset.AccumulatedDepreciation)
+	grossCarryingAmount, err := asset.HistoricalCost.Add(asset.RevaluationAdjustment)
+	if err != nil || grossCarryingAmount.IsNegative() {
+		return nil, ErrInvalidAsset
+	}
+	netBookValue, err := grossCarryingAmount.Subtract(asset.AccumulatedDepreciation)
 	if err == nil && asset.AccumulatedImpairment.Currency() != "" {
 		netBookValue, err = netBookValue.Subtract(asset.AccumulatedImpairment)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if netBookValue.IsNegative() {
+	if netBookValue.IsNegative() || !netBookValue.Equal(asset.CurrentBookValue) {
 		return nil, ErrInvalidAsset
 	}
 	zero, err := financialtypes.Zero(asset.HistoricalCost.Currency())
@@ -368,7 +623,7 @@ func disposalLines(asset FixedAsset, proceeds financialtypes.Money) ([]posting.J
 	}
 	lines := []posting.JournalEntryLine{
 		{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AccumulatedAccountID, Debit: asset.AccumulatedDepreciation, Credit: zero},
-		{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AssetAccountID, Credit: asset.HistoricalCost, Debit: zero},
+		{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AssetAccountID, Credit: grossCarryingAmount, Debit: zero},
 	}
 	if asset.AccumulatedImpairment.Currency() != "" && !asset.AccumulatedImpairment.Amount().IsZero() {
 		accountID := asset.AccumulatedImpairmentAccountID

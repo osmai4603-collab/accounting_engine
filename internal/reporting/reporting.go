@@ -22,13 +22,23 @@ func accountBalances(repository Repository, start, end time.Time, currency strin
 	if err != nil {
 		return nil, err
 	}
-	accountByID := make(map[uuid.UUID]masterdata.Account, len(accounts))
-	for _, account := range accounts {
-		accountByID[account.ID] = account
-	}
 	entries, err := listPostedEntries(repository, start, end)
 	if err != nil {
 		return nil, err
+	}
+	return accountBalancesFromEntries(repository, accounts, entries, start, end, currency)
+}
+
+func accountBalancesFromEntries(
+	repository Repository,
+	accounts []masterdata.Account,
+	entries []posting.JournalEntry,
+	start, end time.Time,
+	currency string,
+) (map[uuid.UUID]accountSide, error) {
+	accountByID := make(map[uuid.UUID]masterdata.Account, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
 	}
 	balances := make(map[uuid.UUID]accountSide)
 	for _, entry := range entries {
@@ -53,6 +63,24 @@ func accountBalances(repository Repository, start, end time.Time, currency strin
 		}
 	}
 	return balances, nil
+}
+
+func accountMovementBalances(repository Repository, start, end time.Time, currency string) (map[uuid.UUID]accountSide, error) {
+	accounts, err := listAccounts(repository)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := listPostedEntries(repository, start, end)
+	if err != nil {
+		return nil, err
+	}
+	movements := make([]posting.JournalEntry, 0, len(entries))
+	for _, entry := range entries {
+		if postingClassification(entry) != posting.EntryClassOpening {
+			movements = append(movements, entry)
+		}
+	}
+	return accountBalancesFromEntries(repository, accounts, movements, start, end, currency)
 }
 
 func translateLineAmounts(

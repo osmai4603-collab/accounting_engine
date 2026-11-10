@@ -15,6 +15,7 @@ var (
 	ErrInvalidParent                   = errors.New("invalid parent account")
 	ErrAccountCycle                    = errors.New("account hierarchy contains a cycle")
 	ErrInvalidSubClassificationForType = errors.New("invalid sub-classification for the specified account type")
+	ErrInvalidControlAccount           = errors.New("control accounts must be reconcilable asset or liability accounts")
 )
 
 const (
@@ -116,6 +117,7 @@ type Account struct {
 	CurrencyID          string
 	ParentID            *uuid.UUID
 	IsReconcilable      bool
+	IsControlAccount    bool
 	IsActive            bool
 	IsCashEquivalent    bool
 	IsNonCashAdjustment bool
@@ -125,7 +127,10 @@ type Account struct {
 	IsHeader            bool
 	IsContraAccount     bool
 	HasPostedEntries    bool
+	RequiresCostCenter  bool
 	DisplayOrder        int
+	EffectiveFrom       time.Time
+	EffectiveTo         *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -160,6 +165,10 @@ func (a Account) Validate() error {
 	}
 	if !a.IsContraAccount && a.NormalBalance != DefaultNormalBalance(a.AccountType) {
 		return ErrInvalidAccountType
+	}
+	if a.IsControlAccount && (!a.IsReconcilable ||
+		(a.AccountType != AccountTypeAsset && a.AccountType != AccountTypeLiability)) {
+		return ErrInvalidControlAccount
 	}
 	if a.SubClassification != "" {
 		if err := validateSubClassification(a.AccountType, a.SubClassification); err != nil {

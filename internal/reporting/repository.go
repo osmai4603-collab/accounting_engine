@@ -32,6 +32,7 @@ type EntryDateRepository interface {
 type FiscalYearRepository interface {
 	GetFiscalYear(uuid.UUID) (masterdata.FiscalYear, error)
 	UpdatePeriodState(uuid.UUID, masterdata.PeriodState) error
+	UpdateFiscalYearState(uuid.UUID, masterdata.FiscalYearState) error
 }
 
 var ErrCompanyScopeRequired = errors.New("company-scoped reporting repository is required")

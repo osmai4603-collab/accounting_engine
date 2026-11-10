@@ -3,6 +3,7 @@ package subledgers
 import (
 	"time"
 
+	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 )
@@ -49,6 +50,31 @@ func (l *PayableLedger) AddInvoiceForCompanyWithControl(companyID, partnerID, co
 		return OpenLine{}, ErrInvalidOpenLine
 	}
 	return l.addInvoice(companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceFromPostedEntry(partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
+	return addPostedInvoice(l.repo, l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
+}
+
+func (l *PayableLedger) AddInvoiceFromPostedEntryForCompany(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return addPostedInvoice(l.repo, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
+}
+
+func (l *PayableLedger) PostInvoiceEntry(
+	engine *posting.Engine,
+	entry *posting.JournalEntry,
+	partnerID, controlAccountID uuid.UUID,
+	amount financialtypes.Money,
+	documentDate, dueDate time.Time,
+	reference, posterID string,
+) (OpenLine, error) {
+	return postInvoiceEntry(
+		engine, entry, l.companyID, partnerID, controlAccountID, LinePayable,
+		amount, documentDate, dueDate, reference, posterID,
+	)
 }
 
 func (l *PayableLedger) addInvoice(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {

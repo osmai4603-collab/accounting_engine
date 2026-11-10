@@ -341,7 +341,7 @@ func TestStraightLineDepreciation(t *testing.T) {
 	asset := FixedAsset{
 		CompanyID: uuid.New(),
 		ID:        uuid.New(), HistoricalCost: money(t, "12000.00"), SalvageValue: money(t, "0.00"),
-		UsefulLifeMonths: 12, Method: StraightLine, InServiceDate: time.Now(),
+		UsefulLifeMonths: 12, Method: StraightLine, InServiceDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ExpenseAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
 	}
 
@@ -352,8 +352,51 @@ func TestStraightLineDepreciation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if amount.Amount().Equal(decimal.NewFromInt(1000)) == false || len(entry.Lines) != 2 {
+	if !amount.Equal(money(t, "1019.1781")) || len(entry.Lines) != 2 {
 		t.Fatalf("unexpected depreciation: amount=%s lines=%d", amount, len(entry.Lines))
+	}
+}
+
+func TestComponentDepreciationCreatesSeparateJournalLines(t *testing.T) {
+	repo := NewMemoryRepository()
+	assetID, expenseA, accumulatedA, expenseB, accumulatedB := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: assetID, HistoricalCost: money(t, "10000"), SalvageValue: money(t, "0"),
+		UsefulLifeMonths: 8, Method: StraightLine, InServiceDate: start,
+		ExpenseAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
+		Components: []AssetComponent{
+			{ID: uuid.New(), Name: "structure", Cost: money(t, "8000"), SalvageValue: money(t, "0"), UsefulLifeMonths: 8, Method: StraightLine, InServiceDate: start, ExpenseAccountID: expenseA, AccumulatedAccountID: accumulatedA},
+			{ID: uuid.New(), Name: "motor", Cost: money(t, "2000"), SalvageValue: money(t, "0"), UsefulLifeMonths: 2, Method: StraightLine, InServiceDate: start, ExpenseAccountID: expenseB, AccumulatedAccountID: accumulatedB},
+		},
+	}
+	ledger := NewFixedAssetLedger(repo, &draftCreator{})
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	entry, amount, err := ledger.MonthlyDepreciation(assetID, uuid.New(), start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Lines) != 4 || entry.Lines[0].AccountID != expenseA ||
+		entry.Lines[2].AccountID != expenseB || amount.Amount().IsZero() {
+		t.Fatalf("component schedules did not produce component journal lines: %+v", entry.Lines)
+	}
+	repo.mu.Lock()
+	posted := repo.drafts[entry.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[entry.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmDepreciation(assetID, entry.ID, amount, start); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repo.GetFixedAsset(assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Components[0].AccumulatedDepreciation.Amount().IsZero() ||
+		updated.Components[1].AccumulatedDepreciation.Amount().IsZero() {
+		t.Fatalf("component accumulated depreciation was not updated: %+v", updated.Components)
 	}
 }
 
@@ -449,7 +492,7 @@ func TestMonthlyDepreciationConfirmationAndRejectedDraftRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updated.CurrentBookValue.Equal(money(t, "11000")) ||
+	if !updated.CurrentBookValue.Equal(money(t, "11079.4521")) ||
 		!updated.AccumulatedDepreciation.Equal(amount) || !updated.LastDepreciationDate.Equal(asOf) {
 		t.Fatalf("confirmed depreciation was not applied: %+v", updated)
 	}
@@ -509,6 +552,115 @@ func TestCompanyScopedTreasuryReconciliation(t *testing.T) {
 			len(matched), len(pending), len(unrecorded))
 	}
 }
+
+func TestTreasuryMultiLineReconciliationPostsBankFeeDraft(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID, accountID, feeAccountID, journalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	ledger := NewTreasuryLedgerForCompany(repo, companyID)
+	date := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	for _, amount := range []string{"60", "40"} {
+		if _, err := ledger.RecordItemWithJournal(accountID, uuid.New(), date, money(t, amount), "", BankItemPending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelated, err := ledger.RecordItemWithJournal(
+		accountID, uuid.New(), date.AddDate(0, 0, 20), money(t, "25"), "", BankItemPending,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement := []BankItem{
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "58")},
+		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "40")},
+	}
+	match, draft, err := ledger.ReconcileMultiLine(accountID, statement, 0, BankFeeParams{
+		JournalID: journalID, FeeAccountID: feeAccountID, BankAccountID: accountID, Date: date,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft == nil || len(match.StatementLineIDs) != 2 || len(match.LedgerItemIDs) != 2 ||
+		len(match.JournalEntryIDs) != 2 || !match.BankFeesAmount.Equal(money(t, "2")) ||
+		!match.Difference.IsZero() {
+		t.Fatalf("unexpected multi-line reconciliation: match=%+v draft=%+v", match, draft)
+	}
+	stored, err := repo.ListBankItemsForCompany(companyID, accountID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchedCount := 0
+	for _, item := range stored {
+		if item.ID == unrelated.ID {
+			if item.Status != BankItemPending {
+				t.Fatalf("unrelated ledger item was marked matched: %+v", item)
+			}
+			continue
+		}
+		if item.Status != BankItemMatched {
+			t.Fatalf("selected ledger item was not marked matched: %+v", item)
+		}
+		matchedCount++
+	}
+	if len(stored) != 3 || matchedCount != 2 {
+		t.Fatalf("multi-line reconciliation status was not persisted: %+v", stored)
+	}
+}
+
+func TestTreasuryMultiLineReconciliationMatchesOneToFiveAndLeavesOthersPending(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID, accountID := uuid.New(), uuid.New()
+	ledger := NewTreasuryLedgerForCompany(repo, companyID)
+	date := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	for _, amount := range []string{"10", "20", "30", "15", "25", "7"} {
+		if _, err := ledger.RecordItemWithJournal(accountID, uuid.New(), date, money(t, amount), "", BankItemPending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statement := []BankItem{{
+		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "100"),
+	}}
+	match, draft, err := ledger.ReconcileMultiLine(accountID, statement, 0, BankFeeParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft != nil || len(match.LedgerItemIDs) != 5 || len(match.StatementLineIDs) != 1 {
+		t.Fatalf("unexpected 1:5 match: match=%+v draft=%+v", match, draft)
+	}
+	stored, err := repo.ListBankItemsForCompany(companyID, accountID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := 0
+	for _, item := range stored {
+		if item.Status == BankItemMatched {
+			matched++
+		} else if !item.Amount.Equal(money(t, "7")) {
+			t.Fatalf("eligible transaction was left pending: %+v", item)
+		}
+	}
+	if matched != 5 {
+		t.Fatalf("matched ledger item count = %d, want 5", matched)
+	}
+}
+
+func TestTreasuryMultiLineReconciliationRejectsAmbiguousGroups(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID, accountID := uuid.New(), uuid.New()
+	ledger := NewTreasuryLedgerForCompany(repo, companyID)
+	date := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		if _, err := ledger.RecordItemWithJournal(accountID, uuid.New(), date, money(t, "50"), "", BankItemPending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statement := []BankItem{{
+		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "50"),
+	}}
+	if _, _, err := ledger.ReconcileMultiLine(accountID, statement, 0, BankFeeParams{}); err != ErrAmbiguousBankReconciliation {
+		t.Fatalf("ReconcileMultiLine() error = %v, want ambiguity error", err)
+	}
+}
+
 func TestFixedAssetImpairmentIAS36(t *testing.T) {
 	repo := NewMemoryRepository()
 	creator := &draftCreator{}
@@ -572,6 +724,65 @@ func TestFixedAssetImpairmentIAS36(t *testing.T) {
 	if !updated.CurrentBookValue.Amount().Equal(decimal.NewFromInt(7500)) ||
 		!updated.AccumulatedImpairment.Equal(loss) {
 		t.Fatalf("posted impairment was not applied: %+v", updated)
+	}
+}
+
+func TestFixedAssetRevaluationUsesOCIThenExpense(t *testing.T) {
+	repo := NewMemoryRepository()
+	assetID, assetAccount, surplusAccount, lossAccount := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: assetID, HistoricalCost: money(t, "10000"), SalvageValue: money(t, "0"),
+		UsefulLifeMonths: 10, Method: StraightLine, InServiceDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		AssetAccountID: assetAccount, RevaluationSurplusAccountID: surplusAccount, RevaluationLossAccountID: lossAccount,
+	}
+	ledger := NewFixedAssetLedger(repo, &draftCreator{})
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	journalID := uuid.New()
+	firstDate := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	increase, err := ledger.RevalueAsset(assetID, journalID, money(t, "12000"), firstDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(increase.Lines) != 2 || increase.Lines[0].AccountID != assetAccount ||
+		increase.Lines[1].AccountID != surplusAccount {
+		t.Fatalf("revaluation increase was not recognized in OCI: %+v", increase.Lines)
+	}
+	repo.mu.Lock()
+	posted := repo.drafts[increase.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[increase.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmRevaluation(assetID, increase.ID, money(t, "12000"), firstDate); err != nil {
+		t.Fatal(err)
+	}
+
+	secondDate := firstDate.AddDate(0, 1, 0)
+	decrease, err := ledger.RevalueAsset(assetID, journalID, money(t, "8000"), secondDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decrease.Lines) != 4 || decrease.Lines[0].AccountID != surplusAccount ||
+		decrease.Lines[2].AccountID != lossAccount {
+		t.Fatalf("revaluation decrease did not consume surplus before P&L: %+v", decrease.Lines)
+	}
+	repo.mu.Lock()
+	posted = repo.drafts[decrease.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[decrease.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmRevaluation(assetID, decrease.ID, money(t, "8000"), secondDate); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repo.GetFixedAsset(assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.CurrentBookValue.Equal(money(t, "8000")) ||
+		!updated.RevaluationSurplus.Amount().IsZero() ||
+		!updated.RevaluationAdjustment.Equal(money(t, "-2000")) {
+		t.Fatalf("revaluation result was not persisted correctly: %+v", updated)
 	}
 }
 

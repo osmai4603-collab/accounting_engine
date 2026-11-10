@@ -6,6 +6,7 @@ import (
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type TreasuryLedger struct {
@@ -23,30 +24,261 @@ func NewTreasuryLedgerForCompany(repo Repository, companyID uuid.UUID) *Treasury
 
 func (l *TreasuryLedger) RecordItem(accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	if l.companyID == uuid.Nil {
-		return l.recordItem(uuid.Nil, accountID, date, amount, reference, status)
+		return l.recordItem(uuid.Nil, accountID, uuid.Nil, date, amount, reference, status)
 	}
-	return l.RecordItemForCompany(l.companyID, accountID, date, amount, reference, status)
+	return l.recordItem(l.companyID, accountID, uuid.Nil, date, amount, reference, status)
 }
 
 func (l *TreasuryLedger) RecordItemForCompany(companyID, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	if companyID == uuid.Nil {
 		return BankItem{}, ErrInvalidOpenLine
 	}
-	return l.recordItem(companyID, accountID, date, amount, reference, status)
+	return l.recordItem(companyID, accountID, uuid.Nil, date, amount, reference, status)
 }
 
-func (l *TreasuryLedger) recordItem(companyID, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+func (l *TreasuryLedger) RecordItemWithJournal(accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+	companyID := l.companyID
+	if companyID == uuid.Nil || journalEntryID == uuid.Nil {
+		return BankItem{}, ErrInvalidOpenLine
+	}
+	return l.recordItem(companyID, accountID, journalEntryID, date, amount, reference, status)
+}
+
+func (l *TreasuryLedger) recordItem(companyID, accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	if accountID == uuid.Nil || amount.Currency() == "" || status == "" {
 		return BankItem{}, ErrInvalidAmount
 	}
 	item := BankItem{
-		CompanyID: companyID, ID: uuid.New(), AccountID: accountID,
+		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, JournalEntryID: journalEntryID,
 		Date: date, Amount: amount, Reference: reference, Status: status,
 	}
 	if err := l.repo.SaveBankItem(item); err != nil {
 		return BankItem{}, err
 	}
 	return item, nil
+}
+
+func (l *TreasuryLedger) ReconcileMultiLine(
+	accountID uuid.UUID,
+	statement []BankItem,
+	toleranceDays int,
+	feeParams BankFeeParams,
+) (BankReconciliationMatch, *posting.JournalEntry, error) {
+	if accountID == uuid.Nil || len(statement) == 0 || toleranceDays < 0 || toleranceDays > 5 {
+		return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+	}
+	ledgerItems, err := l.listBankItems(accountID.String())
+	if err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
+	currency := ""
+	statementTotal := decimal.Zero
+	statementIDs := make([]uuid.UUID, 0, len(statement))
+	seen := make(map[uuid.UUID]struct{}, len(statement))
+	statementDates := make([]time.Time, 0, len(statement))
+	for _, item := range statement {
+		if item.ID == uuid.Nil || item.AccountID != accountID || item.Amount.Currency() == "" || item.Date.IsZero() ||
+			(l.companyID != uuid.Nil && item.CompanyID != uuid.Nil && item.CompanyID != l.companyID) {
+			return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+		}
+		if _, exists := seen[item.ID]; exists {
+			return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+		}
+		seen[item.ID] = struct{}{}
+		if currency == "" {
+			currency = item.Amount.Currency()
+		} else if currency != item.Amount.Currency() {
+			return BankReconciliationMatch{}, nil, ErrMixedCurrencyReconciliation
+		}
+		statementTotal = statementTotal.Add(item.Amount.Amount())
+		statementIDs = append(statementIDs, item.ID)
+		statementDates = append(statementDates, item.Date)
+	}
+	if statementTotal.IsZero() {
+		return BankReconciliationMatch{}, nil, ErrInvalidAmount
+	}
+
+	candidates := make([]BankItem, 0, len(ledgerItems))
+	for _, item := range ledgerItems {
+		if item.Status == BankItemMatched {
+			continue
+		}
+		if item.CompanyID != l.companyID && l.companyID != uuid.Nil {
+			return BankReconciliationMatch{}, nil, ErrCompanyMismatch
+		}
+		if item.AccountID != accountID || item.Amount.Currency() != currency || item.Amount.Currency() == "" ||
+			item.Date.IsZero() {
+			return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+		}
+		withinTolerance := false
+		for _, statementDate := range statementDates {
+			if withinValueDateTolerance(statementDate, item.Date, toleranceDays) {
+				withinTolerance = true
+				break
+			}
+		}
+		if !withinTolerance {
+			continue
+		}
+		candidates = append(candidates, item)
+	}
+	indices, ledgerTotal, err := selectBankReconciliationSubset(candidates, statementTotal)
+	if err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
+	if ledgerTotal.LessThan(statementTotal) {
+		return BankReconciliationMatch{}, nil, ErrUnmatchedLine
+	}
+	difference := ledgerTotal.Sub(statementTotal)
+	if difference.IsPositive() &&
+		(feeParams.JournalID == uuid.Nil || feeParams.FeeAccountID == uuid.Nil || feeParams.BankAccountID != accountID) {
+		return BankReconciliationMatch{}, nil, ErrUnmatchedLine
+	}
+	selected := make([]BankItem, 0, len(indices))
+	for _, index := range indices {
+		selected = append(selected, candidates[index])
+	}
+	expected := append([]BankItem(nil), selected...)
+	updated := append([]BankItem(nil), selected...)
+	ledgerIDs := make([]uuid.UUID, 0, len(selected))
+	entryIDs := make([]uuid.UUID, 0, len(selected))
+	for i := range updated {
+		updated[i].Status = BankItemMatched
+		ledgerIDs = append(ledgerIDs, updated[i].ID)
+		if updated[i].JournalEntryID != uuid.Nil {
+			entryIDs = append(entryIDs, updated[i].JournalEntryID)
+		}
+	}
+	fee, err := financialtypes.NewMoney(difference, currency)
+	if err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
+	zero, err := financialtypes.Zero(currency)
+	if err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
+	match := BankReconciliationMatch{
+		StatementLineIDs: statementIDs, JournalEntryIDs: entryIDs, LedgerItemIDs: ledgerIDs,
+		BankFeesAmount: zero, Difference: difference,
+	}
+	if !fee.Amount().IsZero() {
+		if l.companyID == uuid.Nil {
+			return BankReconciliationMatch{}, nil, ErrCompanyScopedBankItemsRequired
+		}
+		feeParams.BankAccountID = accountID
+		feeDate := feeParams.Date
+		if feeDate.IsZero() {
+			feeDate = statement[0].Date
+		}
+		feeLines := []posting.JournalEntryLine{
+			{CompanyID: l.companyID, ID: uuid.New(), AccountID: feeParams.FeeAccountID, Debit: fee, Credit: zero},
+			{CompanyID: l.companyID, ID: uuid.New(), AccountID: accountID, Debit: zero, Credit: fee},
+		}
+		reference := feeParams.Description
+		if reference == "" {
+			reference = "BANK_FEE:MULTI_LINE"
+		}
+		draft := posting.JournalEntry{
+			CompanyID: l.companyID, ID: uuid.New(), JournalID: feeParams.JournalID,
+			EntryDate: feeDate, Date: feeDate, Status: posting.EntryDraft,
+			DocumentReference: reference, Reference: reference, CreatedAt: time.Now().UTC(),
+			Lines: feeLines,
+		}
+		if err := draft.Validate(); err != nil {
+			return BankReconciliationMatch{}, nil, err
+		}
+		repository, ok := l.repo.(ConditionalBankItemsAndDraftRepository)
+		if !ok {
+			return BankReconciliationMatch{}, nil, ErrAtomicBankReconciliationRequired
+		}
+		if err := repository.CompareAndSaveBankItemsAndDraft(expected, updated, draft); err != nil {
+			return BankReconciliationMatch{}, nil, err
+		}
+		match.BankFeesAmount = fee
+		match.Difference = decimal.Zero
+		return match, &draft, nil
+	}
+	repository, ok := l.repo.(ConditionalBankItemRepository)
+	if !ok {
+		return BankReconciliationMatch{}, nil, ErrAtomicBankReconciliationRequired
+	}
+	if err := repository.CompareAndSaveBankItems(expected, updated); err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
+	return match, nil, nil
+}
+
+func selectBankReconciliationSubset(candidates []BankItem, target decimal.Decimal) ([]int, decimal.Decimal, error) {
+	const maxCandidates = 40
+	const maxStates = 50000
+	if len(candidates) == 0 {
+		return nil, decimal.Zero, ErrNotFound
+	}
+	if len(candidates) > maxCandidates {
+		return nil, decimal.Zero, ErrBankReconciliationTooComplex
+	}
+	type subset struct {
+		indices   []int
+		ambiguous bool
+	}
+	states := map[string]subset{"0": {indices: []int{}}}
+	sums := map[string]decimal.Decimal{"0": decimal.Zero}
+	for index, candidate := range candidates {
+		amount := candidate.Amount.Amount()
+		nextStates := make(map[string]subset, len(states)*2)
+		nextSums := make(map[string]decimal.Decimal, len(sums)*2)
+		for key, existing := range states {
+			nextStates[key] = existing
+			nextSums[key] = sums[key]
+		}
+		for key, existing := range states {
+			total := sums[key].Add(amount)
+			totalKey := total.String()
+			indices := append(append([]int(nil), existing.indices...), index)
+			if current, exists := nextStates[totalKey]; exists {
+				current.ambiguous = true
+				current.ambiguous = current.ambiguous || existing.ambiguous
+				nextStates[totalKey] = current
+			} else {
+				nextStates[totalKey] = subset{indices: indices, ambiguous: existing.ambiguous}
+				nextSums[totalKey] = total
+			}
+		}
+		if len(nextStates) > maxStates {
+			return nil, decimal.Zero, ErrBankReconciliationTooComplex
+		}
+		states, sums = nextStates, nextSums
+	}
+
+	bestKey := ""
+	bestTotal := decimal.Zero
+	exactKey := target.String()
+	if exact, exists := states[exactKey]; exists {
+		if exact.ambiguous {
+			return nil, decimal.Zero, ErrAmbiguousBankReconciliation
+		}
+		if len(exact.indices) > 0 {
+			return exact.indices, target, nil
+		}
+	}
+	for key, total := range sums {
+		candidate := states[key]
+		if len(candidate.indices) == 0 || !total.GreaterThan(target) {
+			continue
+		}
+		if bestKey == "" || total.LessThan(bestTotal) {
+			bestKey, bestTotal = key, total
+		} else if total.Equal(bestTotal) {
+			return nil, decimal.Zero, ErrAmbiguousBankReconciliation
+		}
+	}
+	if bestKey == "" {
+		return nil, decimal.Zero, ErrUnmatchedLine
+	}
+	if states[bestKey].ambiguous {
+		return nil, decimal.Zero, ErrAmbiguousBankReconciliation
+	}
+	return states[bestKey].indices, bestTotal, nil
 }
 
 func (l *TreasuryLedger) Reconcile(accountID uuid.UUID, statement []BankItem) (matched []BankItem, pending []BankItem, unrecorded []BankItem, err error) {

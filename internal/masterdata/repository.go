@@ -27,6 +27,7 @@ type Repository interface {
 	HasChildren(uuid.UUID) (bool, error)
 	CreateFiscalYear(FiscalYear) error
 	GetFiscalYear(uuid.UUID) (FiscalYear, error)
+	UpdateFiscalYearState(uuid.UUID, FiscalYearState) error
 	GetPeriodByDate(time.Time) (FiscalPeriod, error)
 	UpdatePeriodState(uuid.UUID, PeriodState) error
 	GetNextSequenceWithLock(uuid.UUID) (int64, error)

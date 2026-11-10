@@ -51,6 +51,7 @@ func TestGenerateDepreciationScheduleSupportsDistinctComponents(t *testing.T) {
 			{ID: uuid.New(), Name: "motor", Cost: money(t, "200"), SalvageValue: money(t, "0"), UsefulLifeMonths: 4, Method: StraightLine, InServiceDate: start},
 		},
 	}
+
 	lines, err := GenerateDepreciationSchedule(asset)
 	if err != nil {
 		t.Fatal(err)
@@ -61,5 +62,30 @@ func TestGenerateDepreciationScheduleSupportsDistinctComponents(t *testing.T) {
 	}
 	if len(componentPeriods) != 2 || componentPeriods[asset.Components[0].ID] != 10 || componentPeriods[asset.Components[1].ID] != 4 {
 		t.Fatalf("component schedules do not use component lives: %+v", componentPeriods)
+	}
+}
+
+func TestMonthlyDepreciationUsesPartialFirstMonthForNonComponentAsset(t *testing.T) {
+	repo := NewMemoryRepository()
+	ledger := NewFixedAssetLedger(repo, nil)
+	start := time.Date(2026, 1, 16, 0, 0, 0, 0, time.UTC)
+	asset := FixedAsset{
+		CompanyID: uuid.New(), ID: uuid.New(),
+		HistoricalCost: money(t, "1200"), SalvageValue: money(t, "0"),
+		UsefulLifeMonths: 12, Method: StraightLine, InServiceDate: start,
+		ExpenseAccountID: uuid.New(), AccumulatedAccountID: uuid.New(),
+	}
+	if err := ledger.RegisterAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	_, amount, err := ledger.MonthlyDepreciation(
+		asset.ID, uuid.New(), time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := money(t, "52.6027")
+	if !amount.Equal(want) {
+		t.Fatalf("first-month depreciation = %s, want partial-period amount %s", amount, want)
 	}
 }
