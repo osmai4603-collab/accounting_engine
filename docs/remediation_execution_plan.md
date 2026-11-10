@@ -40,7 +40,8 @@ flowchart TD
 
 ### المهمة 1.1: تصحيح Trigger فحص توازن القيود في PostgreSQL
 
-* **الملف المستهدف:** [`storage/postgres/schema.sql`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/schema.sql)
+- **الملف المستهدف:** [`storage/postgres/schema.sql`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/schema.sql)
+
 - **الموقع:** الدالة `check_posted_move_balance_statement()` (الأسطر 330-363).
 - **خطوات التنفيذ:**
   1. استبدال الأعمدة المهجورة `SUM(lines.debit)` و `SUM(lines.credit)` بالأعمدة الرسمية `functional_debit_minor` و `functional_credit_minor`.
@@ -59,10 +60,11 @@ flowchart TD
 
 ### المهمة 1.2: إصلاح الترحيل الجماعي `PostBulk` والتسلسل المحاسبي الصارم
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`storage/postgres/posting.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/posting.go) (الأسطر 502-526)
   - [`storage/postgres/masterdata.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/masterdata.go) (الأسطر 416-428)
   - [`internal/posting/bulk.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/posting/bulk.go)
+
 - **خطوات التنفيذ:**
   1. **تصحيح `GetNextSequenceWithLock`:**
      - تعديل الاستعلام في `masterdata.go` ليقوم بقفل السجل وتحديثه فعلياً ضمن المعاملة:
@@ -92,9 +94,10 @@ flowchart TD
 
 ### المهمة 1.3: توحيد سياسة الدقة العشرية والتقريب (Rounding Policy Contract)
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`internal/types/money.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/types/money.go)
   - [`storage/postgres/posting.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/posting.go)
+
 - **خطوات التنفيذ:**
   1. توثيق وتطبيق العقد الحسابي الموحد: "الحسابات الداخلية والتحويلات بـ `InternalScale (12)`، والمبالغ المرحّلة والأرصدة بـ `MinorUnits` المعتمدة على العملة (Integer-based minor units)".
   2. منع تخزين أي مبالغ تحتوي على كسور تتجاوز الـ Minor Unit دون تسوية فروق التقريب (Rounding Differences) في حساب تسوية مخصص (`Rounding Difference Account`).
@@ -108,10 +111,11 @@ flowchart TD
 
 ### المهمة 2.1: ربط نظام الموافقات بمحتوى القيد الفعلي ومبلغه الوظيفي
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`internal/governance/approval.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/governance/approval.go)
   - [`storage/postgres/governance_store.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/governance_store.go)
   - [`storage/postgres/migrations/202611100005_phase3_governance.sql`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/migrations/202611100005_phase3_governance.sql)
+
 - **خطوات التنفيذ:**
   1. **إضافة بصمة القيد ومحتواه لطلب الموافقة:**
      - إضافة عمود `entry_hash` (SHA-256 لبصمة القيد وأسطره) وعمود `functional_amount` لجدول `approval_requests`.
@@ -129,9 +133,10 @@ flowchart TD
 
 ### المهمة 2.2: التفعيل الإلزامي لنظام الرقابة (Approval Gate & Maker-Checker)
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 142-164)
   - [`internal/posting/engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/posting/engine.go)
+
 - **خطوات التنفيذ:**
   1. تعديل `NewEngine()` لربط محرك الموافقات بمحرك الترحيل تلقائياً:
 
@@ -143,9 +148,10 @@ flowchart TD
 
 ### المهمة 2.3: الدمج الذري لسجل التدقيق مع مسارات الترحيل والماستر
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`storage/postgres/posting.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/posting.go)
   - [`internal/posting/engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/posting/engine.go)
+
 - **خطوات التنفيذ:**
   1. تعديل دالة الترحيل الذرية في PostgreSQL لتتضمن خطوة إلزامية:
 
@@ -170,7 +176,8 @@ flowchart TD
 
 ### المهمة 3.1: تصحيح التحقق من Idempotency في EventBridge
 
-* **الملف المستهدف:** [`internal/subledgers/event_bridge.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/subledgers/event_bridge.go) (الأسطر 109-175)
+- **الملف المستهدف:** [`internal/subledgers/event_bridge.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/subledgers/event_bridge.go) (الأسطر 109-175)
+
 - **خطوات التنفيذ:**
   1. توليد بصمة رقمية `PayloadHash` (SHA-256) لمحتوى الحدث الاقتصادي (المبلغ، العملة، الحسابات، المرجع).
   2. عند العثور على `IdempotencyKey` مسجل مسبقاً:
@@ -180,7 +187,8 @@ flowchart TD
 
 ### المهمة 3.2: ضمان ذرية وقفل دورة حياة الأصول الثابتة (Fixed Assets Mutability)
 
-* **الملف المستهدف:** [`internal/subledgers/fixed_assets.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/subledgers/fixed_assets.go) (الأسطر 630-735)
+- **الملف المستهدف:** [`internal/subledgers/fixed_assets.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/subledgers/fixed_assets.go) (الأسطر 630-735)
+
 - **خطوات التنفيذ:**
   1. توحيد مرجع القيد المسودة للاستبعاد والتدني ليكون معتمداً على الأصل وفترته بدلاً من `uuid.New()` عشوائي:
      `disposalReference(asset.ID, disposalDate)`
@@ -190,7 +198,8 @@ flowchart TD
 
 ### المهمة 3.3: تصحيح تهيئة الدفاتر المساعدة في المحرك الرئيسي
 
-* **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (السطر 153)
+- **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (السطر 153)
+
 - **خطوات التنفيذ:**
   1. إنشاء نمط Factory أو دوال فرعية:
      `ForCompany(companyID uuid.UUID) *CompanySubledgerService`
@@ -204,9 +213,10 @@ flowchart TD
 
 ### المهمة 4.1: إصلاح `UpdateAccountParent` وتمرير نطاق الشركة
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`internal/masterdata/service.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/masterdata/service.go) (الأسطر 90-125)
   - [`storage/postgres/masterdata.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/masterdata.go)
+
 - **خطوات التنفيذ:**
   1. تعديل `s.repo.GetAccountByID(account.ID)` ليستخدم الدالة المقيدة بالشركة:
      `GetAccountByIDForCompany(ctx, account.CompanyID, account.ID)`
@@ -215,7 +225,8 @@ flowchart TD
 
 ### المهمة 4.2: إضافة `CompanyID` و `Context` لواجهات التقارير في الـ Facade
 
-* **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 73-83)
+- **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 73-83)
+
 - **خطوات التنفيذ:**
   1. تعديل توقيع الدوال:
      - `GeneralLedger(ctx context.Context, companyID uuid.UUID, ...)`
@@ -225,7 +236,7 @@ flowchart TD
 
 ### المهمة 4.3: محرك المطابقة بين الأرصدة المخزنة ودفتر الأستاذ (Balance Reconciliation Engine)
 
-* **إضافة نوعية جديدة:**
+- **إضافة نوعية جديدة:**
   - بناء أداة تحقق داخلية: `internal/reporting/reconciliation.go`
   - تقوم بمقارنة فورية بين `account_balances` (المخزن المادي) ومجموع قيود `account_move_lines` الفعلية لكل حساب للتأكد من عدم وجود أي انحراف (Drift).
 
@@ -237,7 +248,8 @@ flowchart TD
 
 ### المهمة 5.1: ترقية محرك IFRS 16 لحساب الفائدة الفعلية
 
-* **الملف المستهدف:** [`internal/ifrs16/lease.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrs16/lease.go) (الأسطر 152-228)
+- **الملف المستهدف:** [`internal/ifrs16/lease.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrs16/lease.go) (الأسطر 152-228)
+
 - **خطوات التنفيذ:**
   1. استبدال القسمة المباشرة على 12 (`annualDiscountRate / 12`) بحساب الفائدة الفعلية المركبة للفترات غير المتطابقة:
      \[
@@ -248,9 +260,10 @@ flowchart TD
 
 ### المهمة 5.2: ترقية وتصحيح CLI أتمتة المعايير
 
-* **الملفات المستهدفة:**
+- **الملفات المستهدفة:**
   - [`cmd/agy/main.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/cmd/agy/main.go) (الأسطر 75-105)
   - [`internal/ifrsautomation/service.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrsautomation/service.go)
+
 - **خطوات التنفيذ:**
   1. تسجيل الوظائف الشهرية القياسية (`MonthlyJobs`) تلقائياً عند بناء المجدول:
      - وظيفة إهلاك عقود الإيجار IFRS 16.
@@ -266,7 +279,8 @@ flowchart TD
 
 ### المهمة 6.1: تفكيك واجهة `StorageDriver` وفق مبدأ Interface Segregation (ISP)
 
-* **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 46-60)
+- **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 46-60)
+
 - **خطوات التنفيذ:**
   1. تقسيم الواجهة الكبرى إلى منافذ متخصصة (Specialized Ports):
      - `PostingStoragePort`
@@ -278,7 +292,8 @@ flowchart TD
 
 ### المهمة 6.2: التخلص من استخدام `any` في دالة البناء `New()`
 
-* **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 27-44)
+- **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go) (الأسطر 27-44)
+
 - **خطوات التنفيذ:**
   1. اعتماد توقيع صريح ومحكم النوع:
 
@@ -290,13 +305,15 @@ flowchart TD
 
 ### المهمة 6.3: حسم دور `Config.BaseCurrency`
 
-* **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go)
+- **الملف المستهدف:** [`engine.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/engine.go)
+
 - **خطوات التنفيذ:**
   - إما إزالة هذا الحقل لمنع التضارب مع العملة الوظيفية المحددة في جدول `companies`، أو تحديد مسؤوليته بوضوح كـ "عملة العرض الافتراضية للنظام في حال عدم تحديد عملة في التقرير" وربطه بمحرك التقارير.
 
 ### المهمة 6.4: تنظيم ترحيلات قاعدة البيانات وإلغاء تنفيذ `schema.sql` العشوائي
 
-* **الملف المستهدف:** [`storage/postgres/driver.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/driver.go) (الأسطر 52-66)
+- **الملف المستهدف:** [`storage/postgres/driver.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/storage/postgres/driver.go) (الأسطر 52-66)
+
 - **خطوات التنفيذ:**
   1. تحويل `schema.sql` إلى الترحيل الأساسي الأولي: `202611010001_baseline_schema.sql`.
   2. تعديل `EnsureSchema` لتقوم فقط بتشغيل نظام الـ Migrations المنظم والمرقم، وعدم قفل قاعدة البيانات أو تنفيذ DDL خام غير مرقم عند كل فتح اتصال جديد.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"accounting_engine/internal/masterdata"
@@ -268,4 +269,61 @@ func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID
 		return financialtypes.Money{}, err
 	}
 	return subledgers.ControlAccountBalanceFromEntries(account, entries, functionalCurrency)
+}
+
+// AssertBalancesMatchMoves reconciles the materialized account_balances rows
+// of a company/fiscal period/functional currency against the functional minor
+// units stored on the posted move lines. Both sides are compared in integer
+// minor units, so the assertion is exact: a single sub-minor-unit drift or a
+// missing balance row is reported as a reconciliation failure.
+//
+// Moves with status 'reversed' are included because their lines were already
+// materialized when they were posted; the reversing move is counted separately
+// as a posted move, so the pair nets to zero.
+func (d *Driver) AssertBalancesMatchMoves(ctx context.Context, companyID, fiscalPeriodID uuid.UUID, currencyID string) error {
+	if companyID == uuid.Nil || fiscalPeriodID == uuid.Nil || currencyID == "" {
+		return posting.ErrInvalidEntry
+	}
+	var mismatches int
+	if err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+WITH line_totals AS (
+    SELECT lines.account_id,
+           SUM(lines.functional_debit_minor)::numeric AS debit_minor,
+           SUM(lines.functional_credit_minor)::numeric AS credit_minor
+    FROM account_move_lines AS lines
+    JOIN account_moves AS moves
+      ON moves.company_id = lines.company_id AND moves.id = lines.move_id
+    WHERE lines.company_id = $1
+      AND moves.period_id = $2
+      AND moves.status IN ('posted', 'reversed')
+    GROUP BY lines.account_id
+),
+scale AS (
+    SELECT power(10::numeric, minor_units) AS factor
+    FROM currencies WHERE code = $3
+),
+balance_totals AS (
+    SELECT balances.account_id,
+           balances.period_debit * scale.factor AS debit_minor,
+           balances.period_credit * scale.factor AS credit_minor
+    FROM account_balances AS balances
+    CROSS JOIN scale
+    WHERE balances.company_id = $1
+      AND balances.fiscal_period_id = $2
+      AND balances.currency_id = $3
+)
+SELECT COUNT(*)
+FROM line_totals AS lines
+FULL OUTER JOIN balance_totals AS balances ON balances.account_id = lines.account_id
+WHERE COALESCE(lines.debit_minor, 0) <> COALESCE(balances.debit_minor, 0)
+   OR COALESCE(lines.credit_minor, 0) <> COALESCE(balances.credit_minor, 0)`,
+			companyID, fiscalPeriodID, currencyID).Scan(&mismatches)
+	}); err != nil {
+		return err
+	}
+	if mismatches != 0 {
+		return fmt.Errorf("balance reconciliation failed: %d account(s) differ between posted move lines and account_balances", mismatches)
+	}
+	return nil
 }

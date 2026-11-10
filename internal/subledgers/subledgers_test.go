@@ -353,7 +353,9 @@ func TestStraightLineDepreciation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !amount.Equal(money(t, "1019.1781")) || len(entry.Lines) != 2 {
+	// 12000 USD over 365 days for the 31 days of January is 1019.1781 in
+	// internal precision, rounded to the USD minor unit for posting.
+	if !amount.Equal(money(t, "1019.18")) || len(entry.Lines) != 2 {
 		t.Fatalf("unexpected depreciation: amount=%s lines=%d", amount, len(entry.Lines))
 	}
 }
@@ -493,7 +495,7 @@ func TestMonthlyDepreciationConfirmationAndRejectedDraftRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updated.CurrentBookValue.Equal(money(t, "11079.4521")) ||
+	if !updated.CurrentBookValue.Equal(money(t, "11079.45")) ||
 		!updated.AccumulatedDepreciation.Equal(amount) || !updated.LastDepreciationDate.Equal(asOf) {
 		t.Fatalf("confirmed depreciation was not applied: %+v", updated)
 	}

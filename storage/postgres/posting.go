@@ -458,20 +458,20 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 			return err
 		}
 		transactionAmount := line.TransactionAmount
-		transactionMinorUnits, err := transactionAmount.MinorUnits()
+		transactionMinorUnits, err := transactionAmount.MinorUnitsExact()
 		if err != nil {
-			return err
+			return fmt.Errorf("line %s transaction amount %s: %w", line.ID, transactionAmount, err)
 		}
 		if line.FunctionalCredit.Amount().IsPositive() {
 			transactionMinorUnits = -transactionMinorUnits
 		}
-		functionalDebitMinor, err := line.FunctionalDebit.MinorUnits()
+		functionalDebitMinor, err := line.FunctionalDebit.MinorUnitsExact()
 		if err != nil {
-			return err
+			return fmt.Errorf("line %s functional debit %s: %w", line.ID, line.FunctionalDebit, err)
 		}
-		functionalCreditMinor, err := line.FunctionalCredit.MinorUnits()
+		functionalCreditMinor, err := line.FunctionalCredit.MinorUnitsExact()
 		if err != nil {
-			return err
+			return fmt.Errorf("line %s functional credit %s: %w", line.ID, line.FunctionalCredit, err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO account_move_lines (
 			move_id,company_id,line_id,account_id,partner_id,cost_center_id,project_id,segment_id,business_unit_id,matching_number,reconciled_amount,

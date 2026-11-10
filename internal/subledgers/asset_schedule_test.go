@@ -84,7 +84,9 @@ func TestMonthlyDepreciationUsesPartialFirstMonthForNonComponentAsset(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := money(t, "52.6027")
+	// 1200 USD over 365 days for the 16 days from January 16 is 52.6027 in
+	// internal precision, rounded to the USD minor unit for posting.
+	want := money(t, "52.60")
 	if !amount.Equal(want) {
 		t.Fatalf("first-month depreciation = %s, want partial-period amount %s", amount, want)
 	}

@@ -7,6 +7,7 @@ var (
 	ErrInvalidCurrency           = errors.New("invalid currency code")
 	ErrInvalidAmount             = errors.New("invalid monetary amount")
 	ErrAmountExceedsPrecision    = errors.New("monetary amount exceeds 28 digits")
+	ErrSubMinorUnitAmount        = errors.New("amount has fractions beyond the currency minor unit")
 	ErrNegativeAmountProhibited  = errors.New("negative amount prohibited")
 	ErrZeroAmountLine            = errors.New("zero amount on accounting line")
 	ErrUnbalancedMove            = errors.New("unbalanced accounting move")

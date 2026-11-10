@@ -163,6 +163,10 @@ func TestPostgresBatchPostingPerformance(t *testing.T) {
 	rate := float64(totalEntries) / elapsed.Seconds()
 	t.Logf("PostgreSQL ACID Batch Posting: %d entries in %v (%.2f entries/sec)", totalEntries, elapsed, rate)
 
+	if rate < 2000.0 && raceEnabled {
+		t.Logf("skipping throughput assertion under -race: %.2f entries/sec is expected to be depressed by race instrumentation", rate)
+		return
+	}
 	if rate < 2000.0 {
 		// Retry once in case of transient I/O or background vacuum/checkpoint contention from preceding tests
 		entries2 := make([]posting.JournalEntry, totalEntries)

@@ -119,6 +119,55 @@ func TestMinorUnitsUseCurrencyPrecisionAndBankersRounding(t *testing.T) {
 	}
 }
 
+func TestMinorUnitsExactRejectsSubMinorFractions(t *testing.T) {
+	exact := mustMoney(t, "10.01", "USD")
+	if exact.HasSubMinorUnitFraction() {
+		t.Fatal("10.01 USD must be exact at minor units")
+	}
+	if got, err := exact.MinorUnitsExact(); err != nil || got != 1001 {
+		t.Fatalf("MinorUnitsExact(10.01 USD) = %d, %v; want 1001, nil", got, err)
+	}
+
+	lossy := mustMoney(t, "10.005", "USD")
+	if !lossy.HasSubMinorUnitFraction() {
+		t.Fatal("10.005 USD must be flagged as sub-minor-unit")
+	}
+	if _, err := lossy.MinorUnitsExact(); !errors.Is(err, ErrSubMinorUnitAmount) {
+		t.Fatalf("MinorUnitsExact(10.005 USD) error = %v, want ErrSubMinorUnitAmount", err)
+	}
+	// The explicit rounding path still works and matches banker's rounding.
+	if got, err := lossy.MinorUnits(); err != nil || got != 1000 {
+		t.Fatalf("MinorUnits(10.005 USD) = %d, %v; want 1000, nil", got, err)
+	}
+	difference, err := lossy.RoundingDifference()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if difference.String() != "0.0050 USD" {
+		t.Fatalf("RoundingDifference(10.005 USD) = %s, want 0.0050 USD", difference)
+	}
+
+	// Three-decimal currencies keep exactness at the third digit.
+	kwd := mustMoney(t, "2.505", "KWD")
+	if kwd.HasSubMinorUnitFraction() {
+		t.Fatal("2.505 KWD must be exact at minor units")
+	}
+	if got, err := kwd.MinorUnitsExact(); err != nil || got != 2505 {
+		t.Fatalf("MinorUnitsExact(2.505 KWD) = %d, %v; want 2505, nil", got, err)
+	}
+}
+
+func TestRoundForPostingUsesCurrencyMinorUnits(t *testing.T) {
+	value := mustMoney(t, "10.005", "USD")
+	if got := value.RoundForPosting(); !got.Amount().Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("RoundForPosting(10.005 USD) = %s, want 10", got.Amount())
+	}
+	value = mustMoney(t, "2.505", "KWD")
+	if got := value.RoundForPosting(); !got.Amount().Equal(decimal.RequireFromString("2.505")) {
+		t.Fatalf("RoundForPosting(2.505 KWD) = %s, want 2.505", got.Amount())
+	}
+}
+
 func TestBigNumber(t *testing.T) {
 	value := "999999999999999999999999.9999"
 	money := mustMoney(t, value, "SAR")
