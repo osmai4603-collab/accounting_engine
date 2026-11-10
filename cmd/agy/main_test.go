@@ -15,6 +15,7 @@ func TestRunRejectsInvalidMigrationArguments(t *testing.T) {
 		{name: "invalid direction", args: []string{"db", "migrate", "sideways"}, want: "usage:"},
 		{name: "zero steps", args: []string{"db", "migrate", "down", "--steps", "0"}, want: "positive integer"},
 		{name: "malformed steps", args: []string{"db", "migrate", "--steps"}, want: "usage:"},
+		{name: "invalid ifrs command", args: []string{"ifrs", "start"}, want: "usage:"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
