@@ -9,6 +9,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/subledgers"
 	financialtypes "accounting_engine/internal/types"
 
@@ -281,12 +282,39 @@ func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID
 // materialized when they were posted; the reversing move is counted separately
 // as a posted move, so the pair nets to zero.
 func (d *Driver) AssertBalancesMatchMoves(ctx context.Context, companyID, fiscalPeriodID uuid.UUID, currencyID string) error {
-	if companyID == uuid.Nil || fiscalPeriodID == uuid.Nil || currencyID == "" {
-		return posting.ErrInvalidEntry
+	report, err := d.BuildBalanceReconciliationReport(ctx, companyID, fiscalPeriodID, currencyID)
+	if err != nil {
+		return err
 	}
-	var mismatches int
-	if err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
+	if !report.ZeroDrift {
+		return fmt.Errorf("balance reconciliation failed: %d account(s) differ between posted move lines and account_balances",
+			len(report.Drifts))
+	}
+	return nil
+}
+
+// BuildBalanceReconciliationReport returns the detailed per-account
+// reconciliation between the authoritative posted move lines (ledger side)
+// and the materialized account_balances rows (balance side). Every amount is
+// expressed in exact integer minor units of the reconciliation currency, so
+// the drift columns expose even a single sub-minor-unit divergence.
+func (d *Driver) BuildBalanceReconciliationReport(
+	ctx context.Context,
+	companyID, fiscalPeriodID uuid.UUID,
+	currencyID string,
+) (reporting.ReconciliationReport, error) {
+	if companyID == uuid.Nil || fiscalPeriodID == uuid.Nil || currencyID == "" {
+		return reporting.ReconciliationReport{}, posting.ErrInvalidEntry
+	}
+	result := reporting.ReconciliationReport{
+		CompanyID:      companyID,
+		FiscalPeriodID: fiscalPeriodID,
+		CurrencyID:     currencyID,
+		ZeroDrift:      true,
+		GeneratedAt:    time.Now().UTC(),
+	}
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
 WITH line_totals AS (
     SELECT lines.account_id,
            SUM(lines.functional_debit_minor)::numeric AS debit_minor,
@@ -312,18 +340,67 @@ balance_totals AS (
     WHERE balances.company_id = $1
       AND balances.fiscal_period_id = $2
       AND balances.currency_id = $3
+),
+combined AS (
+    SELECT COALESCE(lines.account_id, balances.account_id) AS account_id,
+           COALESCE(lines.debit_minor, 0) AS ledger_debit,
+           COALESCE(lines.credit_minor, 0) AS ledger_credit,
+           COALESCE(balances.debit_minor, 0) AS balance_debit,
+           COALESCE(balances.credit_minor, 0) AS balance_credit
+    FROM line_totals AS lines
+    FULL OUTER JOIN balance_totals AS balances ON balances.account_id = lines.account_id
 )
-SELECT COUNT(*)
-FROM line_totals AS lines
-FULL OUTER JOIN balance_totals AS balances ON balances.account_id = lines.account_id
-WHERE COALESCE(lines.debit_minor, 0) <> COALESCE(balances.debit_minor, 0)
-   OR COALESCE(lines.credit_minor, 0) <> COALESCE(balances.credit_minor, 0)`,
-			companyID, fiscalPeriodID, currencyID).Scan(&mismatches)
-	}); err != nil {
-		return err
+SELECT account_id, ledger_debit, ledger_credit, balance_debit, balance_credit
+FROM combined
+ORDER BY account_id`,
+			companyID, fiscalPeriodID, currencyID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var accountID uuid.UUID
+			var ledgerDebit, ledgerCredit, balanceDebit, balanceCredit string
+			if err := rows.Scan(&accountID, &ledgerDebit, &ledgerCredit, &balanceDebit, &balanceCredit); err != nil {
+				return err
+			}
+			result.AccountsChecked++
+			ledgerDebitMinor, err := decimal.NewFromString(ledgerDebit)
+			if err != nil {
+				return fmt.Errorf("account %s ledger debit %q: %w", accountID, ledgerDebit, err)
+			}
+			ledgerCreditMinor, err := decimal.NewFromString(ledgerCredit)
+			if err != nil {
+				return fmt.Errorf("account %s ledger credit %q: %w", accountID, ledgerCredit, err)
+			}
+			balanceDebitMinor, err := decimal.NewFromString(balanceDebit)
+			if err != nil {
+				return fmt.Errorf("account %s balance debit %q: %w", accountID, balanceDebit, err)
+			}
+			balanceCreditMinor, err := decimal.NewFromString(balanceCredit)
+			if err != nil {
+				return fmt.Errorf("account %s balance credit %q: %w", accountID, balanceCredit, err)
+			}
+			debitDrift := ledgerDebitMinor.Sub(balanceDebitMinor)
+			creditDrift := ledgerCreditMinor.Sub(balanceCreditMinor)
+			if debitDrift.IsZero() && creditDrift.IsZero() {
+				continue
+			}
+			result.ZeroDrift = false
+			result.Drifts = append(result.Drifts, reporting.ReconciliationAccountDrift{
+				AccountID:          accountID,
+				LedgerDebitMinor:   ledgerDebitMinor,
+				LedgerCreditMinor:  ledgerCreditMinor,
+				BalanceDebitMinor:  balanceDebitMinor,
+				BalanceCreditMinor: balanceCreditMinor,
+				DebitDriftMinor:    debitDrift,
+				CreditDriftMinor:   creditDrift,
+			})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return reporting.ReconciliationReport{}, err
 	}
-	if mismatches != 0 {
-		return fmt.Errorf("balance reconciliation failed: %d account(s) differ between posted move lines and account_balances", mismatches)
-	}
-	return nil
+	return result, nil
 }

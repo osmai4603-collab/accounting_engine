@@ -125,12 +125,21 @@ func (e *AccountingEngine) StatementBundle(
 	return e.Reporting.Bundle.GenerateForCompanyContext(ctx, companyID, start, end, currency)
 }
 
+// ReconcileBalances runs the continuous balance reconciliation engine for a
+// company, fiscal period, and currency. The returned report carries the
+// per-account drift (in exact minor units) between the materialized
+// account_balances rows and the posted account_move_lines; the returned error
+// is non-nil whenever any drift is detected (zero-drift requirement).
 func (e *AccountingEngine) ReconcileBalances(
 	ctx context.Context,
 	companyID, fiscalPeriodID uuid.UUID,
 	currencyID string,
-) error {
-	return e.Reporting.Reconciliation.Reconcile(ctx, companyID, fiscalPeriodID, currencyID)
+) (*reporting.ReconciliationReport, error) {
+	report, err := e.Reporting.Reconciliation.Reconcile(ctx, companyID, fiscalPeriodID, currencyID)
+	if err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
 
 func (e *AccountingEngine) ForCompany(companyID uuid.UUID) *subledgers.CompanySubledgerService {

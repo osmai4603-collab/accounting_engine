@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type reconciliationTestDriver struct {
@@ -16,18 +18,35 @@ type reconciliationTestDriver struct {
 	companyID uuid.UUID
 	periodID  uuid.UUID
 	currency  string
+	drift     bool
 }
 
-func (d *reconciliationTestDriver) AssertBalancesMatchMoves(
+func (d *reconciliationTestDriver) BuildBalanceReconciliationReport(
 	ctx context.Context,
 	companyID, periodID uuid.UUID,
 	currency string,
-) error {
+) (reporting.ReconciliationReport, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return reporting.ReconciliationReport{}, err
 	}
 	d.companyID, d.periodID, d.currency = companyID, periodID, currency
-	return nil
+	report := reporting.ReconciliationReport{
+		CompanyID:       companyID,
+		FiscalPeriodID:  periodID,
+		CurrencyID:      currency,
+		AccountsChecked: 2,
+		GeneratedAt:      time.Now().UTC(),
+		ZeroDrift:       true,
+	}
+	if d.drift {
+		report.ZeroDrift = false
+		report.AccountsChecked = 2
+		report.Drifts = append(report.Drifts, reporting.ReconciliationAccountDrift{
+			AccountID:       uuid.New(),
+			DebitDriftMinor: decimal.NewFromInt(1),
+		})
+	}
+	return report, nil
 }
 
 func TestReportFacadeRequiresCompanyContext(t *testing.T) {
@@ -110,10 +129,33 @@ func TestBalanceReconciliationFacadePassesCompanyScope(t *testing.T) {
 	}
 
 	companyID, periodID := uuid.New(), uuid.New()
-	if err := engine.ReconcileBalances(context.Background(), companyID, periodID, "USD"); err != nil {
+	report, err := engine.ReconcileBalances(context.Background(), companyID, periodID, "USD")
+	if err != nil {
 		t.Fatalf("reconcile balances: %v", err)
 	}
 	if driver.companyID != companyID || driver.periodID != periodID || driver.currency != "USD" {
 		t.Fatalf("reconciliation scope = (%s, %s, %q)", driver.companyID, driver.periodID, driver.currency)
+	}
+	if report == nil || !report.ZeroDrift || report.CompanyID != companyID || report.FiscalPeriodID != periodID {
+		t.Fatalf("reconciliation report = %+v, want zero-drift report for (%s, %s)", report, companyID, periodID)
+	}
+}
+
+func TestBalanceReconciliationFacadeSurfacesDrift(t *testing.T) {
+	driver := &reconciliationTestDriver{Driver: memory.New(), drift: true}
+	engine, err := New(driver, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := engine.ReconcileBalances(context.Background(), uuid.New(), uuid.New(), "USD")
+	if !errors.Is(err, reporting.ErrBalanceDriftDetected) {
+		t.Fatalf("reconcile balances error = %v, want ErrBalanceDriftDetected", err)
+	}
+	if report != nil {
+		t.Fatalf("reconcile balances report = %+v, want nil on drift", report)
+	}
+	if driver.companyID == uuid.Nil {
+		t.Fatal("reconciliation scope was not forwarded to the repository")
 	}
 }

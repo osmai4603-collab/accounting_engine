@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -432,6 +433,120 @@ func TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres(t *testing.T) {
 	event.Amount, _ = financialtypes.NewMoneyFromString("201", "USD")
 	if _, err := otherBridge.ProcessContext(ctx, event); !errors.Is(err, subledgers.ErrIdempotencyPayloadConflict) {
 		t.Fatalf("conflicting persistent replay error = %v, want payload conflict", err)
+	}
+}
+
+// TestPostgresConcurrentIdempotencyHammering fires twenty parallel workers
+// carrying the exact same economic event (same idempotency key, same payload)
+// at the same instant. Each worker owns a separate event bridge, so the
+// database unique constraint on (company_id, idempotency_key) is the only
+// serialization point. Exactly one worker may create the draft; every other
+// worker must transparently converge on the winner's entry id, and the ledger
+// must contain precisely one draft entry with its two lines.
+func TestPostgresConcurrentIdempotencyHammering(t *testing.T) {
+	ctx, driver, _, _, companyID, journalID, debitAccountID, creditAccountID := setupPostgresPostingEnv(t)
+	defer driver.Close()
+
+	amount, err := financialtypes.NewMoneyFromString("333.50", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := subledgers.EconomicEvent{
+		CompanyID: companyID, IdempotencyKey: "HAMMER-" + uuid.NewString(), EventType: "invoice_issued",
+		Date:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		Amount: amount, Reference: "INV-HAMMERED",
+		Attributes: map[string]string{"source": "hammer", "channel": "api"},
+	}
+
+	const numWorkers = 20
+	type outcome struct {
+		entryID uuid.UUID
+		err     error
+	}
+	outcomes := make([]outcome, numWorkers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			// A fresh bridge per worker: the per-bridge mutex must not be the
+			// thing that serializes the hammering, the database must be.
+			bridge := subledgers.NewEventBridge(driver, nil)
+			if err := bridge.RegisterMapping(subledgers.SubledgerEventMapping{
+				CompanyID: companyID, EventType: "invoice_issued",
+				DebitAccountID: debitAccountID, CreditAccountID: creditAccountID, JournalID: journalID,
+			}); err != nil {
+				outcomes[workerIdx] = outcome{err: err}
+				return
+			}
+			<-start
+			entry, err := bridge.ProcessContext(ctx, event)
+			outcomes[workerIdx] = outcome{entryID: entry.ID, err: err}
+		}(w)
+	}
+	close(start)
+	wg.Wait()
+
+	// Every worker must have succeeded with the identical entry id.
+	winner := uuid.Nil
+	for workerIdx, result := range outcomes {
+		if result.err != nil {
+			t.Fatalf("worker %d failed under concurrent hammering: %v", workerIdx, result.err)
+		}
+		if result.entryID == uuid.Nil {
+			t.Fatalf("worker %d returned an empty entry id", workerIdx)
+		}
+		if winner == uuid.Nil {
+			winner = result.entryID
+			continue
+		}
+		if result.entryID != winner {
+			t.Fatalf("worker %d returned entry %s, want the shared entry %s", workerIdx, result.entryID, winner)
+		}
+	}
+
+	// Exactly one event, one draft move, two lines: no duplicated records.
+	var events, drafts, lines int
+	if err := driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT
+			(SELECT COUNT(*) FROM subledger_events WHERE company_id=$1 AND idempotency_key=$2),
+			(SELECT COUNT(*) FROM account_moves WHERE company_id=$1 AND id=$3 AND status='draft'),
+			(SELECT COUNT(*) FROM account_move_lines WHERE company_id=$1 AND move_id=$3)`,
+			companyID, event.IdempotencyKey, winner).Scan(&events, &drafts, &lines)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("stored economic events = %d, want exactly 1", events)
+	}
+	if drafts != 1 {
+		t.Fatalf("draft journal entries = %d, want exactly 1", drafts)
+	}
+	if lines != 2 {
+		t.Fatalf("journal entry lines = %d, want exactly 2", lines)
+	}
+
+	// The stored event points at the very entry every worker observed.
+	stored, found, err := driver.GetEventByIdempotencyKeyForCompany(ctx, companyID, event.IdempotencyKey)
+	if err != nil || !found {
+		t.Fatalf("read stored event: found=%v error=%v", found, err)
+	}
+	if stored.ResultEntryID != winner {
+		t.Fatalf("stored event entry = %s, want %s", stored.ResultEntryID, winner)
+	}
+
+	// No stray drafts from the losing workers either.
+	var totalDrafts int
+	if err := driver.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM account_moves WHERE company_id=$1 AND status='draft'`,
+			companyID).Scan(&totalDrafts)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if totalDrafts != 1 {
+		t.Fatalf("total draft entries in scope = %d, want exactly 1", totalDrafts)
 	}
 }
 
