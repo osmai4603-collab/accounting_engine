@@ -94,15 +94,16 @@
 | 2.1 | `TestApprovalAmountTamperingRejection` | مطابق | `storage/postgres/governance_integration_test.go` |
 | 2.2 | `TestMakerCheckerThresholdEnforcement` | مطابق | `storage/postgres/governance_integration_test.go` |
 | 2.3 | `TestAtomicPostingAuditLogCreation` | مطابق | `storage/postgres/governance_integration_test.go` |
-| 3.1 | `TestIdempotencyPayloadConflict` | `TestEventBridgeRejectsIdempotencyPayloadConflicts` + `TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres` | `internal/subledgers/subledgers_test.go`، `storage/postgres/phase2_atomic_posting_test.go` |
-| 3.2 | `TestPreventDuplicateAssetDisposal` | `TestConcurrentDisposalDraftsReserveAssetOnce` + `TestPhase3_AtomicAssetDisposalAndImpairmentPostgres` | `internal/subledgers/subledgers_test.go`، `storage/postgres/phase2_atomic_posting_test.go` |
+| 3.1 | `TestEventBridgeRejectsIdempotencyPayloadConflicts` + `TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres` | مطابق | `internal/subledgers/subledgers_test.go`، `storage/postgres/phase2_atomic_posting_test.go` |
+| 3.2 | `TestConcurrentDisposalDraftsReserveAssetOnce` + `TestPhase3_AtomicAssetDisposalAndImpairmentPostgres` | مطابق | `internal/subledgers/subledgers_test.go`، `storage/postgres/phase2_atomic_posting_test.go` |
 | 4.1 | `TestUpdateAccountParentPostgresCompanyScope` | مطابق | `storage/postgres/masterdata_parent_integration_test.go` |
 | 4.2 | `TestReportFacadeWithCompanyContext` | مطابق (+ `TestReportFacadeRequiresCompanyContext` و`TestBalanceReconciliationFacadePassesCompanyScope`) | `engine_reporting_test.go` |
+| 4.3 | `TestBalanceReconciliationFacadePassesCompanyScope` + `TestRoundingDifferenceHandling` | مطابق | `engine_reporting_test.go`، `storage/postgres/rounding_test.go` |
 | 5.1 | `TestIrregularPeriodLeaseDiscounting` | مطابق | `internal/ifrs16/lease_test.go` |
 | 5.2 | `TestCLIAutomationExecutionWithJobs` | مطابق | `cmd/agy/main_test.go` |
 | 6.1-4 | `TestBaselineMigrationCleanRun` | مطابق (+ `TestNewWithPortsAcceptsIndependentStoragePorts` و`TestNewWithPortsRequiresEveryPort` و`TestEveryMigrationHasRollback`) | `storage/postgres/migrations_integration_test.go`، `engine_ports_test.go`، `storage/postgres/migrations_test.go` |
 
-> الاختباران البديلان للمهمتين 3.1 و3.2 يغطيان السلوك نفسه على مستوى الوحدة وعلى مستوى PostgreSQL الحقيقي، ولذلك اعتُبرا مكافئين وظيفياً للأسماء الواردة في مصفوفة RACI.
+> حُدّثت مصفوفة RACI في الخطة لتستخدم أسماء الاختبارات الفعلية للمهمتين 3.1 و3.2، وأُضيف لها عمود الحالة وأدوار R/A/C/I. جميع الصفوف مغلقة ومتحققة.
 
 ---
 
