@@ -74,6 +74,7 @@
   - `SubledgerStoragePort`
   - `GovernanceStoragePort`
 - إضافة `StoragePorts` و`NewWithPorts(ports StoragePorts, config Config)` للحقن المستقل، مع `ErrStoragePortRequired` عند غياب أي منفذ إلزامي.
+- إضافة تحقق عقد وقت التصريف في [`engine_storage_contract_test.go`](../engine_storage_contract_test.go) يثبت أن مشغّل PostgreSQL يفي بكل منفذ متخصص على حدة وبالواجهة المجمّعة.
 - توقيع محكم النوع: `New(driver StorageDriver, config Config)` و`NewEngine(driver StorageDriver, config Config)` دون استخدام `any`.
 - الإبقاء على `StorageDriver` كواجهة مجمّعة للتوافق مع المستدعين الحاليين، وتفويض `New` إلى `NewWithPorts`.
 - حسم `Config`: إزالة `Config.BaseCurrency` لأن العملة الوظيفية تُقرأ من الشركة، وأصبح `Config` فارغاً مع `DefaultConfig()`.
