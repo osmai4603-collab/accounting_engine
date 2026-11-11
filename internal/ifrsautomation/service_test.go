@@ -1,7 +1,11 @@
 package ifrsautomation_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +14,50 @@ import (
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 )
+
+func TestSchedulerLogsFailuresAndContinuesWithOtherJobs(t *testing.T) {
+	store := newMemoryPostingAdapter()
+	runner, err := ifrsautomation.NewRunner(store, store, "test-scheduler")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	period, err := ifrsautomation.Month(2026, time.June)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodJobRan := false
+	failingJob := ifrsautomation.JobFunc{
+		ID: "a-failing-job",
+		Execute: func(context.Context, ifrsautomation.Period) ([]posting.JournalEntry, error) {
+			return nil, errors.New("source unavailable")
+		},
+	}
+	goodJob := ifrsautomation.JobFunc{
+		ID: "z-good-job",
+		Execute: func(context.Context, ifrsautomation.Period) ([]posting.JournalEntry, error) {
+			goodJobRan = true
+			return nil, nil
+		},
+	}
+	scheduler, err := ifrsautomation.NewSchedulerWithLogger(runner, logger, goodJob, failingJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.RunPeriod(context.Background(), period); err == nil ||
+		!strings.Contains(err.Error(), "source unavailable") {
+		t.Fatalf("RunPeriod error = %v, want job failure", err)
+	}
+	if !goodJobRan {
+		t.Fatal("scheduler did not continue after a failed job")
+	}
+	for _, expected := range []string{"a-failing-job", "z-good-job", "source unavailable", "IFRS automation job completed"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("structured log missing %q: %s", expected, output.String())
+		}
+	}
+}
 
 type memoryPostingAdapter struct {
 	entries map[uuid.UUID]posting.JournalEntry

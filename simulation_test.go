@@ -93,7 +93,7 @@ func TestConcurrentPostingSequenceIntegrity(t *testing.T) {
 func TestAccountingEngineExposesCompanyFinancialDimensions(t *testing.T) {
 	driver := memory.New()
 	ctx := context.Background()
-	engine, err := accountingengine.New(accountingengine.DefaultConfig(), driver)
+	engine, err := accountingengine.New(driver, accountingengine.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestRejectedPostingDoesNotConsumeSequence(t *testing.T) {
 func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	driver := memory.New()
 	ctx := context.Background()
-	engine, err := accountingengine.New(accountingengine.DefaultConfig(), driver)
+	engine, err := accountingengine.New(driver, accountingengine.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

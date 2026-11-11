@@ -254,25 +254,25 @@ flowchart TD
 - **الملف المستهدف:** [`internal/ifrs16/lease.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrs16/lease.go) (الأسطر 152-228)
 
 - **خطوات التنفيذ:**
-  1. استبدال القسمة المباشرة على 12 (`annualDiscountRate / 12`) بحساب الفائدة الفعلية المركبة للفترات غير المتطابقة:
+  1. استبدال القسمة المباشرة على 12 (`annualDiscountRate / 12`) بحساب الفائدة الفعلية المركبة وفق أساس Actual/365:
      \[
      r_p = (1 + r_a)^{\frac{\Delta \text{days}}{365}} - 1
      \]
-  2. دعم الفواصل الزمنية الدقيقة بين تواريخ الاستحقاق (`payment.DueDate - lastDate`) بدلاً من افتراض أنها دائماً شهر ثابت بـ 30 يوماً.
-  3. توثيق المعالجة المحاسبية للقيم المتبقية المضمونة والتعديلات العقدية.
+  2. دعم الفواصل الزمنية الدقيقة بين تاريخ بدء العقد/التعديل وتواريخ الاستحقاق (`payment.DueDate - lastDate`) بدلاً من افتراض أنها دائماً شهر ثابت.
+  3. توثيق أن القيمة المتبقية المضمونة الداخلة في الالتزام يجب أن تُدرج ضمن التدفقات التعاقدية، وأن جدول الدفعات المعدل يجب أن يعكس تغييراتها.
 
 ### المهمة 5.2: ترقية وتصحيح CLI أتمتة المعايير
 
 - **الملفات المستهدفة:**
   - [`cmd/agy/main.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/cmd/agy/main.go) (الأسطر 75-105)
+  - [`internal/ifrsautomation/config.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrsautomation/config.go)
   - [`internal/ifrsautomation/service.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/ifrsautomation/service.go)
 
 - **خطوات التنفيذ:**
-  1. تسجيل الوظائف الشهرية القياسية (`MonthlyJobs`) تلقائياً عند بناء المجدول:
-     - وظيفة إهلاك عقود الإيجار IFRS 16.
-     - وظيفة احتساب مخصص الخسائر الائتمانية IFRS 9.
-     - وظيفة جداول الاعتراف بالإيراد IFRS 15.
-  2. إيقاف تجاهل الأخطاء `_, _ = s.RunPeriod(ctx, period)`، وإضافة نظام Logging متكامل و Structured Error Reporting لتسجيل فشل أي مهمة في سجلات النظام.
+  1. تحميل إعدادات الشركات والحسابات وعقود IFRS 16 من JSON عبر `--config` أو `AGY_IFRS_CONFIG_PATH`، وبناء وظائف IFRS 9 وIFRS 15 وIFRS 16 من خلال `BuildStandardJobs`.
+  2. عند غياب الإعداد أو فراغه، إصدار تحذير منظم وتخطي التشغيل دون الاتصال بقاعدة البيانات؛ أما الإعداد غير الصحيح فيُرجع خطأ واضحاً.
+  3. إيقاف تجاهل أخطاء التشغيل وتسجيل نتيجة كل وظيفة أو فشلها بهيكل منظم، مع استمرار الوظائف المستقلة عند تعثر وظيفة أخرى.
+  4. توثيق مخطط الإعداد وأوامر CLI في `docs/ifrs_automation.md` واختبار تنفيذ الوظائف القياسية وقيودها.
 
 ---
 

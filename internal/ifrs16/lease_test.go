@@ -12,8 +12,8 @@ import (
 
 func TestLeaseContractPVAndSchedule(t *testing.T) {
 	contract := testContract(t)
-	assertAmount(t, contract.InitialLeaseLiability, "197.0395")
-	assertAmount(t, contract.InitialROUAsset, "222.0395")
+	assertAmount(t, contract.InitialLeaseLiability, "197.2269")
+	assertAmount(t, contract.InitialROUAsset, "222.2269")
 
 	schedule, err := contract.AmortizationSchedule()
 	if err != nil {
@@ -22,14 +22,37 @@ func TestLeaseContractPVAndSchedule(t *testing.T) {
 	if len(schedule) != 2 {
 		t.Fatalf("schedule length = %d, want 2", len(schedule))
 	}
-	assertAmount(t, schedule[0].InterestExpense, "1.9704")
-	assertAmount(t, schedule[0].PrincipalReduction, "98.0296")
-	assertAmount(t, schedule[0].ClosingLiability, "99.0099")
-	assertAmount(t, schedule[1].InterestExpense, "0.9901")
+	assertAmount(t, schedule[0].InterestExpense, "1.9075")
+	assertAmount(t, schedule[0].PrincipalReduction, "98.0925")
+	assertAmount(t, schedule[0].ClosingLiability, "99.1344")
+	assertAmount(t, schedule[1].InterestExpense, "0.8656")
 	assertAmount(t, schedule[1].ClosingLiability, "0")
-	assertAmount(t, schedule[0].ROUDepreciation, "111.0198")
-	assertAmount(t, schedule[1].AccumulatedDepreciation, "222.0395")
+	assertAmount(t, schedule[0].ROUDepreciation, "111.1135")
+	assertAmount(t, schedule[1].AccumulatedDepreciation, "222.2269")
 	assertAmount(t, schedule[1].ClosingROUAsset, "0")
+}
+
+func TestIrregularPeriodLeaseDiscounting(t *testing.T) {
+	contract, err := NewLeaseContract(
+		date(2026, 1, 1), decimal.RequireFromString("0.12"),
+		[]LeasePayment{
+			{DueDate: date(2026, 2, 15), Amount: money(t, "100", "USD")},
+			{DueDate: date(2026, 3, 31), Amount: money(t, "100", "USD")},
+		},
+		money(t, "0", "USD"), money(t, "0", "USD"), money(t, "0", "USD"), 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAmount(t, contract.InitialLeaseLiability, "195.8870")
+
+	schedule, err := contract.AmortizationSchedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAmount(t, schedule[0].InterestExpense, "2.7561")
+	assertAmount(t, schedule[1].InterestExpense, "1.3569")
+	assertAmount(t, schedule[1].ClosingLiability, "0")
 }
 
 func TestLeaseJournalEntriesBalance(t *testing.T) {

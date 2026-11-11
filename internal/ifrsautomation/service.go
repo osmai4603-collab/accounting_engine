@@ -3,6 +3,9 @@ package ifrsautomation
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
@@ -17,17 +20,26 @@ type Scheduler struct {
 	mu      sync.Mutex
 	runner  *Runner
 	jobs    []Job
+	logger  *slog.Logger
 	running bool
 }
 
 // NewScheduler creates an abstract periodic automation scheduler.
 func NewScheduler(runner *Runner, jobs ...Job) (*Scheduler, error) {
+	return NewSchedulerWithLogger(runner, slog.Default(), jobs...)
+}
+
+func NewSchedulerWithLogger(runner *Runner, logger *slog.Logger, jobs ...Job) (*Scheduler, error) {
 	if runner == nil {
 		return nil, ErrDependenciesRequired
+	}
+	if logger == nil {
+		return nil, errors.New("IFRS automation logger is required")
 	}
 	return &Scheduler{
 		runner: runner,
 		jobs:   append([]Job(nil), jobs...),
+		logger: logger,
 	}, nil
 }
 
@@ -35,7 +47,47 @@ func NewScheduler(runner *Runner, jobs ...Job) (*Scheduler, error) {
 func (s *Scheduler) RunPeriod(ctx context.Context, period Period) (RunResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.runner.RunMonthly(ctx, period, s.jobs...)
+	result := RunResult{Period: period}
+	if err := period.Validate(); err != nil {
+		return result, err
+	}
+	if !period.IsFullMonth() {
+		return result, ErrInvalidPeriod
+	}
+	jobs := append([]Job(nil), s.jobs...)
+	for _, job := range jobs {
+		if job == nil || job.Key() == "" {
+			return result, ErrInvalidJob
+		}
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].Key() < jobs[j].Key() })
+	if len(jobs) == 0 {
+		s.logger.Warn("IFRS automation period has no registered jobs",
+			"period_start", period.Start, "period_end", period.End)
+		return result, nil
+	}
+
+	var failures []error
+	for _, job := range jobs {
+		jobResult, err := s.runner.RunMonthly(ctx, period, job)
+		result.PostedEntryIDs = append(result.PostedEntryIDs, jobResult.PostedEntryIDs...)
+		result.AlreadyPosted = append(result.AlreadyPosted, jobResult.AlreadyPosted...)
+		if err != nil {
+			wrapped := fmt.Errorf("run IFRS automation job %s: %w", job.Key(), err)
+			failures = append(failures, wrapped)
+			s.logger.Error("IFRS automation job failed", "job_key", job.Key(),
+				"period_start", period.Start, "period_end", period.End, "error", err)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		s.logger.Info("IFRS automation job completed", "job_key", job.Key(),
+			"period_start", period.Start, "period_end", period.End,
+			"posted_entries", len(jobResult.PostedEntryIDs),
+			"already_posted_entries", len(jobResult.AlreadyPosted))
+	}
+	return result, errors.Join(failures...)
 }
 
 // StartDaemon starts an autonomous background runner that checks on each tick
@@ -71,9 +123,13 @@ func (s *Scheduler) StartDaemon(ctx context.Context, interval time.Duration) err
 			prevMonth := t.UTC().AddDate(0, -1, 0)
 			period, err := Month(prevMonth.Year(), prevMonth.Month())
 			if err != nil {
+				s.logger.Error("cannot determine prior IFRS automation period", "error", err)
 				continue
 			}
-			_, _ = s.RunPeriod(ctx, period)
+			if _, err := s.RunPeriod(ctx, period); err != nil {
+				s.logger.Error("IFRS automation period failed", "period_start", period.Start,
+					"period_end", period.End, "error", err)
+			}
 		}
 	}
 }
@@ -84,4 +140,3 @@ func (s *Scheduler) IsRunning() bool {
 	defer s.mu.Unlock()
 	return s.running
 }
-

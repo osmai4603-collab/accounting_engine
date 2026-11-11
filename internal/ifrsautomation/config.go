@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	"accounting_engine/internal/ifrs15"
 	"accounting_engine/internal/ifrs16"
 	"accounting_engine/internal/ifrs9"
-	"accounting_engine/internal/posting"
 	"accounting_engine/internal/subledgers"
+	"accounting_engine/internal/types"
 	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -23,27 +23,27 @@ type AutomationConfig struct {
 }
 
 type CompanyAutomationConfig struct {
-	CompanyID uuid.UUID             `json:"company_id"`
-	JournalID uuid.UUID             `json:"journal_id"`
-	CreatedBy string                `json:"created_by"`
-	IFRS9     IFRS9AutomationConfig `json:"ifrs9"`
+	CompanyID uuid.UUID              `json:"company_id"`
+	JournalID uuid.UUID              `json:"journal_id"`
+	CreatedBy string                 `json:"created_by"`
+	IFRS9     IFRS9AutomationConfig  `json:"ifrs9"`
 	IFRS15    IFRS15AutomationConfig `json:"ifrs15"`
 	IFRS16    IFRS16AutomationConfig `json:"ifrs16"`
 }
 
 type IFRS9AutomationConfig struct {
-	ImpairmentAccountID uuid.UUID                       `json:"impairment_account_id"`
-	AllowanceAccountID  uuid.UUID                       `json:"allowance_account_id"`
-	Currency            string                          `json:"currency"`
-	ProvisionMatrix     map[subledgers.AgingBucket]decimal.Decimal `json:"provision_matrix"`
-	SICRReceivableIDs   []uuid.UUID                     `json:"sicr_receivable_ids,omitempty"`
-	DefaultedReceivableIDs []uuid.UUID                  `json:"defaulted_receivable_ids,omitempty"`
+	ImpairmentAccountID    uuid.UUID                                  `json:"impairment_account_id"`
+	AllowanceAccountID     uuid.UUID                                  `json:"allowance_account_id"`
+	Currency               string                                     `json:"currency"`
+	ProvisionMatrix        map[subledgers.AgingBucket]decimal.Decimal `json:"provision_matrix"`
+	SICRReceivableIDs      []uuid.UUID                                `json:"sicr_receivable_ids,omitempty"`
+	DefaultedReceivableIDs []uuid.UUID                                `json:"defaulted_receivable_ids,omitempty"`
 }
 
 type IFRS15AutomationConfig struct {
-	RevenueAccountID       uuid.UUID `json:"revenue_account_id"`
-	ContractLiabilityID    uuid.UUID `json:"contract_liability_id"`
-	ContractAssetID        uuid.UUID `json:"contract_asset_id"`
+	RevenueAccountID    uuid.UUID `json:"revenue_account_id"`
+	ContractLiabilityID uuid.UUID `json:"contract_liability_id"`
+	ContractAssetID     uuid.UUID `json:"contract_asset_id"`
 }
 
 type IFRS16AutomationConfig struct {
@@ -51,20 +51,25 @@ type IFRS16AutomationConfig struct {
 }
 
 type LeaseAutomationConfig struct {
-	ID       uuid.UUID             `json:"id"`
-	Contract ifrs16.LeaseContract  `json:"contract"`
-	Accounts ifrs16.LeaseAccounts  `json:"accounts"`
+	ID       uuid.UUID            `json:"id"`
+	Contract LeaseTerms           `json:"contract"`
+	Accounts ifrs16.LeaseAccounts `json:"accounts"`
+}
+
+type LeaseTerms struct {
+	CommencementDate   time.Time             `json:"commencement_date"`
+	AnnualDiscountRate decimal.Decimal       `json:"annual_discount_rate"`
+	Payments           []ifrs16.LeasePayment `json:"payments"`
+	InitialDirectCosts types.Money           `json:"initial_direct_costs"`
+	Prepayments        types.Money           `json:"prepayments"`
+	LeaseIncentives    types.Money           `json:"lease_incentives"`
+	UsefulLifePeriods  int                   `json:"useful_life_periods"`
 }
 
 type AutomationDataSource interface {
-	ifrsautomationRevenueStore
+	RevenueContractStore
 	ListOpenLinesForCompany(context.Context, uuid.UUID, string) ([]subledgers.OpenLine, error)
 	GetAccountBalanceAsOf(context.Context, uuid.UUID, uuid.UUID, time.Time) (types.Money, error)
-}
-
-type ifrsautomationRevenueStore interface {
-	ListContracts(context.Context, uuid.UUID) ([]ifrs15.Contract, error)
-	SaveContract(context.Context, uuid.UUID, ifrs15.Contract) error
 }
 
 var _ AutomationDataSource = (*postgres.Driver)(nil)
@@ -84,6 +89,10 @@ func BuildStandardJobs(cfg AutomationConfig, db AutomationDataSource) ([]Job, er
 			return nil, fmt.Errorf("%w: duplicate company %s", ErrInvalidAutomationConfig, company.CompanyID)
 		}
 		seenCompanies[company.CompanyID] = struct{}{}
+		if err := validateReceivableFlags(company.IFRS9); err != nil {
+			return nil, fmt.Errorf("%w: company %s IFRS 9: %w",
+				ErrInvalidAutomationConfig, company.CompanyID, err)
+		}
 
 		portfolio := receivablePortfolio{source: db, sicrIDs: uuidSet(company.IFRS9.SICRReceivableIDs),
 			defaultedIDs: uuidSet(company.IFRS9.DefaultedReceivableIDs)}
@@ -97,7 +106,8 @@ func BuildStandardJobs(cfg AutomationConfig, db AutomationDataSource) ([]Job, er
 		}
 		eclEngine, err := ifrs9.NewEngine(eclConfig, portfolio, allowance)
 		if err != nil {
-			return nil, fmt.Errorf("%w: company %s IFRS 9: %v", ErrInvalidAutomationConfig, company.CompanyID, err)
+			return nil, fmt.Errorf("%w: company %s IFRS 9: %w",
+				ErrInvalidAutomationConfig, company.CompanyID, err)
 		}
 		jobs = append(jobs, ECLJob{
 			ID: "ifrs9-ecl:" + company.CompanyID.String(), Engine: eclEngine,
@@ -111,9 +121,9 @@ func BuildStandardJobs(cfg AutomationConfig, db AutomationDataSource) ([]Job, er
 		jobs = append(jobs, &RevenueJob{
 			ID: "ifrs15-revenue:" + company.CompanyID.String(), Store: db,
 			CompanyID: company.CompanyID, JournalID: company.JournalID, CreatedBy: company.CreatedBy,
-			RevenueAccountID: company.IFRS15.RevenueAccountID,
+			RevenueAccountID:    company.IFRS15.RevenueAccountID,
 			ContractLiabilityID: company.IFRS15.ContractLiabilityID,
-			ContractAssetID: company.IFRS15.ContractAssetID,
+			ContractAssetID:     company.IFRS15.ContractAssetID,
 		})
 
 		leases := make([]LeaseSchedule, 0, len(company.IFRS16.Leases))
@@ -126,8 +136,22 @@ func BuildStandardJobs(cfg AutomationConfig, db AutomationDataSource) ([]Job, er
 				return nil, fmt.Errorf("%w: duplicate lease %s", ErrInvalidAutomationConfig, lease.ID)
 			}
 			seenLeases[lease.ID] = struct{}{}
+			contract, err := ifrs16.NewLeaseContract(
+				lease.Contract.CommencementDate, lease.Contract.AnnualDiscountRate,
+				lease.Contract.Payments, lease.Contract.InitialDirectCosts,
+				lease.Contract.Prepayments, lease.Contract.LeaseIncentives,
+				lease.Contract.UsefulLifePeriods,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("%w: company %s lease %s: %w",
+					ErrInvalidAutomationConfig, company.CompanyID, lease.ID, err)
+			}
+			if err := validateLeaseAccounts(lease.Accounts); err != nil {
+				return nil, fmt.Errorf("%w: company %s lease %s accounts: %w",
+					ErrInvalidAutomationConfig, company.CompanyID, lease.ID, err)
+			}
 			leases = append(leases, LeaseSchedule{
-				ID: lease.ID, Contract: lease.Contract, Accounts: lease.Accounts,
+				ID: lease.ID, Contract: contract, Accounts: lease.Accounts,
 				CompanyID: company.CompanyID, JournalID: company.JournalID, CreatedBy: company.CreatedBy,
 			})
 		}
@@ -138,9 +162,32 @@ func BuildStandardJobs(cfg AutomationConfig, db AutomationDataSource) ([]Job, er
 	return jobs, nil
 }
 
+func validateReceivableFlags(config IFRS9AutomationConfig) error {
+	seen := make(map[uuid.UUID]struct{}, len(config.SICRReceivableIDs)+len(config.DefaultedReceivableIDs))
+	for _, id := range append(append([]uuid.UUID(nil), config.SICRReceivableIDs...), config.DefaultedReceivableIDs...) {
+		if id == uuid.Nil {
+			return ifrs9.ErrInvalidConfiguration
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func validateLeaseAccounts(accounts ifrs16.LeaseAccounts) error {
+	if accounts.ROUAsset == uuid.Nil || accounts.LeaseLiability == uuid.Nil ||
+		accounts.Cash == uuid.Nil || accounts.InterestExpense == uuid.Nil ||
+		accounts.DepreciationExpense == uuid.Nil || accounts.AccumulatedDepreciation == uuid.Nil {
+		return ErrJobConfiguration
+	}
+	return nil
+}
+
 type receivablePortfolio struct {
-	source      AutomationDataSource
-	sicrIDs     map[uuid.UUID]struct{}
+	source       AutomationDataSource
+	sicrIDs      map[uuid.UUID]struct{}
 	defaultedIDs map[uuid.UUID]struct{}
 }
 
@@ -168,7 +215,13 @@ type accountAllowance struct {
 func (a accountAllowance) ExistingAllowance(
 	ctx context.Context, companyID, accountID uuid.UUID, currency string,
 ) (types.Money, error) {
-	balance, err := a.source.GetAccountBalanceAsOf(ctx, companyID, accountID, time.Now().UTC())
+	return a.ExistingAllowanceAsOf(ctx, companyID, accountID, currency, time.Now().UTC())
+}
+
+func (a accountAllowance) ExistingAllowanceAsOf(
+	ctx context.Context, companyID, accountID uuid.UUID, currency string, asOf time.Time,
+) (types.Money, error) {
+	balance, err := a.source.GetAccountBalanceAsOf(ctx, companyID, accountID, asOf)
 	if err != nil {
 		return types.Money{}, err
 	}
@@ -187,5 +240,3 @@ func uuidSet(values []uuid.UUID) map[uuid.UUID]struct{} {
 	}
 	return result
 }
-
-var _ posting.JournalEntry

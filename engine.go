@@ -3,6 +3,7 @@ package accounting_engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"accounting_engine/internal/governance"
@@ -15,48 +16,73 @@ import (
 )
 
 var ErrUnsupportedStorageDriver = errors.New("unsupported storage driver")
+var ErrStoragePortRequired = errors.New("required storage port is missing")
 
-type Config struct {
-	BaseCurrency string
-}
+type Config struct{}
 
 func DefaultConfig() Config {
-	return Config{BaseCurrency: "USD"}
+	return Config{}
 }
 
-func New(first, second any) (*AccountingEngine, error) {
-	switch value := first.(type) {
-	case Config:
-		driver, ok := second.(StorageDriver)
-		if !ok {
-			return nil, ErrUnsupportedStorageDriver
-		}
-		return NewEngine(driver, value)
-	case StorageDriver:
-		config, ok := second.(Config)
-		if !ok {
-			return nil, ErrUnsupportedStorageDriver
-		}
-		return NewEngine(value, config)
-	default:
-		return nil, ErrUnsupportedStorageDriver
-	}
+type PostingStoragePort interface {
+	posting.BulkRepository
+	posting.FinancialDimensionPolicy
+}
+
+type ReportingStoragePort interface {
+	reporting.Repository
+}
+
+type MasterDataStoragePort interface {
+	masterdata.ContextStorageRepository
+	masterdata.FinancialDimensionRepository
+}
+
+type SubledgerStoragePort interface {
+	subledgers.Repository
+}
+
+type GovernanceStoragePort interface {
+	governance.Repository
 }
 
 type StorageDriver interface {
-	masterdata.ContextStorageRepository
-	masterdata.FinancialDimensionRepository
-	posting.Repository
-	posting.BulkRepository
-	posting.FinancialDimensionPolicy
-	subledgers.Repository
+	PostingStoragePort
+	ReportingStoragePort
+	MasterDataStoragePort
+	SubledgerStoragePort
+	GovernanceStoragePort
 	valuation.RateProviderSPI
-	reporting.Repository
-	governance.Repository
-	reporting.AccountRepository
-	reporting.LedgerRepository
-	reporting.FiscalYearRepository
-	reporting.CompanyScopedClosingRepository
+}
+
+type StoragePorts struct {
+	Posting            PostingStoragePort
+	Reporting          ReportingStoragePort
+	MasterData         MasterDataStoragePort
+	Subledger          SubledgerStoragePort
+	Governance         GovernanceStoragePort
+	Valuation          valuation.RateProviderSPI
+	MakerCheckerPolicy posting.MakerCheckerPolicy
+}
+
+func New(driver StorageDriver, config Config) (*AccountingEngine, error) {
+	if driver == nil {
+		return nil, ErrUnsupportedStorageDriver
+	}
+	return NewWithPorts(StoragePorts{
+		Posting:            driver,
+		Reporting:          driver,
+		MasterData:         driver,
+		Subledger:          driver,
+		Governance:         driver,
+		Valuation:          driver,
+		MakerCheckerPolicy: optionalMakerCheckerPolicy(driver),
+	}, config)
+}
+
+func optionalMakerCheckerPolicy(driver StorageDriver) posting.MakerCheckerPolicy {
+	policy, _ := driver.(posting.MakerCheckerPolicy)
+	return policy
 }
 
 type AccountingEngine struct {
@@ -175,27 +201,43 @@ func NewEngine(driver StorageDriver, config Config) (*AccountingEngine, error) {
 	if driver == nil {
 		return nil, ErrUnsupportedStorageDriver
 	}
-	if config.BaseCurrency == "" {
-		config.BaseCurrency = DefaultConfig().BaseCurrency
+	return New(driver, config)
+}
+
+func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) {
+	for _, port := range []struct {
+		name      string
+		isMissing bool
+	}{
+		{name: "posting", isMissing: ports.Posting == nil},
+		{name: "reporting", isMissing: ports.Reporting == nil},
+		{name: "master data", isMissing: ports.MasterData == nil},
+		{name: "subledger", isMissing: ports.Subledger == nil},
+		{name: "governance", isMissing: ports.Governance == nil},
+		{name: "valuation", isMissing: ports.Valuation == nil},
+	} {
+		if port.isMissing {
+			return nil, fmt.Errorf("%w: %s", ErrStoragePortRequired, port.name)
+		}
 	}
 
-	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(driver))
-	postingEngine := posting.NewEngine(driver, masterService)
-	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(driver))
-	governanceEngine := governance.NewEngine(driver)
+	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(ports.MasterData))
+	postingEngine := posting.NewEngine(ports.Posting, masterService)
+	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(ports.Posting))
+	governanceEngine := governance.NewEngine(ports.Governance)
 	postingEngine.SetApprovalGate(governanceEngine.ApprovalGate())
-	if policy, ok := driver.(posting.MakerCheckerPolicy); ok {
-		postingEngine.SetMakerCheckerPolicy(policy)
+	if ports.MakerCheckerPolicy != nil {
+		postingEngine.SetMakerCheckerPolicy(ports.MakerCheckerPolicy)
 	}
-	subledgerService := subledgers.NewService(driver, postingEngine)
+	subledgerService := subledgers.NewService(ports.Subledger, postingEngine)
 	return &AccountingEngine{
 		MasterData: masterService,
 		Posting:    postingEngine,
 		Subledgers: subledgerService,
-		Valuation:  valuation.NewEngine(driver),
-		Reporting:  reporting.NewEngine(driver),
+		Valuation:  valuation.NewEngine(ports.Valuation),
+		Reporting:  reporting.NewEngine(ports.Reporting),
 		Governance: governanceEngine,
-		Dimensions: driver,
+		Dimensions: ports.MasterData,
 		Config:     config,
 	}, nil
 }

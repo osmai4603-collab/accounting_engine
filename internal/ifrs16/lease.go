@@ -27,7 +27,7 @@ var (
 
 // LeasePayment is a contractual payment due on a specified date.
 type LeasePayment struct {
-	DueDate time.Time  `json:"due_date"`
+	DueDate time.Time   `json:"due_date"`
 	Amount  types.Money `json:"amount"`
 }
 
@@ -45,7 +45,7 @@ type LeaseContract struct {
 	InitialROUAsset       types.Money     `json:"initial_rou_asset"`
 }
 
-// SchedulePeriod is one monthly liability and ROU depreciation roll-forward.
+// SchedulePeriod is one dated liability and ROU depreciation roll-forward.
 type SchedulePeriod struct {
 	Period                  int
 	DueDate                 time.Time

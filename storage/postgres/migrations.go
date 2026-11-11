@@ -156,6 +156,20 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 }
 
 func ensureSchemaMigrationsTable(ctx context.Context, pool *pgxpool.Pool) error {
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM pg_catalog.pg_class AS relation
+		JOIN pg_catalog.pg_namespace AS schema ON schema.oid = relation.relnamespace
+		WHERE schema.nspname = current_schema()
+		  AND relation.relname = 'schema_migrations'
+		  AND relation.relkind = 'r'
+	)`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
 	_, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version bigint PRIMARY KEY,
 		name text NOT NULL,

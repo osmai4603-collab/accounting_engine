@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,7 +31,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION]]")
+		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION] [--config PATH]]")
 	}
 
 	switch args[0] {
@@ -35,22 +40,25 @@ func run(args []string) error {
 	case "ifrs":
 		return runIFRS(args[1:])
 	default:
-		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION]]")
+		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION] [--config PATH]]")
 	}
 }
 
 func runIFRS(args []string) error {
-	if len(args) == 0 || (args[0] != "daemon" && args[0] != "run") {
-		return errors.New("usage: agy ifrs [daemon|run] [--interval DURATION]")
+	mode, interval, configPath, err := parseIFRSArgs(args)
+	if err != nil {
+		return err
 	}
 
-	interval := time.Hour
-	if len(args) >= 3 && args[1] == "--interval" {
-		d, err := time.ParseDuration(args[2])
-		if err != nil {
-			return fmt.Errorf("invalid daemon interval: %w", err)
-		}
-		interval = d
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	config, configured, err := loadAutomationConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if !configured || len(config.Companies) == 0 {
+		logger.Warn("IFRS automation skipped: configuration is not configured",
+			"config_path", configPath)
+		return nil
 	}
 
 	connectionString := os.Getenv("DATABASE_URL")
@@ -75,17 +83,28 @@ func runIFRS(args []string) error {
 		return fmt.Errorf("initialize ifrs automation runner: %w", err)
 	}
 
-	scheduler, err := ifrsautomation.NewScheduler(runner)
+	jobs, err := ifrsautomation.BuildStandardJobs(config, driver)
+	if err != nil {
+		return fmt.Errorf("build standard IFRS automation jobs: %w", err)
+	}
+	scheduler, err := ifrsautomation.NewSchedulerWithLogger(runner, logger, jobs...)
 	if err != nil {
 		return fmt.Errorf("initialize ifrs scheduler: %w", err)
 	}
 
-	if args[0] == "daemon" {
+	return runIFRSPeriod(ctx, scheduler, mode, interval, time.Now().UTC())
+}
+
+func runIFRSPeriod(
+	ctx context.Context,
+	scheduler *ifrsautomation.Scheduler,
+	mode string,
+	interval time.Duration,
+	now time.Time,
+) error {
+	if mode == "daemon" {
 		return scheduler.StartDaemon(ctx, interval)
 	}
-
-	// Immediate run for previous month
-	now := time.Now().UTC()
 	prev := now.AddDate(0, -1, 0)
 	period, err := ifrsautomation.Month(prev.Year(), prev.Month())
 	if err != nil {
@@ -93,6 +112,65 @@ func runIFRS(args []string) error {
 	}
 	_, err = scheduler.RunPeriod(ctx, period)
 	return err
+}
+
+func parseIFRSArgs(args []string) (mode string, interval time.Duration, configPath string, err error) {
+	if len(args) == 0 || (args[0] != "daemon" && args[0] != "run") {
+		return "", 0, "", errors.New("usage: agy ifrs [daemon|run] [--interval DURATION] [--config PATH]")
+	}
+	mode, interval = args[0], time.Hour
+	configPath = os.Getenv("AGY_IFRS_CONFIG_PATH")
+	for index := 1; index < len(args); {
+		if index+1 >= len(args) {
+			return "", 0, "", errors.New("usage: agy ifrs [daemon|run] [--interval DURATION] [--config PATH]")
+		}
+		switch args[index] {
+		case "--interval":
+			parsed, parseErr := time.ParseDuration(args[index+1])
+			if parseErr != nil || parsed <= 0 {
+				return "", 0, "", fmt.Errorf("invalid daemon interval %q", args[index+1])
+			}
+			interval = parsed
+		case "--config":
+			if strings.TrimSpace(args[index+1]) == "" {
+				return "", 0, "", errors.New("IFRS config path must not be empty")
+			}
+			configPath = args[index+1]
+		default:
+			return "", 0, "", errors.New("usage: agy ifrs [daemon|run] [--interval DURATION] [--config PATH]")
+		}
+		index += 2
+	}
+	return mode, interval, configPath, nil
+}
+
+func loadAutomationConfig(path string) (ifrsautomation.AutomationConfig, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return ifrsautomation.AutomationConfig{}, false, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ifrsautomation.AutomationConfig{}, false, nil
+	}
+	if err != nil {
+		return ifrsautomation.AutomationConfig{}, false, fmt.Errorf("read IFRS automation config: %w", err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return ifrsautomation.AutomationConfig{}, false, nil
+	}
+	var config ifrsautomation.AutomationConfig
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return ifrsautomation.AutomationConfig{}, false, fmt.Errorf("decode IFRS automation config: %w", err)
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return ifrsautomation.AutomationConfig{}, false, errors.New("decode IFRS automation config: multiple JSON values")
+		}
+		return ifrsautomation.AutomationConfig{}, false, fmt.Errorf("decode IFRS automation config: %w", err)
+	}
+	return config, true, nil
 }
 
 func runDB(args []string) error {

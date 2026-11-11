@@ -56,6 +56,10 @@ type AllowanceSource interface {
 	ExistingAllowance(context.Context, uuid.UUID, uuid.UUID, string) (financialtypes.Money, error)
 }
 
+type AsOfAllowanceSource interface {
+	ExistingAllowanceAsOf(context.Context, uuid.UUID, uuid.UUID, string, time.Time) (financialtypes.Money, error)
+}
+
 type Engine struct {
 	config    Config
 	portfolio PortfolioSource
@@ -144,7 +148,16 @@ func (e *Engine) Calculate(ctx context.Context, asOf time.Time) (CalculationResu
 	if err != nil {
 		return CalculationResult{}, err
 	}
-	existing, err := e.allowance.ExistingAllowance(ctx, e.config.CompanyID, e.config.AllowanceAccountID, e.config.Currency)
+	var existing financialtypes.Money
+	if source, ok := e.allowance.(AsOfAllowanceSource); ok {
+		existing, err = source.ExistingAllowanceAsOf(
+			ctx, e.config.CompanyID, e.config.AllowanceAccountID, e.config.Currency, asOf,
+		)
+	} else {
+		existing, err = e.allowance.ExistingAllowance(
+			ctx, e.config.CompanyID, e.config.AllowanceAccountID, e.config.Currency,
+		)
+	}
 	if err != nil {
 		return CalculationResult{}, err
 	}
