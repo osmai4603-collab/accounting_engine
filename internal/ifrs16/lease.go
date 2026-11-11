@@ -21,29 +21,28 @@ var (
 var (
 	zero     = decimal.Zero
 	one      = decimal.NewFromInt(1)
-	twelve   = decimal.NewFromInt(12)
 	scale    = int32(types.FinancialScale)
 	internal = int32(types.InternalScale)
 )
 
-// LeasePayment is a contractual payment due at the end of one monthly period.
+// LeasePayment is a contractual payment due on a specified date.
 type LeasePayment struct {
-	DueDate time.Time
-	Amount  types.Money
+	DueDate time.Time  `json:"due_date"`
+	Amount  types.Money `json:"amount"`
 }
 
 // LeaseContract contains the inputs and calculated commencement balances for a lease.
 type LeaseContract struct {
-	CommencementDate      time.Time
-	Currency              string
-	AnnualDiscountRate    decimal.Decimal
-	Payments              []LeasePayment
-	InitialDirectCosts    types.Money
-	Prepayments           types.Money
-	LeaseIncentives       types.Money
-	UsefulLifePeriods     int
-	InitialLeaseLiability types.Money
-	InitialROUAsset       types.Money
+	CommencementDate      time.Time       `json:"commencement_date"`
+	Currency              string          `json:"currency"`
+	AnnualDiscountRate    decimal.Decimal `json:"annual_discount_rate"`
+	Payments              []LeasePayment  `json:"payments"`
+	InitialDirectCosts    types.Money     `json:"initial_direct_costs"`
+	Prepayments           types.Money     `json:"prepayments"`
+	LeaseIncentives       types.Money     `json:"lease_incentives"`
+	UsefulLifePeriods     int             `json:"useful_life_periods"`
+	InitialLeaseLiability types.Money     `json:"initial_lease_liability"`
+	InitialROUAsset       types.Money     `json:"initial_rou_asset"`
 }
 
 // SchedulePeriod is one monthly liability and ROU depreciation roll-forward.
@@ -110,7 +109,7 @@ func NewLeaseContract(
 		lastDate = payment.DueDate
 	}
 
-	liability, err := presentValue(copyPayments, annualDiscountRate, currency)
+	liability, err := presentValue(copyPayments, commencementDate, annualDiscountRate, currency)
 	if err != nil {
 		return LeaseContract{}, err
 	}
@@ -149,10 +148,10 @@ func (c LeaseContract) AmortizationSchedule() ([]SchedulePeriod, error) {
 	if c.InitialLeaseLiability.Currency() == "" || len(c.Payments) == 0 {
 		return nil, ErrInvalidContract
 	}
-	periodicRate := c.AnnualDiscountRate.DivRound(twelve, internal)
 	balance := c.InitialLeaseLiability
 	rouBalance := c.InitialROUAsset
 	accumulated := mustZero(c.Currency)
+	lastDate := c.CommencementDate.UTC()
 	depreciationPeriods := c.UsefulLifePeriods
 	if depreciationPeriods == 0 || depreciationPeriods > len(c.Payments) {
 		depreciationPeriods = len(c.Payments)
@@ -160,7 +159,11 @@ func (c LeaseContract) AmortizationSchedule() ([]SchedulePeriod, error) {
 	baseDepreciation := c.InitialROUAsset.Amount().DivRound(decimal.NewFromInt(int64(depreciationPeriods)), scale)
 	result := make([]SchedulePeriod, 0, len(c.Payments))
 	for i, payment := range c.Payments {
-		interestAmount := balance.Amount().Mul(periodicRate).Round(scale)
+		growth, err := periodGrowthFactor(c.AnnualDiscountRate, payment.DueDate.Sub(lastDate))
+		if err != nil {
+			return nil, err
+		}
+		interestAmount := balance.Amount().Mul(growth.Sub(one)).Round(scale)
 		interest, err := types.NewMoney(interestAmount, c.Currency)
 		if err != nil {
 			return nil, err
@@ -209,22 +212,43 @@ func (c LeaseContract) AmortizationSchedule() ([]SchedulePeriod, error) {
 			ClosingROUAsset:         rouBalance,
 		})
 		balance = closing
+		lastDate = payment.DueDate
 	}
 	return result, nil
 }
 
-func presentValue(payments []LeasePayment, annualRate decimal.Decimal, currency string) (types.Money, error) {
-	monthlyRate := annualRate.DivRound(twelve, internal)
+func presentValue(
+	payments []LeasePayment, startDate time.Time, annualRate decimal.Decimal, currency string,
+) (types.Money, error) {
 	factor := one
 	total := zero
+	lastDate := startDate.UTC()
 	for _, payment := range payments {
-		factor = factor.Mul(one.Add(monthlyRate))
+		growth, err := periodGrowthFactor(annualRate, payment.DueDate.Sub(lastDate))
+		if err != nil {
+			return types.Money{}, err
+		}
+		factor = factor.Mul(growth)
 		if !factor.IsPositive() {
 			return types.Money{}, ErrInvalidContract
 		}
 		total = total.Add(payment.Amount.Amount().DivRound(factor, internal))
+		lastDate = payment.DueDate
 	}
 	return types.NewMoney(total.Round(scale), currency)
+}
+
+func periodGrowthFactor(annualRate decimal.Decimal, elapsed time.Duration) (decimal.Decimal, error) {
+	if elapsed <= 0 || annualRate.IsNegative() {
+		return decimal.Zero, ErrInvalidContract
+	}
+	yearNanos := decimal.NewFromInt(int64(365 * 24 * time.Hour))
+	yearFraction := decimal.NewFromInt(int64(elapsed)).DivRound(yearNanos, internal)
+	growth, err := one.Add(annualRate).PowWithPrecision(yearFraction, internal+8)
+	if err != nil || !growth.IsPositive() {
+		return decimal.Zero, fmt.Errorf("%w: discount factor", ErrInvalidContract)
+	}
+	return growth, nil
 }
 
 func mustZero(currency string) types.Money {

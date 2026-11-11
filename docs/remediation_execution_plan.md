@@ -222,6 +222,7 @@ flowchart TD
      `GetAccountByIDForCompany(ctx, account.CompanyID, account.ID)`
   2. تعديل فحص الدورات `accountWouldCycle` ليستقبل `companyID` و `ctx` ويقرأ الحسابات داخل نطاق الشركة لمنع استدعاء الدالة المهجورة التي ترمي `ErrCompanyScopeRequired`.
   3. كتابة اختبار تكاملي في PostgreSQL لإنشاء شجرة حسابات وتعديل الحساب الأب والتأكد من نجاح العملية واكتشاف الدورات الحلقية.
+  4. توفير `UpdateAccountParentContext(ctx, account, parentID)` مع الإبقاء على `UpdateAccountParent` كواجهة توافقية تستخدم سياقاً افتراضياً.
 
 ### المهمة 4.2: إضافة `CompanyID` و `Context` لواجهات التقارير في الـ Facade
 
@@ -229,16 +230,18 @@ flowchart TD
 
 - **خطوات التنفيذ:**
   1. تعديل توقيع الدوال:
-     - `GeneralLedger(ctx context.Context, companyID uuid.UUID, ...)`
+     - `GeneralLedger(ctx context.Context, companyID, accountID uuid.UUID, ...)`
      - `FinancialRatios(ctx context.Context, companyID uuid.UUID, ...)`
      - `StatementBundle(ctx context.Context, companyID uuid.UUID, ...)`
-  2. الحفاظ على دوال التوافق القديمة (مع تمييزها بـ `Deprecated`) إذا لزم الأمر، وتوجيهها للدوال الجديدة بنطاق محدد.
+  2. عدم إبقاء أي واجهة تقرير في الـ Facade بلا نطاق شركة؛ لا يمكن توجيه الدوال القديمة بأمان ما لم يتوفر `companyID` صريح.
+  3. تمرير السياق والنطاق إلى تطبيقات التقارير متعددة الشركات، وعدم استخدام مسارات التقارير غير المقيدة بالشركة من الـ Facade.
 
 ### المهمة 4.3: محرك المطابقة بين الأرصدة المخزنة ودفتر الأستاذ (Balance Reconciliation Engine)
 
 - **إضافة نوعية جديدة:**
   - بناء أداة تحقق داخلية: `internal/reporting/reconciliation.go`
   - تقوم بمقارنة فورية بين `account_balances` (المخزن المادي) ومجموع قيود `account_move_lines` الفعلية لكل حساب للتأكد من عدم وجود أي انحراف (Drift).
+  - إتاحة الفحص من خلال `ReconcileBalances(ctx, companyID, fiscalPeriodID, currencyID)` في واجهة المحرك.
 
 ---
 

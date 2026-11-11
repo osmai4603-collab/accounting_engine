@@ -104,9 +104,7 @@ func newCompanyReportingRepository(ctx context.Context, repository Repository, c
 }
 
 func (r companyReportingRepository) ListAccounts(ctx context.Context) ([]masterdata.Account, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
+	ctx = r.ctx
 	if !r.asOf.IsZero() {
 		return r.ledger.ListAccountsForCompanyAsOfContext(ctx, r.companyID, r.asOf)
 	}
@@ -114,10 +112,7 @@ func (r companyReportingRepository) ListAccounts(ctx context.Context) ([]masterd
 }
 
 func (r companyReportingRepository) ListEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
-	return r.ledger.ListEntriesForCompanyContext(ctx, r.companyID, start, end)
+	return r.ledger.ListEntriesForCompanyContext(r.ctx, r.companyID, start, end)
 }
 
 func (r companyReportingRepository) ListPostedEntries(ctx context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
@@ -130,34 +125,25 @@ func (r companyReportingRepository) ReadAccountPeriodBalancesContext(
 	currency string,
 	includeAdjusting bool,
 ) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
 	reader, ok := r.ledger.(AccountPeriodBalanceReader)
 	if !ok {
 		return nil, false, nil
 	}
 	return reader.ReadAccountPeriodBalancesForCompanyContext(
-		ctx, r.companyID, start, end, currency, includeAdjusting,
+		r.ctx, r.companyID, start, end, currency, includeAdjusting,
 	)
 }
 
 func (r companyReportingRepository) ListFixedAssets(ctx context.Context) ([]subledgers.FixedAsset, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
-	return r.ledger.ListFixedAssetsForCompanyContext(ctx, r.companyID)
+	return r.ledger.ListFixedAssetsForCompanyContext(r.ctx, r.companyID)
 }
 
 func (r companyReportingRepository) ListOpenLines(ctx context.Context, partnerID string) ([]subledgers.OpenLine, error) {
-	if ctx == nil {
-		ctx = r.ctx
-	}
-	return r.ledger.ListOpenLinesForCompanyContext(ctx, r.companyID, partnerID)
+	return r.ledger.ListOpenLinesForCompanyContext(r.ctx, r.companyID, partnerID)
 }
 
 func (r companyReportingRepository) GetRate(ctx context.Context, from, to string, date time.Time) (decimal.Decimal, error) {
-	return r.ledger.GetRateForCompany(ctx, r.companyID, from, to, date)
+	return r.ledger.GetRateForCompany(r.ctx, r.companyID, from, to, date)
 }
 
 func (r companyReportingRepository) GetRateOfType(
@@ -166,49 +152,49 @@ func (r companyReportingRepository) GetRateOfType(
 	from, to string,
 	date time.Time,
 ) (decimal.Decimal, error) {
-	return r.ledger.GetRateOfTypeForCompany(ctx, r.companyID, rateType, from, to, date)
+	return r.ledger.GetRateOfTypeForCompany(r.ctx, r.companyID, rateType, from, to, date)
 }
 
 func (r companyReportingRepository) ListAccountsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]masterdata.Account, error) {
 	if companyID != r.companyID {
 		return nil, ErrCompanyScopeRequired
 	}
-	return r.ledger.ListAccountsForCompanyContext(ctx, companyID)
+	return r.ledger.ListAccountsForCompanyContext(r.ctx, companyID)
 }
 
 func (r companyReportingRepository) ListAccountsForCompanyAsOfContext(ctx context.Context, companyID uuid.UUID, asOf time.Time) ([]masterdata.Account, error) {
 	if companyID != r.companyID {
 		return nil, ErrCompanyScopeRequired
 	}
-	return r.ledger.ListAccountsForCompanyAsOfContext(ctx, companyID, asOf)
+	return r.ledger.ListAccountsForCompanyAsOfContext(r.ctx, companyID, asOf)
 }
 
 func (r companyReportingRepository) ListEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID, start, end time.Time) ([]posting.JournalEntry, error) {
 	if companyID != r.companyID {
 		return nil, ErrCompanyScopeRequired
 	}
-	return r.ledger.ListEntriesForCompanyContext(ctx, companyID, start, end)
+	return r.ledger.ListEntriesForCompanyContext(r.ctx, companyID, start, end)
 }
 
 func (r companyReportingRepository) ListFixedAssetsForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]subledgers.FixedAsset, error) {
 	if companyID != r.companyID {
 		return nil, ErrCompanyScopeRequired
 	}
-	return r.ledger.ListFixedAssetsForCompanyContext(ctx, companyID)
+	return r.ledger.ListFixedAssetsForCompanyContext(r.ctx, companyID)
 }
 
 func (r companyReportingRepository) ListOpenLinesForCompanyContext(ctx context.Context, companyID uuid.UUID, partnerID string) ([]subledgers.OpenLine, error) {
 	if companyID != r.companyID {
 		return nil, ErrCompanyScopeRequired
 	}
-	return r.ledger.ListOpenLinesForCompanyContext(ctx, companyID, partnerID)
+	return r.ledger.ListOpenLinesForCompanyContext(r.ctx, companyID, partnerID)
 }
 
 func (r companyReportingRepository) GetRateForCompany(ctx context.Context, companyID uuid.UUID, from, to string, date time.Time) (decimal.Decimal, error) {
 	if companyID != r.companyID {
 		return decimal.Zero, ErrCompanyScopeRequired
 	}
-	return r.ledger.GetRateForCompany(ctx, companyID, from, to, date)
+	return r.ledger.GetRateForCompany(r.ctx, companyID, from, to, date)
 }
 
 func (r companyReportingRepository) GetRateOfTypeForCompany(
@@ -221,14 +207,14 @@ func (r companyReportingRepository) GetRateOfTypeForCompany(
 	if companyID != r.companyID {
 		return decimal.Zero, ErrCompanyScopeRequired
 	}
-	return r.ledger.GetRateOfTypeForCompany(ctx, companyID, rateType, from, to, date)
+	return r.ledger.GetRateOfTypeForCompany(r.ctx, companyID, rateType, from, to, date)
 }
 
 func (r companyReportingRepository) GetFiscalYearForCompanyContext(ctx context.Context, companyID, yearID uuid.UUID) (masterdata.FiscalYear, error) {
 	if companyID != r.companyID {
 		return masterdata.FiscalYear{}, ErrCompanyScopeRequired
 	}
-	return r.ledger.GetFiscalYearForCompanyContext(ctx, companyID, yearID)
+	return r.ledger.GetFiscalYearForCompanyContext(r.ctx, companyID, yearID)
 }
 
 func (r companyReportingRepository) IsFirstFiscalYearForCompanyContext(
@@ -242,7 +228,7 @@ func (r companyReportingRepository) IsFirstFiscalYearForCompanyContext(
 	if !ok {
 		return false, ErrFiscalYearHistoryRepositoryRequired
 	}
-	return repository.IsFirstFiscalYearForCompanyContext(ctx, companyID, yearID)
+	return repository.IsFirstFiscalYearForCompanyContext(r.ctx, companyID, yearID)
 }
 
 func (r companyReportingRepository) CarryForwardBalancesForCompanyContext(
@@ -256,26 +242,26 @@ func (r companyReportingRepository) CarryForwardBalancesForCompanyContext(
 	if !ok {
 		return ErrAccountBalanceRepositoryRequired
 	}
-	return repository.CarryForwardBalancesForCompanyContext(ctx, companyID, closedYearID, newPeriodID)
+	return repository.CarryForwardBalancesForCompanyContext(r.ctx, companyID, closedYearID, newPeriodID)
 }
 
 func (r companyReportingRepository) UpdatePeriodStateForCompanyContext(ctx context.Context, companyID, periodID uuid.UUID, state masterdata.PeriodState) error {
 	if companyID != r.companyID {
 		return ErrCompanyScopeRequired
 	}
-	return r.ledger.UpdatePeriodStateForCompanyContext(ctx, companyID, periodID, state)
+	return r.ledger.UpdatePeriodStateForCompanyContext(r.ctx, companyID, periodID, state)
 }
 
 func (r companyReportingRepository) UpdateFiscalYearStateForCompanyContext(ctx context.Context, companyID, yearID uuid.UUID, state masterdata.FiscalYearState) error {
 	if companyID != r.companyID {
 		return ErrCompanyScopeRequired
 	}
-	return r.ledger.UpdateFiscalYearStateForCompanyContext(ctx, companyID, yearID, state)
+	return r.ledger.UpdateFiscalYearStateForCompanyContext(r.ctx, companyID, yearID, state)
 }
 
 func (r companyReportingRepository) GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
 	if companyID != r.companyID {
 		return posting.JournalEntry{}, ErrCompanyScopeRequired
 	}
-	return r.ledger.GetEntryByIDForCompanyContext(ctx, companyID, entryID)
+	return r.ledger.GetEntryByIDForCompanyContext(r.ctx, companyID, entryID)
 }

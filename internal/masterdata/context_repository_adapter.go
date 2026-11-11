@@ -28,6 +28,10 @@ func (r contextRepositoryAdapter) CreateAccount(account Account) error {
 	return r.repository.CreateAccount(context.Background(), account)
 }
 
+func (r contextRepositoryAdapter) CreateAccountContext(ctx context.Context, account Account) error {
+	return r.repository.CreateAccount(ctx, account)
+}
+
 func (r contextRepositoryAdapter) GetAccountByID(id uuid.UUID) (Account, error) {
 	return r.repository.GetAccountByID(context.Background(), id)
 }

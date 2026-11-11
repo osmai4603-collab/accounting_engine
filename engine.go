@@ -70,16 +70,41 @@ type AccountingEngine struct {
 	Config     Config
 }
 
-func (e *AccountingEngine) GeneralLedger(accountID uuid.UUID, start, end time.Time, currency string) (reporting.GeneralLedgerAccountReport, error) {
-	return e.Reporting.GeneralLedger.Generate(accountID, start, end, currency)
+func (e *AccountingEngine) GeneralLedger(
+	ctx context.Context,
+	companyID, accountID uuid.UUID,
+	start, end time.Time,
+	currency string,
+) (reporting.GeneralLedgerAccountReport, error) {
+	return e.Reporting.GeneralLedger.GenerateForCompanyContext(
+		ctx, companyID, accountID, start, end, currency,
+	)
 }
 
-func (e *AccountingEngine) FinancialRatios(start, end time.Time, currency string) (reporting.FinancialRatios, error) {
-	return e.Reporting.Ratios.Generate(start, end, currency)
+func (e *AccountingEngine) FinancialRatios(
+	ctx context.Context,
+	companyID uuid.UUID,
+	start, end time.Time,
+	currency string,
+) (reporting.FinancialRatios, error) {
+	return e.Reporting.Ratios.GenerateForCompanyContext(ctx, companyID, start, end, currency)
 }
 
-func (e *AccountingEngine) StatementBundle(start, end time.Time, currency string) (reporting.StatementBundle, error) {
-	return e.Reporting.Bundle.Generate(start, end, currency)
+func (e *AccountingEngine) StatementBundle(
+	ctx context.Context,
+	companyID uuid.UUID,
+	start, end time.Time,
+	currency string,
+) (reporting.StatementBundle, error) {
+	return e.Reporting.Bundle.GenerateForCompanyContext(ctx, companyID, start, end, currency)
+}
+
+func (e *AccountingEngine) ReconcileBalances(
+	ctx context.Context,
+	companyID, fiscalPeriodID uuid.UUID,
+	currencyID string,
+) error {
+	return e.Reporting.Reconciliation.Reconcile(ctx, companyID, fiscalPeriodID, currencyID)
 }
 
 func (e *AccountingEngine) ForCompany(companyID uuid.UUID) *subledgers.CompanySubledgerService {

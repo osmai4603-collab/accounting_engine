@@ -12,16 +12,16 @@ import (
 
 // LeaseAccounts identifies the general-ledger accounts used by lease entries.
 type LeaseAccounts struct {
-	ROUAsset                uuid.UUID
-	LeaseLiability          uuid.UUID
-	Cash                    uuid.UUID
-	PrepaidLease            uuid.UUID
-	InterestExpense         uuid.UUID
-	DepreciationExpense     uuid.UUID
-	AccumulatedDepreciation uuid.UUID
-	ModificationGain        uuid.UUID
-	TerminationGain         uuid.UUID
-	TerminationLoss         uuid.UUID
+	ROUAsset                uuid.UUID `json:"rou_asset"`
+	LeaseLiability          uuid.UUID `json:"lease_liability"`
+	Cash                    uuid.UUID `json:"cash"`
+	PrepaidLease            uuid.UUID `json:"prepaid_lease"`
+	InterestExpense         uuid.UUID `json:"interest_expense"`
+	DepreciationExpense     uuid.UUID `json:"depreciation_expense"`
+	AccumulatedDepreciation uuid.UUID `json:"accumulated_depreciation"`
+	ModificationGain        uuid.UUID `json:"modification_gain"`
+	TerminationGain         uuid.UUID `json:"termination_gain"`
+	TerminationLoss         uuid.UUID `json:"termination_loss"`
 }
 
 // BuildCommencementEntry records the initial ROU, liability, and commencement cash items.
@@ -132,7 +132,7 @@ func (c LeaseContract) RecalculateModification(
 	if err != nil {
 		return ModificationResult{}, err
 	}
-	remeasured, err := presentValue(payments, newAnnualDiscountRate, c.Currency)
+	remeasured, err := presentValue(payments, effectiveDate, newAnnualDiscountRate, c.Currency)
 	if err != nil {
 		return ModificationResult{}, err
 	}

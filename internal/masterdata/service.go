@@ -60,7 +60,7 @@ func (s *Service) RegisterAccount(account Account) error {
 		if parent.AccountType != account.AccountType {
 			return ErrInvalidParent
 		}
-		if hasCycle, err := s.accountWouldCycle(account.ID, *account.ParentID); err != nil {
+		if hasCycle, err := s.accountWouldCycle(context.Background(), account.CompanyID, account.ID, *account.ParentID); err != nil {
 			return err
 		} else if hasCycle {
 			return ErrAccountCycle
@@ -76,7 +76,7 @@ func (s *Service) RegisterAccount(account Account) error {
 	return s.repo.CreateAccount(account)
 }
 
-func (s *Service) accountWouldCycle(accountID, parentID uuid.UUID) (bool, error) {
+func (s *Service) accountWouldCycle(ctx context.Context, companyID, accountID, parentID uuid.UUID) (bool, error) {
 	if accountID == uuid.Nil {
 		return false, nil
 	}
@@ -89,10 +89,13 @@ func (s *Service) accountWouldCycle(accountID, parentID uuid.UUID) (bool, error)
 		if seen[current] {
 			return true, nil
 		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		seen[current] = true
-		account, err := s.repo.GetAccountByID(current)
+		account, err := s.getAccountForCompany(ctx, companyID, current)
 		if err != nil {
-			return false, nil
+			return false, err
 		}
 		if account.ParentID == nil {
 			break
@@ -103,7 +106,17 @@ func (s *Service) accountWouldCycle(accountID, parentID uuid.UUID) (bool, error)
 }
 
 func (s *Service) UpdateAccountParent(account Account, parentID *uuid.UUID) error {
-	existing, err := s.repo.GetAccountByID(account.ID)
+	return s.UpdateAccountParentContext(context.Background(), account, parentID)
+}
+
+func (s *Service) UpdateAccountParentContext(ctx context.Context, account Account, parentID *uuid.UUID) error {
+	if ctx == nil {
+		return errors.New("account update context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	existing, err := s.getAccountForCompany(ctx, account.CompanyID, account.ID)
 	if err != nil {
 		return err
 	}
@@ -115,22 +128,51 @@ func (s *Service) UpdateAccountParent(account Account, parentID *uuid.UUID) erro
 	}
 	account.ParentID = parentID
 	if parentID != nil {
-		if account.CompanyID != uuid.Nil {
-			repository, ok := s.repo.(CompanyScopedRepository)
-			if !ok {
-				return ErrCompanyScopeRequired
-			}
-			if _, err := repository.GetAccountByIDForCompany(account.CompanyID, *parentID); err != nil {
+		parent, err := s.getAccountForCompany(ctx, account.CompanyID, *parentID)
+		if err != nil {
+			if errors.Is(err, ErrAccountNotFound) {
 				return ErrInvalidParent
 			}
+			return err
 		}
-		cycle, err := s.accountWouldCycle(account.ID, *parentID)
+		if parent.AccountType != account.AccountType {
+			return ErrInvalidParent
+		}
+		cycle, err := s.accountWouldCycle(ctx, account.CompanyID, account.ID, *parentID)
 		if err != nil {
 			return err
 		}
 		if cycle {
 			return ErrAccountCycle
 		}
+	}
+	return s.createAccountContext(ctx, account)
+}
+
+func (s *Service) getAccountForCompany(ctx context.Context, companyID, accountID uuid.UUID) (Account, error) {
+	if companyID == uuid.Nil {
+		return s.repo.GetAccountByID(accountID)
+	}
+	if repository, ok := s.repo.(ContextCompanyScopedRepository); ok {
+		return repository.GetAccountByIDForCompanyContext(ctx, companyID, accountID)
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	if repository, ok := s.repo.(CompanyScopedRepository); ok {
+		return repository.GetAccountByIDForCompany(companyID, accountID)
+	}
+	return Account{}, ErrCompanyScopeRequired
+}
+
+func (s *Service) createAccountContext(ctx context.Context, account Account) error {
+	if repository, ok := s.repo.(interface {
+		CreateAccountContext(context.Context, Account) error
+	}); ok {
+		return repository.CreateAccountContext(ctx, account)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return s.repo.CreateAccount(account)
 }

@@ -1,6 +1,8 @@
 package masterdata
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,55 @@ func newAccount(code string, accountType AccountType, parent *uuid.UUID) Account
 	return Account{
 		ID: uuid.New(), Code: code, Name: code, AccountType: accountType,
 		NormalBalance: DefaultNormalBalance(accountType), ParentID: parent,
+	}
+}
+
+func TestUpdateAccountParentUsesCompanyScopeAndRejectsCycles(t *testing.T) {
+	repository := NewMockRepository()
+	service := NewService(repository)
+	companyID := uuid.New()
+
+	firstRoot := newAccount("1000", AccountTypeAsset, nil)
+	firstRoot.CompanyID = companyID
+	secondRoot := newAccount("1100", AccountTypeAsset, nil)
+	secondRoot.CompanyID = companyID
+	child := newAccount("1001", AccountTypeAsset, &firstRoot.ID)
+	child.CompanyID = companyID
+	for _, account := range []Account{firstRoot, secondRoot, child} {
+		if err := service.RegisterAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := context.Background()
+	if err := service.UpdateAccountParentContext(ctx, child, &secondRoot.ID); err != nil {
+		t.Fatalf("update account parent: %v", err)
+	}
+	updated, err := repository.GetAccountByIDForCompany(companyID, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ParentID == nil || *updated.ParentID != secondRoot.ID {
+		t.Fatalf("updated parent = %v, want %s", updated.ParentID, secondRoot.ID)
+	}
+
+	if err := service.UpdateAccountParentContext(ctx, secondRoot, &child.ID); !errors.Is(err, ErrAccountCycle) {
+		t.Fatalf("cyclic parent update error = %v, want ErrAccountCycle", err)
+	}
+
+	otherCompanyParent := newAccount("2000", AccountTypeAsset, nil)
+	otherCompanyParent.CompanyID = uuid.New()
+	if err := service.RegisterAccount(otherCompanyParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.UpdateAccountParentContext(ctx, child, &otherCompanyParent.ID); !errors.Is(err, ErrInvalidParent) {
+		t.Fatalf("cross-company parent error = %v, want ErrInvalidParent", err)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := service.UpdateAccountParentContext(canceled, child, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled update error = %v, want context.Canceled", err)
 	}
 }
 
