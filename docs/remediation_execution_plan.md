@@ -327,21 +327,26 @@ flowchart TD
 
 ## 2. جدول المتابعة ومصفوفة المسؤوليات (RACI Tracking Matrix)
 
-| المرحلة | المكون الأساسي | الملفات الرئيسية | الاختبارات الإلزامية للإغلاق | الأولوية |
-| --- | --- | --- | --- | :---: |
-| **1.1** | توازن العملات في Trigger | `schema.sql`, `migrations/` | `TestMultiCurrencyTriggerPostingBalance` | P0 |
-| **1.2** | الترحيل الجماعي والتسلسل | `posting.go`, `masterdata.go`, `bulk.go` | `TestConcurrentSequenceAllocation`, `TestBulkAtomicity` | P0 |
-| **1.3** | الدقة والتقريب | `money.go`, `posting.go` | `TestRoundingDifferenceHandling` | P0 |
-| **2.1** | ربط الموافقات بالقيد | `approval.go`, `governance_store.go` | `TestApprovalAmountTamperingRejection` | P0 |
-| **2.2** | تفعيل بوابة الموافقات | `engine.go`, `posting/engine.go` | `TestMakerCheckerThresholdEnforcement` | P0 |
-| **2.3** | تكامل سجل التدقيق الذري | `posting.go`, `audit_chain.go` | `TestAtomicPostingAuditLogCreation` | P0 |
-| **3.1** | فحص تطابق Idempotency | `event_bridge.go` | `TestIdempotencyPayloadConflict` | P1 |
-| **3.2** | ذرية عمليات الأصول | `fixed_assets.go` | `TestPreventDuplicateAssetDisposal` | P1 |
-| **4.1** | شجرة الحسابات بالشركة | `masterdata/service.go`, `postgres/` | `TestUpdateAccountParentPostgresCompanyScope` | P1 |
-| **4.2** | سياق الشركة في التقارير | `engine.go`, `reporting/` | `TestReportFacadeWithCompanyContext` | P1 |
-| **5.1** | فائدة IFRS 16 الفعلية | `ifrs16/lease.go` | `TestIrregularPeriodLeaseDiscounting` | P2 |
-| **5.2** | وظائف CLI الأتمتة | `cmd/agy/main.go`, `ifrsautomation/` | `TestCLIAutomationExecutionWithJobs` | P2 |
-| **6.1-4** | المعمارية و ISP و Migrations | `engine.go`, `postgres/driver.go` | `TestBaselineMigrationCleanRun` | P2 |
+| المرحلة | المكون الأساسي | الملفات الرئيسية | الاختبارات الإلزامية للإغلاق | R | A | C | I | الأولوية | الحالة |
+| --- | --- | --- | --- | --- | --- | --- | --- | :---: | :---: |
+| **1.1** | توازن العملات في Trigger | `migrations/202611010001_baseline_schema.sql`, `migrations/202611110001_fix_balance_trigger.sql` | `TestMultiCurrencyTriggerPostingBalance` | Core Accounting Engineer | Chief Accounting Architect | DBA, Financial Controller | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **1.2** | الترحيل الجماعي والتسلسل | `posting.go`, `masterdata.go`, `bulk.go` | `TestConcurrentSequenceAllocation`, `TestBulkAtomicity` | Core Accounting Engineer | Chief Accounting Architect | DBA, Performance Engineer | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **1.3** | الدقة والتقريب | `money.go`, `posting.go` | `TestRoundingDifferenceHandling` | Core Accounting Engineer | Chief Accounting Architect | Financial Controller, IFRS Technical Lead | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **2.1** | ربط الموافقات بالقيد | `approval.go`, `governance_store.go` | `TestApprovalAmountTamperingRejection` | Governance & Audit Engineer | Chief Accounting Architect | Financial Controller, Security & Audit Lead | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **2.2** | تفعيل بوابة الموافقات | `engine.go`, `posting/engine.go` | `TestMakerCheckerThresholdEnforcement` | Governance & Audit Engineer | Chief Accounting Architect | Financial Controller, Security & Audit Lead | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **2.3** | تكامل سجل التدقيق الذري | `posting.go`, `audit_chain.go` | `TestAtomicPostingAuditLogCreation` | Governance & Audit Engineer | Chief Accounting Architect | Security & Audit Lead, DBA | Product Owner, QA Lead | P0 | ✅ مغلق |
+| **3.1** | فحص تطابق Idempotency | `event_bridge.go` | `TestEventBridgeRejectsIdempotencyPayloadConflicts`, `TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres` | Subledger Engineer | Chief Accounting Architect | Financial Controller, Integration Lead | Product Owner, QA Lead | P1 | ✅ مغلق |
+| **3.2** | ذرية عمليات الأصول | `fixed_assets.go` | `TestConcurrentDisposalDraftsReserveAssetOnce`, `TestPhase3_AtomicAssetDisposalAndImpairmentPostgres` | Subledger Engineer | Chief Accounting Architect | Financial Controller, DBA | Product Owner, QA Lead | P1 | ✅ مغلق |
+| **4.1** | شجرة الحسابات بالشركة | `masterdata/service.go`, `postgres/` | `TestUpdateAccountParentPostgresCompanyScope` | Master Data Engineer | Chief Accounting Architect | DBA, Financial Controller | Product Owner, QA Lead | P1 | ✅ مغلق |
+| **4.2** | سياق الشركة في التقارير | `engine.go`, `reporting/` | `TestReportFacadeWithCompanyContext` | Reporting Engineer | Chief Accounting Architect | Financial Controller, Reporting Lead | Product Owner, QA Lead | P1 | ✅ مغلق |
+| **4.3** | مطابقة الأرصدة مع الأستاذ | `reporting/reconciliation.go`, `postgres/reporting.go` | `TestBalanceReconciliationFacadePassesCompanyScope`, `AssertBalancesMatchMoves` | Reporting Engineer | Chief Accounting Architect | Financial Controller, DBA | Product Owner, QA Lead | P1 | ✅ مغلق |
+| **5.1** | فائدة IFRS 16 الفعلية | `ifrs16/lease.go` | `TestIrregularPeriodLeaseDiscounting` | IFRS Standards Engineer | Chief Accounting Architect | IFRS Technical Lead, Financial Controller | Product Owner, QA Lead | P2 | ✅ مغلق |
+| **5.2** | وظائف CLI الأتمتة | `cmd/agy/main.go`, `ifrsautomation/` | `TestCLIAutomationExecutionWithJobs` | IFRS Automation Engineer | Chief Accounting Architect | IFRS Technical Lead, DevOps | Product Owner, QA Lead | P2 | ✅ مغلق |
+| **6.1-4** | المعمارية و ISP و Migrations | `engine.go`, `postgres/driver.go` | `TestBaselineMigrationCleanRun`, `TestNewWithPortsAcceptsIndependentStoragePorts`, `TestNewWithPortsRequiresEveryPort`, `TestEveryMigrationHasRollback` | Platform Architect | Chief Accounting Architect | DBA, QA Lead, Security & Audit Lead | Product Owner, QA Lead | P2 | ✅ مغلق |
+
+> **دلالات RACI:** **R** منفّذ المهمة (Phase Owner)، **A** المسؤول النهائي عن القرار، **C** يُستشار قبل الإغلاق، **I** يُبلّغ بالنتيجة. الأدوار وظيفية ويمكن استبدالها بأسماء أعضاء الفريق الفعليين دون تغيير منطق المصفوفة.
+>
+> **حالة الإغلاق:** جميع الصفوف مغلقة، والاختبارات المذكورة هي أسماء الاختبارات الفعلية المنفذة. راجع [تقرير إغلاق خطة المعالجة](./remediation_execution_report.md#3-مصفوفة-تتبع-الاختبارات-raci-traceability) لأدلة التشغيل.
 
 ---
 
