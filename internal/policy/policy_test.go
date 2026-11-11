@@ -12,6 +12,31 @@ import (
 	"github.com/google/uuid"
 )
 
+type approvedEntryChecker bool
+
+func (c approvedEntryChecker) IsApproved(context.Context, uuid.UUID, uuid.UUID) (bool, error) {
+	return bool(c), nil
+}
+
+func TestApprovalBackdatingExceptionAuthorizerUsesEntryApproval(t *testing.T) {
+	companyID, entryID := uuid.New(), uuid.New()
+	authorizer := policy.NewApprovalBackdatingExceptionAuthorizer(approvedEntryChecker(true))
+	approved, err := authorizer.IsBackdatingExceptionApproved(context.Background(), companyID, entryID, "poster")
+	if err != nil || !approved {
+		t.Fatalf("approved entry = %v, error %v", approved, err)
+	}
+	denied := policy.NewApprovalBackdatingExceptionAuthorizer(approvedEntryChecker(false))
+	approved, err = denied.IsBackdatingExceptionApproved(context.Background(), companyID, entryID, "poster")
+	if err != nil || approved {
+		t.Fatalf("unapproved entry = %v, error %v", approved, err)
+	}
+	var missing *policy.ApprovalBackdatingExceptionAuthorizer
+	approved, err = missing.IsBackdatingExceptionApproved(context.Background(), companyID, entryID, "poster")
+	if err != nil || approved {
+		t.Fatalf("missing approval source = %v, error %v", approved, err)
+	}
+}
+
 func TestCurrencyPolicyISO4217Rounding(t *testing.T) {
 	p := policy.CurrencyPolicy{
 		CompanyID: uuid.New(), FunctionalCurrency: "SAR", PresentationCurrency: "SAR",

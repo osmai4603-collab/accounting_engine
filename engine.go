@@ -12,6 +12,7 @@ import (
 	"accounting_engine/internal/ifrs15"
 	"accounting_engine/internal/ifrs16"
 	"accounting_engine/internal/ifrs9"
+	"accounting_engine/internal/ifrsautomation"
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/policy"
 	"accounting_engine/internal/posting"
@@ -23,6 +24,7 @@ import (
 
 var ErrUnsupportedStorageDriver = errors.New("unsupported storage driver")
 var ErrStoragePortRequired = errors.New("required storage port is missing")
+var ErrStandardsJobsRequired = errors.New("at least one standards close job is required")
 
 type Config struct {
 	// StrictGovernance denies posting until the company has configured an approval policy.
@@ -97,6 +99,17 @@ type StoragePorts struct {
 	Valuation          valuation.RateProviderSPI
 	MakerCheckerPolicy posting.MakerCheckerPolicy
 	Policy             PolicyStoragePort
+}
+
+type postingEntryReader struct {
+	engine *posting.Engine
+}
+
+func (r postingEntryReader) GetEntryByIDForCompany(
+	ctx context.Context,
+	companyID, entryID uuid.UUID,
+) (posting.JournalEntry, error) {
+	return r.engine.GetEntry(ctx, companyID, entryID)
 }
 
 func New(driver StorageDriver, config Config) (*AccountingEngine, error) {
@@ -180,6 +193,59 @@ func (e *AccountingEngine) StatementBundle(
 	currency string,
 ) (reporting.StatementBundle, error) {
 	return e.Reporting.GenerateBundleForCompanyContext(ctx, companyID, start, end, currency)
+}
+
+// PostStandardsEntryContext sends a journal draft produced by a standards unit
+// through the same central draft and posting validations as other entries.
+func (e *AccountingEngine) PostStandardsEntryContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	entry posting.JournalEntry,
+	posterID string,
+) (posting.JournalEntry, error) {
+	if e == nil || e.Posting == nil || companyID == uuid.Nil || entry.JournalID == uuid.Nil ||
+		entry.ID == uuid.Nil || len(entry.Lines) < 2 {
+		return posting.JournalEntry{}, posting.ErrInvalidEntry
+	}
+	if entry.CompanyID != uuid.Nil && entry.CompanyID != companyID {
+		return posting.JournalEntry{}, masterdata.ErrCompanyScopeRequired
+	}
+	entry.CompanyID = companyID
+	for i := range entry.Lines {
+		if entry.Lines[i].CompanyID != uuid.Nil && entry.Lines[i].CompanyID != companyID {
+			return posting.JournalEntry{}, masterdata.ErrCompanyScopeRequired
+		}
+		entry.Lines[i].CompanyID = companyID
+	}
+	if err := e.Posting.CreateDraftContext(ctx, entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := e.Posting.PostContext(ctx, companyID, entry.ID, posterID); err != nil {
+		return entry, err
+	}
+	entry, err := e.Posting.GetEntry(ctx, companyID, entry.ID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return entry, nil
+}
+
+// RunMonthlyStandardsClose executes the configured monthly standards jobs
+// through the central posting engine, including stable-reference idempotency.
+func (e *AccountingEngine) RunMonthlyStandardsClose(
+	ctx context.Context,
+	period ifrsautomation.Period,
+	posterID string,
+	jobs ...ifrsautomation.Job,
+) (ifrsautomation.RunResult, error) {
+	if e == nil || e.Posting == nil || len(jobs) == 0 {
+		return ifrsautomation.RunResult{}, ErrStandardsJobsRequired
+	}
+	runner, err := ifrsautomation.NewRunner(e.Posting, postingEntryReader{engine: e.Posting}, posterID)
+	if err != nil {
+		return ifrsautomation.RunResult{}, err
+	}
+	return runner.RunMonthly(ctx, period, jobs...)
 }
 
 // ReconcileBalances runs the continuous balance reconciliation engine for a
@@ -320,7 +386,11 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 			}
 		}
 		policyUnit.SetAccountingManagerAuthorizer(managerAuthorizer)
-		policyUnit.SetBackdatingExceptionAuthorizer(config.Policies.BackdatingExceptionAuthorizer)
+		backdatingAuthorizer := config.Policies.BackdatingExceptionAuthorizer
+		if backdatingAuthorizer == nil && governanceEngine.Approvals != nil {
+			backdatingAuthorizer = policy.NewApprovalBackdatingExceptionAuthorizer(governanceEngine.Approvals)
+		}
+		policyUnit.SetBackdatingExceptionAuthorizer(backdatingAuthorizer)
 		postingEngine.SetPolicyUnit(policyUnit)
 		reportingEngine.SetPolicyUnit(policyUnit)
 	}

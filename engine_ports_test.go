@@ -12,6 +12,7 @@ import (
 	"accounting_engine/internal/ifrs15"
 	"accounting_engine/internal/ifrs16"
 	"accounting_engine/internal/ifrs9"
+	"accounting_engine/internal/ifrsautomation"
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/policy"
 	"accounting_engine/internal/posting"
@@ -122,6 +123,83 @@ func TestNewWithPortsConfiguresPolicyUnitAndPresentationCurrency(t *testing.T) {
 		context.Background(), companyID, time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), "EUR",
 	); !errors.Is(err, policy.ErrCurrencyNotAllowed) {
 		t.Fatalf("unsupported explicit translation = %v, want ErrCurrencyNotAllowed", err)
+	}
+}
+
+func TestStandardsEntriesAndMonthlyCloseUseCentralPosting(t *testing.T) {
+	ctx := context.Background()
+	driver := memory.New()
+	companyID, journalID, debitAccountID, creditAccountID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: "STANDARDS", LegalName: "Standards Test",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []masterdata.Account{
+		{CompanyID: companyID, ID: debitAccountID, Code: "1000", Name: "Cash", AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit, IsActive: true},
+		{CompanyID: companyID, ID: creditAccountID, Code: "2000", Name: "Contract liability", AccountType: masterdata.AccountTypeLiability, NormalBalance: masterdata.NormalBalanceCredit, IsActive: true},
+	} {
+		if err := driver.CreateAccount(ctx, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := driver.CreateFiscalYear(ctx, year); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := New(driver, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := financialtypes.NewMoneyFromString("10.00", "USD")
+	zero, _ := financialtypes.Zero("USD")
+	date := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	entry, err := posting.NewJournalEntry(journalID, date, "ifrs15-advance", []posting.JournalEntryLine{
+		{AccountID: debitAccountID, Debit: amount, Credit: zero},
+		{AccountID: creditAccountID, Debit: zero, Credit: amount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted, err := engine.PostStandardsEntryContext(ctx, companyID, entry, "standards-user")
+	if err != nil {
+		t.Fatalf("post standards entry: %v", err)
+	}
+	if posted.Status != posting.EntryPosted {
+		t.Fatalf("standards entry status = %s, want posted", posted.Status)
+	}
+
+	monthlyEntry, err := posting.NewJournalEntry(journalID, date, "ifrs16-monthly-close", []posting.JournalEntryLine{
+		{AccountID: debitAccountID, Debit: amount, Credit: zero},
+		{AccountID: creditAccountID, Debit: zero, Credit: amount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monthlyEntry.CompanyID = companyID
+	monthlyEntry.Reference = "ifrs16:lease:test:depreciation:1"
+	job := ifrsautomation.JobFunc{
+		ID: "ifrs16-monthly-close",
+		Execute: func(context.Context, ifrsautomation.Period) ([]posting.JournalEntry, error) {
+			return []posting.JournalEntry{monthlyEntry}, nil
+		},
+	}
+	period, _ := ifrsautomation.Month(2026, time.January)
+	first, err := engine.RunMonthlyStandardsClose(ctx, period, "standards-user", job)
+	if err != nil {
+		t.Fatalf("run monthly standards close: %v", err)
+	}
+	second, err := engine.RunMonthlyStandardsClose(ctx, period, "standards-user", job)
+	if err != nil {
+		t.Fatalf("repeat monthly standards close: %v", err)
+	}
+	if len(first.PostedEntryIDs) != 1 || len(second.AlreadyPosted) != 1 {
+		t.Fatalf("monthly close results = first %+v, second %+v; want posted then idempotent skip", first, second)
+	}
+	if _, err := engine.RunMonthlyStandardsClose(ctx, period, "standards-user"); !errors.Is(err, ErrStandardsJobsRequired) {
+		t.Fatalf("empty monthly close error = %v, want ErrStandardsJobsRequired", err)
 	}
 }
 

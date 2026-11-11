@@ -10,6 +10,7 @@ import (
 	"time"
 
 	financialtypes "accounting_engine/internal/types"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -121,6 +122,29 @@ func (a *GovernanceManagerAuthorizer) IsAccountingManager(
 
 type BackdatingExceptionAuthorizer interface {
 	IsBackdatingExceptionApproved(context.Context, uuid.UUID, uuid.UUID, string) (bool, error)
+}
+
+type EntryApprovalChecker interface {
+	IsApproved(context.Context, uuid.UUID, uuid.UUID) (bool, error)
+}
+
+type ApprovalBackdatingExceptionAuthorizer struct {
+	approvals EntryApprovalChecker
+}
+
+func NewApprovalBackdatingExceptionAuthorizer(approvals EntryApprovalChecker) *ApprovalBackdatingExceptionAuthorizer {
+	return &ApprovalBackdatingExceptionAuthorizer{approvals: approvals}
+}
+
+func (a *ApprovalBackdatingExceptionAuthorizer) IsBackdatingExceptionApproved(
+	ctx context.Context,
+	companyID, entryID uuid.UUID,
+	_ string,
+) (bool, error) {
+	if a == nil || a.approvals == nil {
+		return false, nil
+	}
+	return a.approvals.IsApproved(ctx, companyID, entryID)
 }
 
 type Unit struct {
@@ -280,11 +304,12 @@ func (p CurrencyPolicy) Round(amount financialtypes.Money) (financialtypes.Money
 		return financialtypes.Money{}, financialtypes.ErrInvalidCurrency
 	}
 	value := amount.Amount()
-	if p.RoundingMethod == RoundingBankers {
+	switch p.RoundingMethod {
+	case RoundingBankers:
 		value = value.RoundBank(currency.MinorUnit)
-	} else if p.RoundingMethod == RoundingHalfUp {
+	case RoundingHalfUp:
 		value = value.Round(currency.MinorUnit)
-	} else {
+	default:
 		return financialtypes.Money{}, ErrInvalidPolicy
 	}
 	return financialtypes.NewMoney(value, amount.Currency())
