@@ -2,6 +2,7 @@ package subledgers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"accounting_engine/internal/posting"
@@ -28,6 +29,108 @@ func NewTreasuryLedger(repo TreasuryRepository) *TreasuryLedger {
 
 func NewTreasuryLedgerForCompany(repo TreasuryRepository, companyID uuid.UUID) *TreasuryLedger {
 	return &TreasuryLedger{repo: repo, companyID: companyID}
+}
+
+func (l *TreasuryLedger) InitiateInterbankTransferContext(
+	ctx context.Context,
+	creator JournalCreator,
+	source, destination BankAccount,
+	amount financialtypes.Money,
+	journalID uuid.UUID,
+	date time.Time,
+	reference string,
+) (InterbankTransfer, posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	companyID := l.companyID
+	if companyID == uuid.Nil {
+		companyID = source.CompanyID
+	}
+	if err := source.ValidateForCompany(companyID); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	if err := destination.ValidateForCompany(companyID); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	if creator == nil || source.ID == destination.ID ||
+		source.ClearingAccountID != destination.ClearingAccountID ||
+		source.Currency != destination.Currency || amount.Currency() != source.Currency ||
+		amount.Amount().IsZero() || amount.IsNegative() || journalID == uuid.Nil || date.IsZero() {
+		return InterbankTransfer{}, posting.JournalEntry{}, ErrInvalidAmount
+	}
+	transferID := uuid.New()
+	entry := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID,
+		EntryDate: date, Date: date, Status: posting.EntryDraft,
+		DocumentReference: fmt.Sprintf("BANK_TRANSFER:%s:INITIATE", transferID),
+		Reference:         reference, CreatedAt: time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: source.ClearingAccountID, Debit: amount},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: source.GLAccountID, Credit: amount},
+		},
+	}
+	if err := entry.Validate(); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	if err := creator.CreateDraft(entry); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	return InterbankTransfer{
+		ID: transferID, CompanyID: companyID, SourceBankAccountID: source.ID,
+		DestinationAccountID: destination.ID, ClearingAccountID: source.ClearingAccountID,
+		Amount: amount, Reference: reference, Status: BankTransferInTransit,
+		InitiatedEntryID: entry.ID, InitiatedAt: date.UTC(),
+	}, entry, nil
+}
+
+func (l *TreasuryLedger) SettleInterbankTransferContext(
+	ctx context.Context,
+	creator JournalCreator,
+	transfer InterbankTransfer,
+	destination BankAccount,
+	journalID uuid.UUID,
+	date time.Time,
+) (InterbankTransfer, posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	if transfer.ID == uuid.Nil || transfer.CompanyID == uuid.Nil ||
+		(transfer.Status != BankTransferInTransit) ||
+		transfer.InitiatedEntryID == uuid.Nil || transfer.SettlementEntryID != uuid.Nil ||
+		transfer.DestinationAccountID != destination.ID ||
+		transfer.ClearingAccountID != destination.ClearingAccountID ||
+		transfer.Amount.Currency() != destination.Currency ||
+		journalID == uuid.Nil || date.IsZero() || date.Before(transfer.InitiatedAt) || creator == nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, ErrInvalidBankAccount
+	}
+	if l.companyID != uuid.Nil && l.companyID != transfer.CompanyID {
+		return InterbankTransfer{}, posting.JournalEntry{}, ErrCompanyMismatch
+	}
+	if err := destination.ValidateForCompany(transfer.CompanyID); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	entry := posting.JournalEntry{
+		CompanyID: transfer.CompanyID, ID: uuid.New(), JournalID: journalID,
+		EntryDate: date, Date: date, Status: posting.EntryDraft,
+		DocumentReference: fmt.Sprintf("BANK_TRANSFER:%s:SETTLE", transfer.ID),
+		Reference:         transfer.Reference, CreatedAt: time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{CompanyID: transfer.CompanyID, ID: uuid.New(), AccountID: destination.GLAccountID, Debit: transfer.Amount},
+			{CompanyID: transfer.CompanyID, ID: uuid.New(), AccountID: transfer.ClearingAccountID, Credit: transfer.Amount},
+		},
+	}
+	if err := entry.Validate(); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	if err := creator.CreateDraft(entry); err != nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, err
+	}
+	settledAt := date.UTC()
+	transfer.Status = BankTransferSettled
+	transfer.SettlementEntryID = entry.ID
+	transfer.SettledAt = &settledAt
+	return transfer, entry, nil
 }
 
 // Deprecated: use RecordItemContext.

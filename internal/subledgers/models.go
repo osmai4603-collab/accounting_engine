@@ -10,25 +10,51 @@ import (
 )
 
 type EconomicEvent struct {
-	CompanyID      uuid.UUID
-	IdempotencyKey string
-	EventType      string
-	PayloadHash    string
-	Date           time.Time
-	MatchedAt      time.Time
-	Amount         financialtypes.Money
-	Values         map[string]financialtypes.Money
-	Attributes     map[string]string
-	PartnerID      *uuid.UUID
-	Reference      string
-	ResultEntryID  uuid.UUID
+	EventID          uuid.UUID
+	CompanyID        uuid.UUID
+	SourceSystem     string
+	ExternalID       string
+	IdempotencyKey   string
+	EventType        string
+	EventVersion     int
+	PayloadJSON      []byte
+	Status           EventStatus
+	GeneratedEntryID *uuid.UUID
+	ErrorMessage     string
+	CreatedAt        time.Time
+	ProcessedAt      *time.Time
+
+	// Deprecated: use GeneratedEntryID. Kept for existing integrations.
+	PayloadHash   string
+	Date          time.Time
+	MatchedAt     time.Time
+	Amount        financialtypes.Money
+	Values        map[string]financialtypes.Money
+	Attributes    map[string]string
+	PartnerID     *uuid.UUID
+	Reference     string
+	ResultEntryID uuid.UUID
 }
+
+type EventStatus string
+
+const (
+	EventReceived   EventStatus = "received"
+	EventProcessed  EventStatus = "processed"
+	EventRejected   EventStatus = "rejected"
+	EventDeadLetter EventStatus = "dead_letter"
+)
 
 func (e EconomicEvent) Validate() error {
 	if e.CompanyID == uuid.Nil || strings.TrimSpace(e.IdempotencyKey) == "" ||
-		strings.TrimSpace(e.EventType) == "" ||
+		len(e.IdempotencyKey) > 255 || len(e.SourceSystem) > 255 || len(e.ExternalID) > 255 ||
+		strings.TrimSpace(e.EventType) == "" || len(e.EventType) > 128 ||
 		e.Amount.Currency() == "" || e.Amount.IsNegative() ||
-		(e.PayloadHash != "" && len(e.PayloadHash) != 64) {
+		(e.PayloadHash != "" && len(e.PayloadHash) != 64) ||
+		e.EventVersion < 0 ||
+		(e.GeneratedEntryID != nil && *e.GeneratedEntryID == uuid.Nil) ||
+		(e.Status != "" && e.Status != EventReceived && e.Status != EventProcessed &&
+			e.Status != EventRejected && e.Status != EventDeadLetter) {
 		return ErrInvalidEvent
 	}
 	for key, amount := range e.Values {
@@ -184,6 +210,55 @@ type BankItem struct {
 	Status         BankItemStatus
 }
 
+type BankAccount struct {
+	ID                uuid.UUID
+	CompanyID         uuid.UUID
+	BankName          string
+	IBAN              string
+	Currency          string
+	GLAccountID       uuid.UUID
+	ClearingAccountID uuid.UUID
+}
+
+func (a BankAccount) ValidateForCompany(companyID uuid.UUID) error {
+	if a.ID == uuid.Nil || a.CompanyID == uuid.Nil ||
+		(companyID != uuid.Nil && a.CompanyID != companyID) ||
+		strings.TrimSpace(a.BankName) == "" || strings.TrimSpace(a.IBAN) == "" ||
+		a.Currency == "" || a.GLAccountID == uuid.Nil || a.ClearingAccountID == uuid.Nil ||
+		a.GLAccountID == a.ClearingAccountID {
+		if companyID != uuid.Nil && a.CompanyID != uuid.Nil && a.CompanyID != companyID {
+			return ErrCompanyMismatch
+		}
+		return ErrInvalidBankAccount
+	}
+	if _, ok := financialtypes.LookupCurrency(a.Currency); !ok {
+		return ErrInvalidBankAccount
+	}
+	return nil
+}
+
+type BankTransferStatus string
+
+const (
+	BankTransferInTransit BankTransferStatus = "in_transit"
+	BankTransferSettled   BankTransferStatus = "settled"
+)
+
+type InterbankTransfer struct {
+	ID                   uuid.UUID
+	CompanyID            uuid.UUID
+	SourceBankAccountID  uuid.UUID
+	DestinationAccountID uuid.UUID
+	ClearingAccountID    uuid.UUID
+	Amount               financialtypes.Money
+	Reference            string
+	Status               BankTransferStatus
+	InitiatedEntryID     uuid.UUID
+	SettlementEntryID    uuid.UUID
+	InitiatedAt          time.Time
+	SettledAt            *time.Time
+}
+
 type BankReconciliationMatch struct {
 	StatementLineIDs []uuid.UUID
 	JournalEntryIDs  []uuid.UUID
@@ -230,6 +305,8 @@ type FixedAsset struct {
 	DisposalLossAccountID          uuid.UUID
 	DisposalCashAccountID          uuid.UUID
 	DisposedAt                     *time.Time
+	IsCWIP                         bool
+	CWIPAccountID                  uuid.UUID
 	PendingOperation               string
 	PendingOperationEntryID        uuid.UUID
 	AppliedEntryIDs                []uuid.UUID

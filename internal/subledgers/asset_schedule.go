@@ -65,6 +65,9 @@ func GenerateDepreciationSchedule(asset FixedAsset) ([]AssetDepreciationSchedule
 }
 
 func depreciationComponents(asset FixedAsset) ([]AssetComponent, error) {
+	if asset.IsCWIP {
+		return nil, ErrInvalidAsset
+	}
 	if len(asset.Components) == 0 {
 		return []AssetComponent{{
 			ID: uuid.Nil, Name: "asset", Cost: asset.HistoricalCost, SalvageValue: asset.SalvageValue,

@@ -29,8 +29,9 @@ type eventMappingKey struct {
 }
 
 type eventIdempotencyKey struct {
-	companyID uuid.UUID
-	key       string
+	companyID    uuid.UUID
+	sourceSystem string
+	key          string
 }
 
 type EventBridge struct {
@@ -149,27 +150,60 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 	if b.companyID != uuid.Nil && event.CompanyID != b.companyID {
 		return posting.JournalEntry{}, ErrCompanyMismatch
 	}
-	idempotencyKey := eventIdempotencyKey{companyID: event.CompanyID, key: event.IdempotencyKey}
-	storedEvent, found, err := b.repo.GetEventByIdempotencyKeyForCompany(ctx, event.CompanyID, event.IdempotencyKey)
+	event.SourceSystem = strings.TrimSpace(event.SourceSystem)
+	if event.EventID == uuid.Nil {
+		event.EventID = uuid.New()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	if event.Status == "" {
+		event.Status = EventReceived
+	}
+	idempotencyKey := eventIdempotencyKey{companyID: event.CompanyID, sourceSystem: event.SourceSystem, key: event.IdempotencyKey}
+	storedEvent, found, err := b.getEventByIdentity(ctx, event.CompanyID, event.SourceSystem, event.IdempotencyKey)
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	if found {
-		if storedEvent.ResultEntryID == uuid.Nil {
+		if storedEvent.EventID != uuid.Nil {
+			event.EventID = storedEvent.EventID
+		}
+		if storedEvent.ResultEntryID == uuid.Nil && storedEvent.Status == "" {
 			return posting.JournalEntry{}, ErrEventResultMissing
 		}
-		if storedEvent.PayloadHash == "" {
+		if storedEvent.ResultEntryID != uuid.Nil && storedEvent.PayloadHash == "" {
 			return posting.JournalEntry{}, ErrIdempotencyPayloadConflict
 		}
 	}
+	if eventRepository, ok := b.repo.(EventRepository); ok {
+		if err := eventRepository.SaveEvent(ctx, event); err != nil && !errors.Is(err, ErrAlreadyExists) {
+			return posting.JournalEntry{}, err
+		}
+	}
+	if !found {
+		storedEvent, found, err = b.getEventByIdentity(ctx, event.CompanyID, event.SourceSystem, event.IdempotencyKey)
+		if err != nil {
+			return posting.JournalEntry{}, err
+		}
+	}
+	if found && storedEvent.EventID != uuid.Nil {
+		event.EventID = storedEvent.EventID
+	}
+	event.Status = EventReceived
+	event.ErrorMessage = ""
+	event.ProcessedAt = nil
 	rule, err := b.matchingRuleContext(ctx, event)
 	if err != nil {
+		b.markEventFailure(ctx, event, err, EventDeadLetter)
 		return posting.JournalEntry{}, err
 	}
 	lines, err := translateEventLines(rule, event)
 	if err != nil {
+		b.markEventFailure(ctx, event, err, EventDeadLetter)
 		return posting.JournalEntry{}, err
 	}
+	eventID := event.EventID
 	entry := posting.JournalEntry{
 		CompanyID:         event.CompanyID,
 		ID:                uuid.New(),
@@ -181,13 +215,16 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 		Reference:         event.Reference,
 		CreatedAt:         time.Now().UTC(),
 		UpdatedAt:         time.Now().UTC(),
+		SourceEventID:     &eventID,
 		Lines:             lines,
 	}
 	if err := entry.Validate(); err != nil {
+		b.markEventFailure(ctx, event, err, EventRejected)
 		return posting.JournalEntry{}, err
 	}
 	payloadHash, err := EconomicEventPayloadHash(event, entry)
 	if err != nil {
+		b.markEventFailure(ctx, event, err, EventRejected)
 		return posting.JournalEntry{}, err
 	}
 	if cached, ok := b.entries[idempotencyKey]; ok {
@@ -196,7 +233,7 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 		}
 		return cached.entry, nil
 	}
-	if found {
+	if found && storedEvent.ResultEntryID != uuid.Nil {
 		if storedEvent.PayloadHash != payloadHash {
 			return posting.JournalEntry{}, ErrIdempotencyPayloadConflict
 		}
@@ -204,11 +241,17 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 	}
 	event.PayloadHash = payloadHash
 	event.ResultEntryID = entry.ID
+	eventID = event.EventID
+	event.GeneratedEntryID = &entry.ID
+	event.Status = EventProcessed
+	now := time.Now().UTC()
+	event.ProcessedAt = &now
 	if err := b.repo.SaveEventAndDraft(ctx, event, entry); err != nil {
 		if !errors.Is(err, ErrAlreadyExists) {
+			b.markEventFailure(ctx, event, err, EventDeadLetter)
 			return posting.JournalEntry{}, err
 		}
-		stored, found, lookupErr := b.repo.GetEventByIdempotencyKeyForCompany(ctx, event.CompanyID, event.IdempotencyKey)
+		stored, found, lookupErr := b.getEventByIdentity(ctx, event.CompanyID, event.SourceSystem, event.IdempotencyKey)
 		if lookupErr != nil {
 			return posting.JournalEntry{}, lookupErr
 		}
@@ -222,6 +265,73 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 	}
 	b.entries[idempotencyKey] = cachedEconomicEvent{entry: entry, payloadHash: payloadHash}
 	return entry, nil
+}
+
+func (b *EventBridge) getEventByIdentity(ctx context.Context, companyID uuid.UUID, sourceSystem, key string) (EconomicEvent, bool, error) {
+	if repository, ok := b.repo.(EventLifecycleRepository); ok {
+		return repository.GetEventByIdentity(ctx, companyID, sourceSystem, key)
+	}
+	return b.repo.GetEventByIdempotencyKeyForCompany(ctx, companyID, key)
+}
+
+func (b *EventBridge) markEventFailure(ctx context.Context, event EconomicEvent, cause error, status EventStatus) {
+	repository, ok := b.repo.(EventLifecycleRepository)
+	if !ok {
+		return
+	}
+	event.Status = status
+	event.ErrorMessage = cause.Error()
+	event.ProcessedAt = nil
+	if err := repository.UpdateEventStatus(ctx, event); err != nil {
+		return
+	}
+}
+
+func (b *EventBridge) ReplayEvent(eventID uuid.UUID) (posting.JournalEntry, error) {
+	return b.ReplayEventContext(context.Background(), eventID)
+}
+
+func (b *EventBridge) ReplayEventContext(ctx context.Context, eventID uuid.UUID) (posting.JournalEntry, error) {
+	if b.companyID == uuid.Nil {
+		return posting.JournalEntry{}, ErrCompanyScopeRequired
+	}
+	return b.ReplayEventForCompanyContext(ctx, b.companyID, eventID)
+}
+
+func (b *EventBridge) ReplayEventForCompanyContext(ctx context.Context, companyID, eventID uuid.UUID) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if companyID == uuid.Nil {
+		return posting.JournalEntry{}, ErrCompanyScopeRequired
+	}
+	if b.companyID != uuid.Nil && b.companyID != companyID {
+		return posting.JournalEntry{}, ErrCompanyMismatch
+	}
+	repository, ok := b.repo.(EventLifecycleRepository)
+	if !ok {
+		return posting.JournalEntry{}, ErrCompanyScopedEventsRequired
+	}
+	if eventID == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidEvent
+	}
+	event, err := repository.GetEventByID(ctx, companyID, eventID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if event.Status != EventDeadLetter && event.Status != EventRejected && event.Status != EventReceived && event.Status != "" {
+		if event.Status == EventProcessed {
+			return b.ProcessContext(ctx, event)
+		}
+		return posting.JournalEntry{}, ErrEventNotReplayable
+	}
+	event.Status = EventReceived
+	event.ErrorMessage = ""
+	event.ProcessedAt = nil
+	if err := repository.UpdateEventStatus(ctx, event); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return b.ProcessContext(ctx, event)
 }
 
 func (b *EventBridge) matchingRuleContext(ctx context.Context, event EconomicEvent) (EventAccountingRule, error) {

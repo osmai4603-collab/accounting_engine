@@ -37,6 +37,10 @@ type eventHashLine struct {
 
 type eventHashPayload struct {
 	CompanyID       uuid.UUID            `json:"company_id"`
+	SourceSystem    string               `json:"source_system,omitempty"`
+	ExternalID      string               `json:"external_id,omitempty"`
+	EventVersion    int                  `json:"event_version,omitempty"`
+	PayloadJSON     []byte               `json:"payload_json,omitempty"`
 	EventType       string               `json:"event_type"`
 	Date            string               `json:"date"`
 	Amount          string               `json:"amount"`
@@ -58,7 +62,9 @@ func EconomicEventPayloadHash(event EconomicEvent, entry posting.JournalEntry) (
 	}
 	eventDate := event.Date.UTC().Format(time.RFC3339Nano)
 	payload := eventHashPayload{
-		CompanyID: event.CompanyID, EventType: event.EventType, Date: eventDate,
+		CompanyID: event.CompanyID, SourceSystem: event.SourceSystem, ExternalID: event.ExternalID,
+		EventVersion: event.EventVersion, PayloadJSON: event.PayloadJSON,
+		EventType: event.EventType, Date: eventDate,
 		Amount: event.Amount.Amount().String(), Currency: event.Amount.Currency(),
 		PartnerID: event.PartnerID, Reference: event.Reference, JournalID: entry.JournalID,
 		Values:          make([]eventHashValue, 0, len(event.Values)),

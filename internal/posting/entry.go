@@ -163,6 +163,7 @@ type JournalEntry struct {
 	UpdatedAt            time.Time
 	ReversedEntryID      *uuid.UUID
 	OriginalEntryID      *uuid.UUID
+	SourceEventID        *uuid.UUID
 	TargetPeriodNumber   int
 	AdjustmentAuthorized bool
 	Classification       EntryClassification
@@ -220,6 +221,9 @@ func (e *JournalEntry) Validate() error {
 func (e *JournalEntry) ValidateWithRounding(round func(financialtypes.Money) (financialtypes.Money, error)) error {
 	if len(e.Lines) < 2 {
 		return ErrMinimumLines
+	}
+	if e.SourceEventID != nil && *e.SourceEventID == uuid.Nil {
+		return ErrInvalidEntry
 	}
 	if e.Classification != "" {
 		switch e.Classification {
@@ -455,16 +459,25 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 		saved.CreatedBy != candidate.CreatedBy ||
 		saved.DocumentReference != candidate.DocumentReference ||
 		saved.Reference != candidate.Reference ||
+		!equalUUIDPointer(saved.SourceEventID, candidate.SourceEventID) ||
 		normalizedEntryClassification(saved.Classification) != normalizedEntryClassification(candidate.Classification) ||
 		len(saved.Lines) != len(candidate.Lines) {
 		return false
 	}
+
 	for i := range saved.Lines {
 		if !saved.Lines[i].Equal(candidate.Lines[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func equalUUIDPointer(left, right *uuid.UUID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func normalizedEntryClassification(classification EntryClassification) EntryClassification {

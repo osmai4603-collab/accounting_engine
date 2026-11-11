@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"sort"
+	"strings"
+	"time"
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
@@ -17,15 +19,23 @@ func (d *Driver) SaveEvent(ctx context.Context, event subledgers.EconomicEvent) 
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	key := event.CompanyID.String() + "\x00" + event.IdempotencyKey
+	event.SourceSystem = strings.TrimSpace(event.SourceSystem)
+	if event.EventID == uuid.Nil {
+		event.EventID = uuid.New()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	key := memoryEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
 	if existing, ok := d.events[key]; ok {
 		if existing.ResultEntryID != event.ResultEntryID || existing.EventType != event.EventType ||
-			existing.Reference != event.Reference || !existing.Amount.Equal(event.Amount) {
+			existing.Reference != event.Reference || !existing.Amount.Equal(event.Amount) ||
+			existing.PayloadHash != event.PayloadHash || string(existing.PayloadJSON) != string(event.PayloadJSON) {
 			return subledgers.ErrAlreadyExists
 		}
 		return nil
 	}
-	d.events[key] = event
+	d.events[key] = cloneMemoryEvent(event)
 	return nil
 }
 
@@ -78,6 +88,7 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	event.SourceSystem = strings.TrimSpace(event.SourceSystem)
 	if entry.ID == uuid.Nil || entry.CompanyID != event.CompanyID ||
 		entry.ID != event.ResultEntryID || entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
@@ -87,12 +98,25 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	key := event.CompanyID.String() + "\x00" + event.IdempotencyKey
-	if _, exists := d.events[key]; exists {
+	if event.EventID == uuid.Nil {
+		event.EventID = uuid.New()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	key := memoryEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
+	if existing, exists := d.events[key]; exists && existing.ResultEntryID != uuid.Nil {
 		return subledgers.ErrAlreadyExists
 	}
 	if _, exists := d.entries[entry.ID]; exists {
 		return subledgers.ErrAlreadyExists
+	}
+	eventID := event.EventID
+	if entry.SourceEventID == nil {
+		entry.SourceEventID = &eventID
+	}
+	if *entry.SourceEventID != event.EventID {
+		return posting.ErrInvalidEntry
 	}
 	for i := range entry.Lines {
 		if entry.Lines[i].CompanyID != uuid.Nil && entry.Lines[i].CompanyID != entry.CompanyID {
@@ -104,8 +128,19 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 		}
 		entry.Lines[i].CompanyID = entry.CompanyID
 	}
+	entryID := entry.ID
+	if event.GeneratedEntryID != nil && *event.GeneratedEntryID != entry.ID {
+		return posting.ErrInvalidEntry
+	}
+	event.ResultEntryID = entry.ID
+	event.GeneratedEntryID = &entryID
+	event.Status = subledgers.EventProcessed
+	if event.ProcessedAt == nil {
+		now := time.Now().UTC()
+		event.ProcessedAt = &now
+	}
 	d.entries[entry.ID] = cloneEntry(entry)
-	d.events[key] = event
+	d.events[key] = cloneMemoryEvent(event)
 	return nil
 }
 
@@ -134,6 +169,74 @@ func (d *Driver) GetEventByIdempotencyKeyForCompany(ctx context.Context, company
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	event, ok := d.events[companyID.String()+"\x00"+key]
-	return event, ok, nil
+	if event, ok := d.events[memoryEventKey(companyID, "", key)]; ok {
+		return cloneMemoryEvent(event), true, nil
+	}
+	var result subledgers.EconomicEvent
+	found := false
+	for _, event := range d.events {
+		if event.CompanyID == companyID && event.IdempotencyKey == key {
+			if found {
+				return subledgers.EconomicEvent{}, false, subledgers.ErrInvalidEvent
+			}
+			result, found = event, true
+		}
+	}
+	return cloneMemoryEvent(result), found, nil
+}
+
+func (d *Driver) GetEventByIdentity(ctx context.Context, companyID uuid.UUID, sourceSystem, key string) (subledgers.EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.EconomicEvent{}, false, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	event, ok := d.events[memoryEventKey(companyID, sourceSystem, key)]
+	return cloneMemoryEvent(event), ok, nil
+}
+
+func (d *Driver) GetEventByID(ctx context.Context, companyID, eventID uuid.UUID) (subledgers.EconomicEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return subledgers.EconomicEvent{}, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, event := range d.events {
+		if event.CompanyID == companyID && event.EventID == eventID {
+			return cloneMemoryEvent(event), nil
+		}
+	}
+	return subledgers.EconomicEvent{}, subledgers.ErrNotFound
+}
+
+func (d *Driver) UpdateEventStatus(ctx context.Context, event subledgers.EconomicEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := memoryEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
+	current, ok := d.events[key]
+	if !ok || current.EventID != event.EventID {
+		return subledgers.ErrNotFound
+	}
+	d.events[key] = cloneMemoryEvent(event)
+	return nil
+}
+
+func memoryEventKey(companyID uuid.UUID, sourceSystem, key string) string {
+	return companyID.String() + "\x00" + sourceSystem + "\x00" + key
+}
+
+func cloneMemoryEvent(event subledgers.EconomicEvent) subledgers.EconomicEvent {
+	event.PayloadJSON = append([]byte(nil), event.PayloadJSON...)
+	if event.GeneratedEntryID != nil {
+		id := *event.GeneratedEntryID
+		event.GeneratedEntryID = &id
+	}
+	if event.ProcessedAt != nil {
+		processedAt := *event.ProcessedAt
+		event.ProcessedAt = &processedAt
+	}
+	return event
 }

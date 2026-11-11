@@ -433,10 +433,10 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		}
 		result, err := tx.Exec(ctx,
 			`UPDATE account_moves SET journal_id=$3,period_id=$4,entry_date=$5,entry_number=$6,
-			 status=$7,classification=$8,reversed_move_id=$9,entry=$10
-			 WHERE id=$1 AND company_id=$2 AND status=$11`,
+			 status=$7,classification=$8,reversed_move_id=$9,entry=$10,source_event_id=$11
+			 WHERE id=$1 AND company_id=$2 AND status=$12`,
 			entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
-			entry.Status, classification, entry.ReversedEntryID, data, expectedStatus)
+			entry.Status, classification, entry.ReversedEntryID, data, entry.SourceEventID, expectedStatus)
 		if err != nil {
 			return err
 		}
@@ -452,13 +452,14 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
-	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,classification,reversed_move_id,entry) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,classification,reversed_move_id,entry,source_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 	 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,
 	 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
-	 classification=EXCLUDED.classification,reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry
+	 classification=EXCLUDED.classification,reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry,
+	 source_event_id=EXCLUDED.source_event_id
 	 WHERE account_moves.status='draft'`,
 		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
-		entry.Status, classification, entry.ReversedEntryID, data)
+		entry.Status, classification, entry.ReversedEntryID, data, entry.SourceEventID)
 	if err != nil {
 		return err
 	}

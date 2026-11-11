@@ -1,6 +1,7 @@
 package subledgers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
@@ -21,6 +23,7 @@ var (
 	ErrUnmatchedLine                    = errors.New("subledger line is not open")
 	ErrInvalidAsset                     = errors.New("invalid fixed asset")
 	ErrInvalidEvent                     = errors.New("invalid economic event")
+	ErrInvalidBankAccount               = errors.New("invalid bank account")
 	ErrMappingNotFound                  = errors.New("economic event mapping not found")
 	ErrCompanyMismatch                  = errors.New("subledger records belong to different companies")
 	ErrAtomicMatchRequired              = errors.New("atomic open-line updates are required for reconciliation")
@@ -37,6 +40,7 @@ var (
 	ErrBankReconciliationTooComplex     = errors.New("bank reconciliation candidate set is too large")
 	ErrAtomicEventRequired              = errors.New("atomic event and journal-draft storage is required")
 	ErrEventResultMissing               = errors.New("stored economic event has no result entry")
+	ErrEventNotReplayable               = errors.New("economic event is not eligible for replay")
 	ErrCompanyScopedEventsRequired      = errors.New("company-scoped event storage is required")
 	ErrEventRulesRequired               = errors.New("persistent event accounting rules are required")
 	ErrWriteOffPending                  = errors.New("subledger open line already has a pending write-off")
@@ -97,6 +101,7 @@ func (r *MemoryRepository) SaveEventAndDraft(ctx context.Context, event Economic
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	event.SourceSystem = strings.TrimSpace(event.SourceSystem)
 	if entry.ID == uuid.Nil || entry.CompanyID != event.CompanyID ||
 		entry.ID != event.ResultEntryID || entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
@@ -106,14 +111,37 @@ func (r *MemoryRepository) SaveEventAndDraft(ctx context.Context, event Economic
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := companyEventKey(event.CompanyID, event.IdempotencyKey)
-	if _, exists := r.events[key]; exists {
+	key := companyEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
+	if existing, exists := r.events[key]; exists && existing.ResultEntryID != uuid.Nil {
 		return ErrAlreadyExists
 	}
 	if _, exists := r.drafts[entry.ID]; exists {
 		return ErrAlreadyExists
 	}
-	r.events[key] = event
+	if event.EventID == uuid.Nil {
+		event.EventID = uuid.New()
+	}
+	if entry.SourceEventID == nil {
+		eventID := event.EventID
+		entry.SourceEventID = &eventID
+	}
+	if *entry.SourceEventID != event.EventID {
+		return posting.ErrInvalidEntry
+	}
+	if event.GeneratedEntryID == nil {
+		entryID := entry.ID
+		event.GeneratedEntryID = &entryID
+	}
+	if *event.GeneratedEntryID != entry.ID {
+		return posting.ErrInvalidEntry
+	}
+	event.ResultEntryID = entry.ID
+	event.Status = EventProcessed
+	if event.ProcessedAt == nil {
+		now := time.Now().UTC()
+		event.ProcessedAt = &now
+	}
+	r.events[key] = cloneEconomicEvent(event)
 	entry.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
 	r.drafts[entry.ID] = entry
 	return nil
@@ -121,6 +149,12 @@ func (r *MemoryRepository) SaveEventAndDraft(ctx context.Context, event Economic
 
 type CompanyEventRepository interface {
 	GetEventByIdempotencyKeyForCompany(context.Context, uuid.UUID, string) (EconomicEvent, bool, error)
+}
+
+type EventLifecycleRepository interface {
+	GetEventByIdentity(context.Context, uuid.UUID, string, string) (EconomicEvent, bool, error)
+	GetEventByID(context.Context, uuid.UUID, uuid.UUID) (EconomicEvent, error)
+	UpdateEventStatus(context.Context, EconomicEvent) error
 }
 
 type EventAccountingRuleRepository interface {
@@ -244,15 +278,23 @@ func (r *MemoryRepository) SaveEvent(ctx context.Context, event EconomicEvent) e
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := companyEventKey(event.CompanyID, event.IdempotencyKey)
+	event.SourceSystem = strings.TrimSpace(event.SourceSystem)
+	if event.EventID == uuid.Nil {
+		event.EventID = uuid.New()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	key := companyEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
 	if existing, ok := r.events[key]; ok {
 		if existing.ResultEntryID != event.ResultEntryID || existing.EventType != event.EventType ||
-			existing.Reference != event.Reference || !existing.Amount.Equal(event.Amount) {
+			existing.Reference != event.Reference || !existing.Amount.Equal(event.Amount) ||
+			existing.PayloadHash != event.PayloadHash || !bytes.Equal(existing.PayloadJSON, event.PayloadJSON) {
 			return ErrAlreadyExists
 		}
 		return nil
 	}
-	r.events[key] = event
+	r.events[key] = cloneEconomicEvent(event)
 	return nil
 }
 
@@ -281,12 +323,76 @@ func (r *MemoryRepository) GetEventByIdempotencyKeyForCompany(ctx context.Contex
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	event, ok := r.events[companyEventKey(companyID, key)]
-	return event, ok, nil
+	if event, ok := r.events[companyEventKey(companyID, "", key)]; ok {
+		return cloneEconomicEvent(event), true, nil
+	}
+	var result EconomicEvent
+	found := false
+	for _, event := range r.events {
+		if event.CompanyID == companyID && event.IdempotencyKey == key {
+			if found {
+				return EconomicEvent{}, false, ErrInvalidEvent
+			}
+			result, found = event, true
+		}
+	}
+	return cloneEconomicEvent(result), found, nil
 }
 
-func companyEventKey(companyID uuid.UUID, key string) string {
-	return companyID.String() + "\x00" + key
+func (r *MemoryRepository) GetEventByIdentity(ctx context.Context, companyID uuid.UUID, sourceSystem, key string) (EconomicEvent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return EconomicEvent{}, false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event, ok := r.events[companyEventKey(companyID, sourceSystem, key)]
+	return cloneEconomicEvent(event), ok, nil
+}
+
+func (r *MemoryRepository) GetEventByID(ctx context.Context, companyID, eventID uuid.UUID) (EconomicEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return EconomicEvent{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, event := range r.events {
+		if event.CompanyID == companyID && event.EventID == eventID {
+			return cloneEconomicEvent(event), nil
+		}
+	}
+	return EconomicEvent{}, ErrNotFound
+}
+
+func (r *MemoryRepository) UpdateEventStatus(ctx context.Context, event EconomicEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := companyEventKey(event.CompanyID, event.SourceSystem, event.IdempotencyKey)
+	current, ok := r.events[key]
+	if !ok || current.EventID != event.EventID {
+		return ErrNotFound
+	}
+	r.events[key] = cloneEconomicEvent(event)
+	return nil
+}
+
+func companyEventKey(companyID uuid.UUID, sourceSystem, key string) string {
+	return companyID.String() + "\x00" + sourceSystem + "\x00" + key
+}
+
+func cloneEconomicEvent(event EconomicEvent) EconomicEvent {
+	event.PayloadJSON = append([]byte(nil), event.PayloadJSON...)
+	if event.GeneratedEntryID != nil {
+		id := *event.GeneratedEntryID
+		event.GeneratedEntryID = &id
+	}
+	if event.ProcessedAt != nil {
+		processedAt := *event.ProcessedAt
+		event.ProcessedAt = &processedAt
+	}
+	return event
 }
 
 func (r *MemoryRepository) SaveOpenLine(ctx context.Context, line OpenLine) error {
@@ -549,7 +655,8 @@ func (r *MemoryRepository) saveFixedAssetDraft(
 	}
 	if expected.PendingOperation != "" || updated.PendingOperation != "" &&
 		(updated.PendingOperationEntryID != entry.ID ||
-			(updated.PendingOperation != "DISPOSAL" && updated.PendingOperation != "IMPAIRMENT")) {
+			(updated.PendingOperation != "DISPOSAL" && updated.PendingOperation != "IMPAIRMENT" &&
+				updated.PendingOperation != FixedAssetOperationCWIPCapitalization)) {
 		return ErrAlreadyExists
 	}
 	if _, exists := r.drafts[entry.ID]; exists {

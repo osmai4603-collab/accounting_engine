@@ -64,6 +64,113 @@ func TestEventBridgeIdempotency(t *testing.T) {
 	}
 }
 
+func TestEventLifecyclePreservesPayloadAndEventLinkUnderConcurrency(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID := uuid.New()
+	bridge := NewEventBridgeForCompany(repo, &draftCreator{}, companyID)
+	journalID, debitID, creditID := uuid.New(), uuid.New(), uuid.New()
+	if err := bridge.RegisterMapping(SubledgerEventMapping{
+		CompanyID: companyID, EventType: "invoice_issued",
+		DebitAccountID: debitID, CreditAccountID: creditID, JournalID: journalID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("{ \"invoice\": \"INV-1\", \"amount\": 17.50 }\n")
+	event := EconomicEvent{
+		CompanyID: companyID, SourceSystem: "billing", ExternalID: "INV-1",
+		IdempotencyKey: "same-key", EventType: "invoice_issued", EventVersion: 2,
+		PayloadJSON: payload, Date: time.Now().UTC(), Amount: money(t, "17.50"),
+	}
+	const callers = 5
+	entries := make([]posting.JournalEntry, callers)
+	errs := make([]error, callers)
+	var wait sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wait.Add(1)
+		go func(i int) {
+			defer wait.Done()
+			entries[i], errs[i] = bridge.ProcessContext(context.Background(), event)
+		}(i)
+	}
+	wait.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("parallel Process[%d]: %v", i, err)
+		}
+		if entries[i].ID != entries[0].ID {
+			t.Fatalf("parallel callers received different entry IDs: %s vs %s", entries[i].ID, entries[0].ID)
+		}
+	}
+	if entries[0].SourceEventID == nil {
+		t.Fatal("draft has no source event ID")
+	}
+	stored, err := repo.GetEventByID(context.Background(), companyID, *entries[0].SourceEventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EventID != *entries[0].SourceEventID ||
+		stored.Status != EventProcessed ||
+		stored.GeneratedEntryID == nil || *stored.GeneratedEntryID != entries[0].ID ||
+		string(stored.PayloadJSON) != string(payload) {
+		t.Fatalf("stored event lifecycle or payload mismatch: %+v", stored)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.drafts) != 1 || len(repo.events) != 1 {
+		t.Fatalf("duplicate processing stored %d drafts and %d events", len(repo.drafts), len(repo.events))
+	}
+}
+
+func TestEventIdempotencyIncludesSourceSystemAndSupportsReplay(t *testing.T) {
+	repo := NewMemoryRepository()
+	companyID := uuid.New()
+	bridge := NewEventBridgeForCompany(repo, &draftCreator{}, companyID)
+	event := EconomicEvent{
+		CompanyID: companyID, SourceSystem: "billing", IdempotencyKey: "reuse",
+		EventType: "invoice_issued", Date: time.Now(), Amount: money(t, "12"),
+	}
+	if _, err := bridge.Process(event); !errors.Is(err, ErrMappingNotFound) {
+		t.Fatalf("Process() error = %v, want mapping error", err)
+	}
+	stored, found, err := repo.GetEventByIdentity(context.Background(), companyID, "billing", "reuse")
+	if err != nil || !found || stored.Status != EventDeadLetter {
+		t.Fatalf("failed event was not recorded in dead-letter state: found=%v event=%+v err=%v", found, stored, err)
+	}
+	secondSource := event
+	secondSource.SourceSystem = "crm"
+	if _, err := bridge.Process(secondSource); !errors.Is(err, ErrMappingNotFound) {
+		t.Fatalf("second source Process() error = %v, want mapping error", err)
+	}
+	other, found, err := repo.GetEventByIdentity(context.Background(), companyID, "crm", "reuse")
+	if err != nil || !found || other.EventID == stored.EventID {
+		t.Fatalf("same idempotency key from another source was not independent: found=%v event=%+v err=%v", found, other, err)
+	}
+	if err := bridge.RegisterMapping(SubledgerEventMapping{
+		CompanyID: companyID, EventType: "invoice_issued",
+		DebitAccountID: uuid.New(), CreditAccountID: uuid.New(), JournalID: uuid.New(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := bridge.ReplayEventContext(context.Background(), stored.EventID)
+	if err != nil {
+		t.Fatalf("ReplayEventContext(): %v", err)
+	}
+	replayed, err := repo.GetEventByID(context.Background(), companyID, stored.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Status != EventProcessed || replayed.GeneratedEntryID == nil ||
+		*replayed.GeneratedEntryID != entry.ID || entry.SourceEventID == nil ||
+		*entry.SourceEventID != stored.EventID || replayed.ProcessedAt == nil {
+		t.Fatalf("replayed event/draft linkage mismatch: event=%+v entry=%+v", replayed, entry)
+	}
+	changedPayload := event
+	changedPayload.PayloadJSON = []byte(`{"invoice":"different"}`)
+	if _, err := bridge.Process(changedPayload); !errors.Is(err, ErrIdempotencyPayloadConflict) {
+		t.Fatalf("same idempotency key with changed payload error = %v, want payload conflict", err)
+	}
+}
+
 func TestEventBridgeRejectsIdempotencyPayloadConflicts(t *testing.T) {
 	repo := NewMemoryRepository()
 	companyID := uuid.New()
@@ -188,6 +295,46 @@ func TestCompanySubledgerScopeCannotBeOverridden(t *testing.T) {
 		DebitAccountID: uuid.New(), CreditAccountID: uuid.New(), JournalID: uuid.New(),
 	}); !errors.Is(err, ErrCompanyMismatch) {
 		t.Fatalf("cross-company event mapping error = %v, want company mismatch", err)
+	}
+}
+
+func TestInterbankTransferUsesClearingAccountUntilSettlement(t *testing.T) {
+	companyID, clearingID := uuid.New(), uuid.New()
+	source := BankAccount{
+		ID: uuid.New(), CompanyID: companyID, BankName: "Source Bank",
+		IBAN: "SA0000000000000000000000", Currency: "USD",
+		GLAccountID: uuid.New(), ClearingAccountID: clearingID,
+	}
+	destination := BankAccount{
+		ID: uuid.New(), CompanyID: companyID, BankName: "Destination Bank",
+		IBAN: "SA0000000000000000000001", Currency: "USD",
+		GLAccountID: uuid.New(), ClearingAccountID: clearingID,
+	}
+	creator := &draftCreator{}
+	ledger := NewTreasuryLedgerForCompany(NewMemoryRepository(), companyID)
+	date := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	transfer, initiation, err := ledger.InitiateInterbankTransferContext(
+		context.Background(), creator, source, destination, money(t, "250"),
+		uuid.New(), date, "BANK-REF-1",
+	)
+	if err != nil {
+		t.Fatalf("InitiateInterbankTransferContext(): %v", err)
+	}
+	if transfer.Status != BankTransferInTransit || transfer.InitiatedEntryID != initiation.ID ||
+		len(initiation.Lines) != 2 || initiation.Lines[0].AccountID != clearingID ||
+		initiation.Lines[1].AccountID != source.GLAccountID {
+		t.Fatalf("transfer was not held in clearing: transfer=%+v entry=%+v", transfer, initiation)
+	}
+	settled, settlement, err := ledger.SettleInterbankTransferContext(
+		context.Background(), creator, transfer, destination, uuid.New(), date.Add(24*time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("SettleInterbankTransferContext(): %v", err)
+	}
+	if settled.Status != BankTransferSettled || settled.SettlementEntryID != settlement.ID ||
+		len(settlement.Lines) != 2 || settlement.Lines[0].AccountID != destination.GLAccountID ||
+		settlement.Lines[1].AccountID != clearingID || creator.count != 2 {
+		t.Fatalf("transfer was not cleared into destination bank: transfer=%+v entry=%+v", settled, settlement)
 	}
 }
 
@@ -501,6 +648,64 @@ func TestComponentDepreciationCreatesSeparateJournalLines(t *testing.T) {
 	if updated.Components[0].AccumulatedDepreciation.Amount().IsZero() ||
 		updated.Components[1].AccumulatedDepreciation.Amount().IsZero() {
 		t.Fatalf("component accumulated depreciation was not updated: %+v", updated.Components)
+	}
+}
+
+func TestCWIPCapitalizationCreatesAtomicDraftAndBlocksDepreciation(t *testing.T) {
+	repo := NewMemoryRepository()
+	assetID := uuid.New()
+	cwipAccountID, assetAccountID := uuid.New(), uuid.New()
+	companyID := uuid.New()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	asset := FixedAsset{
+		CompanyID: companyID, ID: assetID, IsCWIP: true,
+		CWIPAccountID: cwipAccountID, AssetAccountID: assetAccountID,
+		HistoricalCost: money(t, "25000"), SalvageValue: money(t, "1000"),
+		UsefulLifeMonths: 120, Method: StraightLine, InServiceDate: start,
+	}
+	ledger := NewFixedAssetLedgerForCompany(repo, &draftCreator{}, companyID)
+	if err := ledger.RegisterAssetContext(context.Background(), asset); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ledger.MonthlyDepreciationContext(context.Background(), assetID, uuid.New(), start); !errors.Is(err, ErrInvalidAsset) {
+		t.Fatalf("CWIP depreciation error = %v, want invalid asset", err)
+	}
+	entry, err := ledger.CapitalizeCWIPContext(
+		context.Background(), assetID, uuid.New(), time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("CapitalizeCWIPContext(): %v", err)
+	}
+	if len(entry.Lines) != 2 || entry.Lines[0].AccountID != assetAccountID ||
+		entry.Lines[1].AccountID != cwipAccountID ||
+		!entry.Lines[0].Debit.Equal(money(t, "25000")) ||
+		!entry.Lines[1].Credit.Equal(money(t, "25000")) {
+		t.Fatalf("unexpected CWIP capitalization draft: %+v", entry)
+	}
+	updated, err := repo.GetFixedAsset(context.Background(), companyID, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.IsCWIP || updated.PendingOperation != FixedAssetOperationCWIPCapitalization ||
+		updated.PendingOperationEntryID != entry.ID {
+		t.Fatalf("CWIP project was not reserved with its draft: %+v", updated)
+	}
+	repo.mu.Lock()
+	posted := repo.drafts[entry.ID]
+	posted.Status = posting.EntryPosted
+	repo.drafts[entry.ID] = posted
+	repo.mu.Unlock()
+	if err := ledger.ConfirmCWIPCapitalizationContext(context.Background(), assetID, entry.ID); err != nil {
+		t.Fatalf("ConfirmCWIPCapitalizationContext(): %v", err)
+	}
+	capitalized, err := repo.GetFixedAsset(context.Background(), companyID, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capitalized.IsCWIP || capitalized.PendingOperation != "" ||
+		capitalized.PendingOperationEntryID != uuid.Nil || capitalized.CWIPAccountID != uuid.Nil ||
+		len(capitalized.AppliedEntryIDs) != 1 || capitalized.AppliedEntryIDs[0] != entry.ID {
+		t.Fatalf("posted CWIP capitalization was not applied: %+v", capitalized)
 	}
 }
 

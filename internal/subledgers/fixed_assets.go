@@ -21,8 +21,9 @@ type FixedAssetLedger struct {
 }
 
 const (
-	FixedAssetOperationDisposal   = "DISPOSAL"
-	FixedAssetOperationImpairment = "IMPAIRMENT"
+	FixedAssetOperationDisposal           = "DISPOSAL"
+	FixedAssetOperationImpairment         = "IMPAIRMENT"
+	FixedAssetOperationCWIPCapitalization = "CWIP_CAPITALIZATION"
 )
 
 type FixedAssetLedgerRepository interface {
@@ -66,6 +67,11 @@ func (l *FixedAssetLedger) RegisterAssetContext(ctx context.Context, asset Fixed
 		(asset.Method != StraightLine && asset.Method != DecliningBalance) ||
 		(asset.Method == DecliningBalance &&
 			(asset.DecliningRate.IsNegative() || asset.DecliningRate.GreaterThan(decimal.NewFromInt(1)))) {
+		return ErrInvalidAsset
+	}
+	if asset.IsCWIP && (asset.CWIPAccountID == uuid.Nil || asset.AssetAccountID == uuid.Nil ||
+		len(asset.Components) != 0 || !asset.AccumulatedDepreciation.Amount().IsZero() ||
+		!asset.AccumulatedImpairment.Amount().IsZero() || asset.PendingOperation != "") {
 		return ErrInvalidAsset
 	}
 	if asset.AccumulatedDepreciation.Currency() == "" {
@@ -279,6 +285,12 @@ func ValidateFixedAssetOperationMutation(expected, updated FixedAsset, entry pos
 		if updated.DisposedAt != nil || !strings.HasPrefix(entry.DocumentReference, impairmentReferencePrefix(expected.ID)) {
 			return fmt.Errorf("%w: impairment operation metadata does not match the posted entry", ErrInvalidAsset)
 		}
+	case FixedAssetOperationCWIPCapitalization:
+		if expected.IsCWIP || updated.IsCWIP ||
+			expected.CWIPAccountID == uuid.Nil || updated.CWIPAccountID != uuid.Nil ||
+			entry.DocumentReference != cwipCapitalizationReference(expected.ID, entry.ID) {
+			return fmt.Errorf("%w: CWIP capitalization metadata does not match the posted entry", ErrInvalidAsset)
+		}
 	default:
 		return ErrInvalidAsset
 	}
@@ -299,6 +311,12 @@ func ValidateFixedAssetOperationDraft(expected, updated FixedAsset, entry postin
 		}
 	case FixedAssetOperationImpairment:
 		if !strings.HasPrefix(entry.DocumentReference, impairmentReferencePrefix(expected.ID)) {
+			return ErrInvalidAsset
+		}
+	case FixedAssetOperationCWIPCapitalization:
+		if !expected.IsCWIP || updated.IsCWIP ||
+			expected.CWIPAccountID != updated.CWIPAccountID ||
+			entry.DocumentReference != cwipCapitalizationReference(expected.ID, entry.ID) {
 			return ErrInvalidAsset
 		}
 	default:
@@ -349,7 +367,7 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-	if asset.DisposedAt != nil {
+	if asset.DisposedAt != nil || asset.IsCWIP {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
 	if !asset.LastDepreciationDate.IsZero() &&
@@ -387,6 +405,92 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 		return posting.JournalEntry{}, err
 	}
 	return entry, nil
+}
+
+func (l *FixedAssetLedger) CapitalizeCWIPContext(
+	ctx context.Context,
+	assetID, journalID uuid.UUID,
+	asOf time.Time,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if assetID == uuid.Nil || journalID == uuid.Nil || asOf.IsZero() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if !asset.IsCWIP || asset.CWIPAccountID == uuid.Nil || asset.AssetAccountID == uuid.Nil ||
+		asset.DisposedAt != nil || asset.PendingOperation != "" ||
+		asset.CurrentBookValue.Currency() == "" || asset.CurrentBookValue.IsNegative() ||
+		asset.CurrentBookValue.Amount().IsZero() {
+		return posting.JournalEntry{}, ErrInvalidAsset
+	}
+	zero, err := financialtypes.Zero(asset.CurrentBookValue.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entryID := uuid.New()
+	entry := posting.JournalEntry{
+		CompanyID: asset.CompanyID, ID: entryID, JournalID: journalID,
+		EntryDate: asOf, Date: asOf, Status: posting.EntryDraft,
+		DocumentReference: cwipCapitalizationReference(asset.ID, entryID),
+		CreatedAt:         time.Now().UTC(),
+		Lines: []posting.JournalEntryLine{
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.AssetAccountID, Debit: asset.CurrentBookValue, Credit: zero},
+			{CompanyID: asset.CompanyID, ID: uuid.New(), AccountID: asset.CWIPAccountID, Debit: zero, Credit: asset.CurrentBookValue},
+		},
+	}
+	if err := entry.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	updated := asset
+	updated.IsCWIP = false
+	updated.PendingOperation = FixedAssetOperationCWIPCapitalization
+	updated.PendingOperationEntryID = entryID
+	if err := l.repo.SaveFixedAssetOperationDraft(ctx, asset, updated, entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return entry, nil
+}
+
+func (l *FixedAssetLedger) ConfirmCWIPCapitalizationContext(
+	ctx context.Context,
+	assetID, postedEntryID uuid.UUID,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, l.companyID, assetID)
+	if err != nil {
+		return err
+	}
+	if asset.PendingOperation != FixedAssetOperationCWIPCapitalization ||
+		asset.PendingOperationEntryID != postedEntryID ||
+		!strings.HasPrefix(cwipCapitalizationReference(asset.ID, postedEntryID), "CWIP:CAPITALIZE:") {
+		return ErrInvalidAsset
+	}
+	reader, ok := l.repo.(PostedJournalEntryReader)
+	if !ok {
+		return posting.ErrEntryNotFound
+	}
+	entry, err := reader.GetEntryByIDForCompany(ctx, l.companyID, postedEntryID)
+	if err != nil {
+		return err
+	}
+	if entry.ID != postedEntryID || entry.CompanyID != asset.CompanyID ||
+		entry.Status != posting.EntryPosted ||
+		entry.DocumentReference != cwipCapitalizationReference(asset.ID, postedEntryID) ||
+		!cwipCapitalizationEntryMatches(asset, entry) {
+		return posting.ErrEntryNotPosted
+	}
+	updated := asset
+	updated.PendingOperation = ""
+	updated.PendingOperationEntryID = uuid.Nil
+	updated.CWIPAccountID = uuid.Nil
+	return l.confirmAssetMutation(ctx, asset, updated, entry)
 }
 
 // Deprecated: Use DepreciateAssetAtomic instead.
@@ -857,6 +961,29 @@ func impairmentReference(assetID uuid.UUID, asOf time.Time) string {
 	return impairmentReferencePrefix(assetID) + asOf.UTC().Format("2006-01")
 }
 
+func cwipCapitalizationReference(assetID, entryID uuid.UUID) string {
+	return fmt.Sprintf("CWIP:CAPITALIZE:%s:%s", assetID, entryID)
+}
+
+func cwipCapitalizationEntryMatches(asset FixedAsset, entry posting.JournalEntry) bool {
+	if asset.CWIPAccountID == uuid.Nil || asset.AssetAccountID == uuid.Nil ||
+		asset.CurrentBookValue.Currency() == "" || len(entry.Lines) != 2 {
+		return false
+	}
+	zero, err := financialtypes.Zero(asset.CurrentBookValue.Currency())
+	if err != nil {
+		return false
+	}
+	assetDebit := entry.Lines[0]
+	cwipCredit := entry.Lines[1]
+	return assetDebit.AccountID == asset.AssetAccountID &&
+		assetDebit.CompanyID == asset.CompanyID &&
+		assetDebit.Debit.Equal(asset.CurrentBookValue) && assetDebit.Credit.Equal(zero) &&
+		cwipCredit.AccountID == asset.CWIPAccountID &&
+		cwipCredit.CompanyID == asset.CompanyID &&
+		cwipCredit.Debit.Equal(zero) && cwipCredit.Credit.Equal(asset.CurrentBookValue)
+}
+
 // Deprecated: use ConfirmImpairmentContext.
 func (l *FixedAssetLedger) ConfirmImpairment(assetID, postedEntryID uuid.UUID, loss financialtypes.Money, asOf time.Time) error {
 	return l.ConfirmImpairmentContext(context.Background(), assetID, postedEntryID, loss, asOf)
@@ -1204,7 +1331,9 @@ func (l *FixedAssetLedger) saveAssetOperationDraft(
 	entry posting.JournalEntry,
 	operation string,
 ) error {
-	if expected.PendingOperation != "" || (operation != FixedAssetOperationDisposal && operation != FixedAssetOperationImpairment) {
+	if expected.PendingOperation != "" ||
+		(operation != FixedAssetOperationDisposal && operation != FixedAssetOperationImpairment &&
+			operation != FixedAssetOperationCWIPCapitalization) {
 		return ErrAlreadyExists
 	}
 	updated := expected
