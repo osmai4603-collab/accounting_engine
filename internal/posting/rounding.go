@@ -31,6 +31,16 @@ var ErrRoundingAccountRequired = errors.New("rounding difference account is requ
 // currency precision and are validated against the functional side by
 // JournalEntryLine.Validate.
 func RoundEntryToMinorUnits(entry *JournalEntry, roundingAccountID uuid.UUID) error {
+	return RoundEntryWithRoundingPolicy(entry, roundingAccountID, nil)
+}
+
+// RoundEntryWithRoundingPolicy rounds functional lines through the supplied
+// currency policy and posts any resulting imbalance to the configured account.
+func RoundEntryWithRoundingPolicy(
+	entry *JournalEntry,
+	roundingAccountID uuid.UUID,
+	round func(financialtypes.Money) (financialtypes.Money, error),
+) error {
 	if entry == nil {
 		return ErrInvalidEntry
 	}
@@ -59,11 +69,11 @@ func RoundEntryToMinorUnits(entry *JournalEntry, roundingAccountID uuid.UUID) er
 	residual := decimal.Zero
 	for i := range entry.Lines {
 		line := entry.Lines[i]
-		roundedDebit, err := line.FunctionalDebit.Rounded()
+		roundedDebit, err := roundMoney(line.FunctionalDebit, round)
 		if err != nil {
 			return err
 		}
-		roundedCredit, err := line.FunctionalCredit.Rounded()
+		roundedCredit, err := roundMoney(line.FunctionalCredit, round)
 		if err != nil {
 			return err
 		}
@@ -86,10 +96,10 @@ func RoundEntryToMinorUnits(entry *JournalEntry, roundingAccountID uuid.UUID) er
 			return err
 		}
 		roundingLine := JournalEntryLine{
-			CompanyID:         entry.CompanyID,
-			ID:                uuid.New(),
-			AccountID:         roundingAccountID,
-			TransactionAmount: amount,
+			CompanyID:           entry.CompanyID,
+			ID:                  uuid.NewSHA1(entry.ID, []byte("rounding-difference")),
+			AccountID:           roundingAccountID,
+			TransactionAmount:   amount,
 			TransactionCurrency: functionalCurrency,
 			ExchangeRate:        decimal.NewFromInt(1),
 			FunctionalDebit:     zero,
@@ -103,5 +113,12 @@ func RoundEntryToMinorUnits(entry *JournalEntry, roundingAccountID uuid.UUID) er
 		entry.Lines = append(entry.Lines, roundingLine)
 	}
 
-	return entry.Validate()
+	return entry.ValidateWithRounding(round)
+}
+
+func roundMoney(amount financialtypes.Money, round func(financialtypes.Money) (financialtypes.Money, error)) (financialtypes.Money, error) {
+	if round != nil {
+		return round(amount)
+	}
+	return amount.Rounded()
 }

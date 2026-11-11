@@ -73,8 +73,25 @@ func TestMeasureAnnualAndZeroRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !measurement.DTL.Amount().IsZero() || measurement.Period.Kind != Annual {
 		t.Fatalf("unexpected annual measurement: %+v", measurement)
+	}
+}
+
+func TestMeasureSuppressesDTAWhenFutureProfitIsNotProbable(t *testing.T) {
+	probable := false
+	measurement, err := Measure([]TaxBalance{{
+		ID: "deductible", Kind: Asset,
+		CarryingAmount: testMoney(t, "80", "USD"), TaxBase: testMoney(t, "100", "USD"),
+		Rate: testRate("0.25"), FutureTaxableProfitProbable: &probable,
+	}}, testPeriod(Annual))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !measurement.Balances[0].DeductibleTemporaryDifference.Amount().Equal(decimal.NewFromInt(20)) ||
+		!measurement.DTA.Amount().IsZero() {
+		t.Fatalf("unexpected DTA recognition result: %+v", measurement)
 	}
 }
 

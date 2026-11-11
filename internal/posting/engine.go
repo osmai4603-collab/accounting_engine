@@ -3,10 +3,12 @@ package posting
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/policy"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -36,6 +38,7 @@ type Engine struct {
 	dimensions            *FinancialDimensionsEngine
 	approvalGate          ApprovalGate
 	makerCheckerPolicy    MakerCheckerPolicy
+	policyUnit            *policy.Unit
 }
 
 // MakerCheckerPolicy exposes a company-level maker-checker threshold. The
@@ -61,6 +64,10 @@ func (e *Engine) SetMakerCheckerPolicy(policy MakerCheckerPolicy) {
 	e.makerCheckerPolicy = policy
 }
 
+func (e *Engine) SetPolicyUnit(unit *policy.Unit) {
+	e.policyUnit = unit
+}
+
 func (e *Engine) CreateDraft(entry JournalEntry) error {
 	return e.CreateDraftContext(context.Background(), entry)
 }
@@ -73,6 +80,7 @@ func (e *Engine) CreateDraftContext(ctx context.Context, entry JournalEntry) err
 		entry.ID = uuid.New()
 	}
 	entry.Status = EntryDraft
+	entry.Lines = append([]JournalEntryLine(nil), entry.Lines...)
 	if entry.CompanyID != uuid.Nil {
 		for i := range entry.Lines {
 			if entry.Lines[i].CompanyID == uuid.Nil {
@@ -87,7 +95,25 @@ func (e *Engine) CreateDraftContext(ctx context.Context, entry JournalEntry) err
 		entry.CreatedAt = time.Now().UTC()
 	}
 	entry.UpdatedAt = entry.CreatedAt
-	if err := entry.Validate(); err != nil {
+	if e.policyUnit != nil && entry.CompanyID != uuid.Nil {
+		currencyPolicy, err := e.policyUnit.GetCurrencyPolicyAsOf(ctx, entry.CompanyID, effectiveDate(&entry))
+		if err != nil {
+			return err
+		}
+		if err := currencyPolicy.Validate(); err != nil {
+			return err
+		}
+		if currencyPolicy.AutoSettleRoundingDifferences && hasSubMinorFunctionalAmounts(entry) {
+			if err := RoundEntryWithRoundingPolicy(&entry, currencyPolicy.RoundingDifferenceAccountID, currencyPolicy.Round); err != nil {
+				return err
+			}
+		} else if err := entry.ValidateWithRounding(currencyPolicy.Round); err != nil {
+			return err
+		}
+		if err := validateCurrencyPolicyAmounts(entry, currencyPolicy); err != nil {
+			return err
+		}
+	} else if err := entry.Validate(); err != nil {
 		return err
 	}
 	return e.repo.SaveDraftContext(ctx, entry)
@@ -280,7 +306,27 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := entry.Validate(); err != nil {
+	var currencyPolicy *policy.CurrencyPolicy
+	if e.policyUnit != nil && entry.CompanyID != uuid.Nil {
+		value, err := e.policyUnit.GetCurrencyPolicyAsOf(ctx, entry.CompanyID, effectiveDate(entry))
+		if err != nil {
+			return err
+		}
+		if err := value.Validate(); err != nil {
+			return err
+		}
+		if value.AutoSettleRoundingDifferences && hasSubMinorFunctionalAmounts(*entry) {
+			if err := RoundEntryWithRoundingPolicy(entry, value.RoundingDifferenceAccountID, value.Round); err != nil {
+				return err
+			}
+		}
+		currencyPolicy = &value
+	}
+	if currencyPolicy != nil {
+		if err := entry.ValidateWithRounding(currencyPolicy.Round); err != nil {
+			return err
+		}
+	} else if err := entry.Validate(); err != nil {
 		return err
 	}
 	if e.dimensions != nil {
@@ -297,6 +343,30 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			return ErrApprovalRequired
 		}
 	}
+	var postingPolicy *policy.PostingPolicy
+	if e.policyUnit != nil && entry.CompanyID != uuid.Nil {
+		date := effectiveDate(entry)
+		postingCurrency, err := e.policyUnit.GetPostingPolicyAsOf(ctx, entry.CompanyID, date)
+		if err != nil {
+			return err
+		}
+		postingPolicy = &postingCurrency
+		if err := validateCurrencyPolicyAmounts(*entry, *currencyPolicy); err != nil {
+			return err
+		}
+		if backdatingDays := policy.BackdatingDays(date, time.Now().UTC()); backdatingDays > postingCurrency.MaxBackdatingDays {
+			approved := false
+			if postingCurrency.AllowBackdatingException {
+				approved, err = e.policyUnit.AuthorizeBackdatingException(ctx, entry.CompanyID, entry.ID, posterID)
+				if err != nil {
+					return err
+				}
+			}
+			if !approved {
+				return policy.ErrBackdatingLimit
+			}
+		}
+	}
 	if e.masterdata != nil {
 		if entry.CompanyID != uuid.Nil {
 			company, err := e.masterdata.GetCompanyByIDContext(ctx, entry.CompanyID)
@@ -309,6 +379,11 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			if err := validateFunctionalCurrency(*entry, company.FunctionalCurrency); err != nil {
 				return err
 			}
+			if currencyPolicy != nil {
+				if !strings.EqualFold(company.FunctionalCurrency, currencyPolicy.FunctionalCurrency) {
+					return ErrFunctionalCurrencyMismatch
+				}
+			}
 		}
 		if entry.TargetPeriodNumber == 13 || entry.TargetPeriodNumber == 14 {
 			if !entry.AdjustmentAuthorized {
@@ -317,7 +392,14 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			var period masterdata.FiscalPeriod
 			var err error
 			if entry.CompanyID != uuid.Nil {
-				period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+				if postingPolicy != nil {
+					period, err = e.masterdata.GetAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+					if err == nil {
+						err = e.validatePolicyPeriod(ctx, entry.CompanyID, period, *postingPolicy, posterID)
+					}
+				} else {
+					period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+				}
 			} else {
 				period, err = e.masterdata.GetOpenAdjustmentPeriodForDateContext(ctx, effectiveDate(entry), entry.TargetPeriodNumber)
 			}
@@ -330,7 +412,12 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 		} else {
 			var period masterdata.FiscalPeriod
 			var err error
-			if entry.CompanyID != uuid.Nil {
+			if entry.CompanyID != uuid.Nil && postingPolicy != nil {
+				period, err = e.masterdata.GetPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
+				if err == nil {
+					err = e.validatePolicyPeriod(ctx, entry.CompanyID, period, *postingPolicy, posterID)
+				}
+			} else if entry.CompanyID != uuid.Nil {
 				period, err = e.masterdata.GetOpenPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
 			} else {
 				period, err = e.masterdata.GetOpenPeriodForDateContext(ctx, effectiveDate(entry))
@@ -341,6 +428,22 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			entry.PeriodID = period.ID
 		}
 		for _, line := range entry.Lines {
+			if postingPolicy != nil && (postingPolicy.RequireCostCenterForIncomeExpense ||
+				postingPolicy.RequireAnalyticalDimensionForIncomeExpense) {
+				account, err := e.masterdata.GetAccountByIDForCompanyContext(ctx, entry.CompanyID, line.AccountID)
+				if err != nil {
+					return err
+				}
+				if account.AccountType == masterdata.AccountTypeIncome || account.AccountType == masterdata.AccountTypeExpense {
+					if postingPolicy.RequireCostCenterForIncomeExpense && line.CostCenterID == nil {
+						return ErrCostCenterRequired
+					}
+					if postingPolicy.RequireAnalyticalDimensionForIncomeExpense &&
+						line.ProjectID == nil && line.SegmentID == nil && line.BusinessUnitID == nil {
+						return ErrDimensionPolicyUnavailable
+					}
+				}
+			}
 			var err error
 			if entry.CompanyID != uuid.Nil {
 				err = e.masterdata.ValidateCanPostToAccountForCompanyContext(ctx, entry.CompanyID, line.AccountID)
@@ -356,6 +459,64 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 		return err
 	}
 	return nil
+}
+
+func (e *Engine) validatePolicyPeriod(
+	ctx context.Context,
+	companyID uuid.UUID,
+	period masterdata.FiscalPeriod,
+	postingPolicy policy.PostingPolicy,
+	posterID string,
+) error {
+	switch period.State {
+	case masterdata.PeriodHardClosed:
+		return policy.ErrHardClosedPeriod
+	case masterdata.PeriodSoftClosed:
+		if !postingPolicy.AllowSoftClosedPosting {
+			return policy.ErrSoftClosedPeriod
+		}
+		if postingPolicy.RequireManagerForSoftClosed {
+			return e.policyUnit.AuthorizeSoftClosedPosting(ctx, companyID, posterID)
+		}
+		return nil
+	case masterdata.PeriodOpen:
+		return nil
+	default:
+		return masterdata.ErrFiscalPeriodClosed
+	}
+}
+
+func validateCurrencyPolicyAmounts(entry JournalEntry, currencyPolicy policy.CurrencyPolicy) error {
+	for _, line := range entry.Lines {
+		resolved, err := normalizeLineCurrencies(line)
+		if err != nil {
+			return err
+		}
+		if resolved.FunctionalDebit.Currency() != currencyPolicy.FunctionalCurrency {
+			return ErrFunctionalCurrencyMismatch
+		}
+		for _, amount := range []financialtypes.Money{
+			resolved.TransactionAmount, resolved.FunctionalDebit, resolved.FunctionalCredit,
+		} {
+			if err := currencyPolicy.ValidateMoney(amount); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func hasSubMinorFunctionalAmounts(entry JournalEntry) bool {
+	for _, line := range entry.Lines {
+		resolved, err := normalizeLineCurrencies(line)
+		if err != nil {
+			continue
+		}
+		if resolved.FunctionalDebit.HasSubMinorUnitFraction() || resolved.FunctionalCredit.HasSubMinorUnitFraction() {
+			return true
+		}
+	}
+	return false
 }
 
 func validateFunctionalCurrency(entry JournalEntry, expectedCurrency string) error {

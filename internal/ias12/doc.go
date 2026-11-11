@@ -7,10 +7,11 @@
 // differences. The input and result types preserve the relevant currency,
 // balance kind, period, and rate metadata.
 //
-// GenerateDeferredTaxEntry converts a validated movement in a deferred-tax
-// position into a balanced posting.JournalEntry using the requested accounts.
-// The lifecycle is calculation first, review of the returned amounts, then
-// optional journal creation and posting by the posting package. This package
-// performs no persistence; invalid periods, balances, currencies, or
-// unenacted rates are returned as errors rather than silently adjusted.
+// Unit combines balance-sheet measurement, effective tax reconciliation, and
+// journal generation for period close. Deferred-tax movements can be split
+// between profit or loss and OCI; current-tax accruals are generated
+// separately. Journal creation is separate from authorization, posting, and
+// persistence. This package performs no persistence; invalid periods,
+// balances, currencies, or unenacted rates are returned as errors rather than
+// silently adjusted.
 package ias12

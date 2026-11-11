@@ -8,8 +8,8 @@
 // company data and applicable rates, call the engine, and decide how to
 // present or persist the result.
 //
-// The package models source accounts and validated group state internally so
-// that company-specific inputs are checked before aggregation. Rate lookup and
-// validation errors are returned to the caller; this package does not hide
-// missing or invalid exchange-rate data behind defaults.
+// Ownership chains support partial or full goodwill, and foreign-currency
+// translation differences are routed to the configured OCI translation
+// reserve. Rate lookup and validation errors are returned to the caller; this
+// package does not hide missing or invalid exchange-rate data behind defaults.
 package consolidation

@@ -160,6 +160,7 @@ func TestRejectsInvalidContractInputs(t *testing.T) {
 	if _, err := NewContract(uuid.New(), uuid.New(), money(t, "10", "USD"), []PerformanceObligation{po}); err == nil {
 		t.Fatal("expected invalid obligation period error")
 	}
+
 	po = obligation("2025-01-01", "2025-01-01", PointInTime, "10")
 	po.StandalonePrice = money(t, "10", "EUR")
 	if _, err := NewContract(uuid.New(), uuid.New(), money(t, "10", "USD"), []PerformanceObligation{po}); err == nil {
@@ -181,5 +182,50 @@ func TestRejectsInvalidContractInputs(t *testing.T) {
 	}
 	if _, err := contract.Schedule(po.ID, "quarterly"); err != ErrInvalidPeriod {
 		t.Fatalf("frequency error = %v, want invalid period", err)
+	}
+}
+
+func TestUnitCoordinatesAdvanceAndRecognitionJournals(t *testing.T) {
+	po := obligation("2025-01-01", "2025-01-01", PointInTime, "1")
+	contract := testContract(t, "100", po)
+	unit, err := NewUnit(UnitConfig{
+		JournalID: uuid.New(), CashAccountID: uuid.New(), ContractAssetAccountID: uuid.New(),
+		ReceivableAccountID: uuid.New(), ContractLiabilityAccount: uuid.New(), RevenueAccountID: uuid.New(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unit.AddContract(contract); err != nil {
+		t.Fatal(err)
+	}
+	_, advance, err := unit.ReceiveAdvance(contract.ID, money(t, "60", "USD"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := advance.Validate(); err != nil {
+		t.Fatalf("advance journal is unbalanced: %v", err)
+	}
+	updated, recognition, err := unit.RecognizeObligation(contract.ID, po.ID, money(t, "80", "USD"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recognition.Validate(); err != nil {
+		t.Fatalf("recognition journal is unbalanced: %v", err)
+	}
+	if len(recognition.Lines) != 3 {
+		t.Fatalf("recognition journal lines = %d, want liability, asset, revenue", len(recognition.Lines))
+	}
+	if !updated.RecognizedAmount.Amount().Equal(decimal.NewFromInt(80)) {
+		t.Fatalf("recognized amount = %s, want 80", updated.RecognizedAmount)
+	}
+	_, invoice, err := unit.BillCustomer(contract.ID, money(t, "40", "USD"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := invoice.Validate(); err != nil {
+		t.Fatalf("contract liability invoice is unbalanced: %v", err)
+	}
+	if _, _, err := unit.RecognizeObligation(contract.ID, po.ID, money(t, "21", "USD"), time.Now()); err != ErrRecognitionExceeded {
+		t.Fatalf("recognition beyond the obligation allocation error = %v, want %v", err, ErrRecognitionExceeded)
 	}
 }

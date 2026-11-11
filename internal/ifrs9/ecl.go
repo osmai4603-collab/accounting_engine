@@ -16,13 +16,14 @@ import (
 )
 
 var (
-	ErrInvalidConfiguration = errors.New("invalid IFRS 9 ECL configuration")
-	ErrInvalidExposure      = errors.New("invalid receivable exposure")
-	ErrMissingRate          = errors.New("missing provision matrix rate")
-	ErrInvalidRate          = errors.New("invalid provision matrix rate")
-	ErrInvalidAllowance     = errors.New("invalid existing allowance")
-	ErrInvalidDate          = errors.New("invalid ECL measurement date")
-	ErrDependenciesRequired = errors.New("ECL data sources are required")
+	ErrInvalidConfiguration           = errors.New("invalid IFRS 9 ECL configuration")
+	ErrInvalidExposure                = errors.New("invalid receivable exposure")
+	ErrMissingRate                    = errors.New("missing provision matrix rate")
+	ErrInvalidRate                    = errors.New("invalid provision matrix rate")
+	ErrInvalidAllowance               = errors.New("invalid existing allowance")
+	ErrInvalidDate                    = errors.New("invalid ECL measurement date")
+	ErrDependenciesRequired           = errors.New("ECL data sources are required")
+	ErrHistoricalAllowanceUnavailable = errors.New("historical allowance is unavailable")
 )
 
 type Stage string
@@ -153,6 +154,8 @@ func (e *Engine) Calculate(ctx context.Context, asOf time.Time) (CalculationResu
 		existing, err = source.ExistingAllowanceAsOf(
 			ctx, e.config.CompanyID, e.config.AllowanceAccountID, e.config.Currency, asOf,
 		)
+	} else if dateOnlyUTC(asOf).Before(dateOnlyUTC(time.Now())) {
+		return CalculationResult{}, ErrHistoricalAllowanceUnavailable
 	} else {
 		existing, err = e.allowance.ExistingAllowance(
 			ctx, e.config.CompanyID, e.config.AllowanceAccountID, e.config.Currency,
@@ -162,6 +165,79 @@ func (e *Engine) Calculate(ctx context.Context, asOf time.Time) (CalculationResu
 		return CalculationResult{}, err
 	}
 	return Calculate(asOf, e.config, exposures, existing)
+}
+
+// Unit is the simplified IFRS 9 provision-matrix unit for trade receivables.
+// The general PD/LGD/EAD method is exposed separately by CalculateGeneralECL.
+type Unit struct{ engine *Engine }
+
+func NewUnit(config Config, portfolio PortfolioSource, allowance AllowanceSource) (*Unit, error) {
+	engine, err := NewEngine(config, portfolio, allowance)
+	if err != nil {
+		return nil, err
+	}
+	return &Unit{engine: engine}, nil
+}
+
+// NewGeneralUnit creates a unit instance for caller-supplied PD/LGD models.
+func NewGeneralUnit() *Unit { return &Unit{} }
+
+func (u *Unit) CalculateGeneralECL(
+	asOf time.Time,
+	exposures []GeneralExposure,
+	pdModel PDModel,
+	lgdModel LGDModel,
+	eirDiscount EIRDiscount,
+) (GeneralCalculationResult, error) {
+	if u == nil {
+		return GeneralCalculationResult{}, ErrDependenciesRequired
+	}
+	return CalculateGeneralECL(asOf, exposures, pdModel, lgdModel, eirDiscount)
+}
+
+func (u *Unit) Calculate(ctx context.Context, asOf time.Time) (CalculationResult, error) {
+	if u == nil || u.engine == nil {
+		return CalculationResult{}, ErrDependenciesRequired
+	}
+	return u.engine.Calculate(ctx, asOf)
+}
+
+// CalculateSimplifiedECL calculates trade receivable losses using the
+// lifetime provision matrix required by the simplified approach.
+func CalculateSimplifiedECL(asOf time.Time, matrix map[subledgers.AgingBucket]decimal.Decimal, receivables []Exposure) (CalculationResult, error) {
+	if asOf.IsZero() {
+		return CalculationResult{}, ErrInvalidDate
+	}
+	if len(receivables) == 0 {
+		return CalculationResult{AsOf: asOf.UTC()}, nil
+	}
+	currency := ""
+	var companyID uuid.UUID
+	for _, exposure := range receivables {
+		line := exposure.Receivable
+		if currency == "" {
+			currency, companyID = line.ResidualAmount.Currency(), line.CompanyID
+		} else if currency != line.ResidualAmount.Currency() || companyID != line.CompanyID {
+			return CalculationResult{}, ErrInvalidExposure
+		}
+	}
+	if currency == "" {
+		return CalculationResult{}, ErrInvalidConfiguration
+	}
+	config := Config{CompanyID: companyID, JournalID: uuid.New(), ImpairmentAccountID: uuid.New(),
+		AllowanceAccountID: uuid.New(), Currency: currency, ProvisionMatrix: matrix}
+	zero, err := financialtypes.Zero(currency)
+	if err != nil {
+		return CalculationResult{}, err
+	}
+	result, err := Calculate(asOf, config, receivables, zero)
+	if err != nil {
+		return CalculationResult{}, err
+	}
+	// This convenience API has no posting-account configuration; only the
+	// configured Unit can produce a journal draft suitable for posting.
+	result.JournalEntry = nil
+	return result, nil
 }
 
 func Calculate(asOf time.Time, config Config, exposures []Exposure, existingAllowance financialtypes.Money) (CalculationResult, error) {

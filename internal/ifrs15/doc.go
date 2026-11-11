@@ -2,14 +2,13 @@
 //
 // Contract data represents the customer arrangement, performance obligations,
 // transaction price, allocation inputs, and related recognition state.
-// Package operations validate contract information, allocate the price to
-// obligations, and calculate revenue recognized over time or at a point in
-// time. Their outputs describe accounting results; they do not post journals
-// or persist contract state by themselves.
+// Contracts allocate transaction price by relative standalone selling price
+// and schedule point-in-time or over-time performance.
 //
-// Callers create or load contract inputs, calculate and review the resulting
-// allocation and recognition amounts, and then use the posting and storage
-// layers when those results are to be recorded. Monetary and timing
-// assumptions remain explicit in the inputs, and validation or calculation
-// failures are returned to the caller.
+// Unit coordinates advance billing and performance-obligation recognition,
+// maintains in-memory contract balances, and returns balanced general-ledger
+// journal drafts for deferred revenue, contract assets, and earned revenue.
+// Invoices and cash advances retain customer partner identifiers for
+// receivable-subledger reconciliation. Callers remain responsible for durable
+// storage, authorization, and posting.
 package ifrs15

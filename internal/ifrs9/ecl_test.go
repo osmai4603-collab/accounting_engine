@@ -222,16 +222,33 @@ func (s testAllowanceSource) ExistingAllowance(ctx context.Context, _, _ uuid.UU
 	return financialtypes.Money(s), nil
 }
 
+type testAsOfAllowanceSource financialtypes.Money
+
+func (s testAsOfAllowanceSource) ExistingAllowance(ctx context.Context, _, _ uuid.UUID, _ string) (financialtypes.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return financialtypes.Money{}, err
+	}
+	return financialtypes.Money(s), nil
+}
+
+func (s testAsOfAllowanceSource) ExistingAllowanceAsOf(ctx context.Context, _, _ uuid.UUID, _ string, _ time.Time) (financialtypes.Money, error) {
+	if err := ctx.Err(); err != nil {
+		return financialtypes.Money{}, err
+	}
+	return financialtypes.Money(s), nil
+}
+
 func TestEngineLoadsUsingContextAndReturnsDeterministicResults(t *testing.T) {
 	config := testConfig()
 	asOf := time.Date(2026, 11, 10, 12, 0, 0, 0, time.FixedZone("local", 3*60*60))
 	first := testExposure(config.CompanyID, asOf.AddDate(0, 0, -31), "100")
 	second := testExposure(config.CompanyID, asOf, "100")
 	zero, _ := financialtypes.Zero("USD")
-	engine, err := NewEngine(config, testPortfolioSource{second, first}, testAllowanceSource(zero))
+	engine, err := NewEngine(config, testPortfolioSource{second, first}, testAsOfAllowanceSource(zero))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	result, err := engine.Calculate(context.Background(), asOf)
 	if err != nil {
 		t.Fatal(err)
@@ -247,6 +264,19 @@ func TestEngineLoadsUsingContextAndReturnsDeterministicResults(t *testing.T) {
 	}
 	if overdue == nil || overdue.Stage != Stage2 || overdue.DaysPastDue != 31 {
 		t.Fatalf("unexpected stage result at 31 days: %+v", overdue)
+	}
+}
+
+func TestEngineRejectsHistoricalAllowanceWithoutAsOfSource(t *testing.T) {
+	config := testConfig()
+	allowance, _ := financialtypes.Zero(config.Currency)
+	engine, err := NewEngine(config, testPortfolioSource(nil), testAllowanceSource(allowance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Calculate(context.Background(), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrHistoricalAllowanceUnavailable) {
+		t.Fatalf("historical Calculate() error = %v, want %v", err, ErrHistoricalAllowanceUnavailable)
 	}
 }
 

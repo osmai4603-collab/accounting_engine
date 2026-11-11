@@ -232,6 +232,16 @@ func (s *Service) getAccountForCompany(ctx context.Context, companyID, accountID
 	return Account{}, ErrCompanyScopeRequired
 }
 
+func (s *Service) GetAccountByIDForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (Account, error) {
+	if ctx == nil {
+		return Account{}, errors.New("account context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return s.getAccountForCompany(ctx, companyID, accountID)
+}
+
 func (s *Service) createAccountContext(ctx context.Context, account Account) error {
 	if repository, ok := s.repo.(interface {
 		CreateAccountContext(context.Context, Account) error
@@ -390,6 +400,7 @@ func (s *Service) GetOpenPeriodForCompanyDateContext(ctx context.Context, compan
 	if err := ctx.Err(); err != nil {
 		return FiscalPeriod{}, err
 	}
+
 	repository, ok := s.repo.(ContextCompanyScopedRepository)
 	if !ok {
 		return FiscalPeriod{}, ErrCompanyScopeRequired
@@ -402,6 +413,29 @@ func (s *Service) GetOpenPeriodForCompanyDateContext(ctx context.Context, compan
 		return FiscalPeriod{}, ErrFiscalPeriodClosed
 	}
 	return period, nil
+}
+
+// GetPeriodForCompanyDateContext returns the period for a date without applying
+// open-period rules. Policy units use it to distinguish soft and hard closes.
+func (s *Service) GetPeriodForCompanyDateContext(ctx context.Context, companyID uuid.UUID, date time.Time) (FiscalPeriod, error) {
+	if ctx == nil {
+		return FiscalPeriod{}, errors.New("fiscal period context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	if companyID == uuid.Nil {
+		return FiscalPeriod{}, ErrCompanyScopeRequired
+	}
+	if repository, ok := s.repo.(interface {
+		GetPeriodByDateForCompanyContext(context.Context, uuid.UUID, time.Time) (FiscalPeriod, error)
+	}); ok {
+		return repository.GetPeriodByDateForCompanyContext(ctx, companyID, date)
+	}
+	if repository, ok := s.repo.(CompanyScopedRepository); ok {
+		return repository.GetPeriodByDateForCompany(companyID, date)
+	}
+	return FiscalPeriod{}, ErrCompanyScopeRequired
 }
 
 // Deprecated: use GetOpenAdjustmentPeriodContext.
@@ -502,6 +536,19 @@ func (s *Service) GetOpenAdjustmentPeriodForCompanyDate(companyID uuid.UUID, dat
 }
 
 func (s *Service) GetOpenAdjustmentPeriodForCompanyDateContext(ctx context.Context, companyID uuid.UUID, date time.Time, periodNumber int) (FiscalPeriod, error) {
+	period, err := s.GetAdjustmentPeriodForCompanyDateContext(ctx, companyID, date, periodNumber)
+	if err != nil {
+		return FiscalPeriod{}, err
+	}
+	if period.State != PeriodOpen {
+		return FiscalPeriod{}, ErrFiscalPeriodClosed
+	}
+	return period, nil
+}
+
+// GetAdjustmentPeriodForCompanyDateContext returns an adjustment bucket
+// without applying its close-state rule, for use by policy checks.
+func (s *Service) GetAdjustmentPeriodForCompanyDateContext(ctx context.Context, companyID uuid.UUID, date time.Time, periodNumber int) (FiscalPeriod, error) {
 	if periodNumber != 13 && periodNumber != 14 {
 		return FiscalPeriod{}, ErrFiscalPeriodNotFound
 	}
@@ -526,9 +573,6 @@ func (s *Service) GetOpenAdjustmentPeriodForCompanyDateContext(ctx context.Conte
 	}
 	if period.Type != expectedType {
 		return FiscalPeriod{}, ErrFiscalPeriodNotFound
-	}
-	if period.State != PeriodOpen {
-		return FiscalPeriod{}, ErrFiscalPeriodClosed
 	}
 	return period, nil
 }

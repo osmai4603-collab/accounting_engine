@@ -6,6 +6,7 @@ import (
 	"accounting_engine/internal/governance"
 	"accounting_engine/internal/ifrs15"
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/policy"
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/subledgers"
 	"accounting_engine/internal/valuation"
@@ -35,6 +36,7 @@ type Driver struct {
 	reconciliationReports      []subledgers.DiscrepancyReport
 	reconciliationCertificates []subledgers.ReconciliationCertificate
 	contracts                  map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
+	policies                   map[string][]policy.VersionedPolicy
 	audit                      []*governance.FinancialAuditLog
 	rates                      *valuation.RateRegistry
 }
@@ -82,6 +84,7 @@ func New() *Driver {
 		assets:           make(map[uuid.UUID]subledgers.FixedAsset),
 		bank:             make(map[string][]subledgers.BankItem),
 		contracts:        make(map[uuid.UUID]map[uuid.UUID]ifrs15.Contract),
+		policies:         make(map[string][]policy.VersionedPolicy),
 		rates:            valuation.NewRateRegistry(),
 	}
 }

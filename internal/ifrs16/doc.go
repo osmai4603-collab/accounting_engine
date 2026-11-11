@@ -14,9 +14,10 @@
 // likewise expects the remaining cash flows to reflect any changed residual
 // value guarantee; the engine does not infer a separate guarantee amount.
 //
-// Entry-generation helpers turn validated lease events or schedule amounts
-// into posting journal entries. The caller supplies the appropriate accounts
-// and remains responsible for authorization, posting, and persistence. Invalid
+// Unit coordinates periodic payment/interest and depreciation journal drafts,
+// while modification remeasurement and early termination helpers produce
+// adjustment drafts. The caller supplies the appropriate accounts and remains
+// responsible for authorization, posting, and persistence. Invalid
 // contract terms, payment sequences, currencies, or carrying amounts are
 // returned as errors.
 package ifrs16

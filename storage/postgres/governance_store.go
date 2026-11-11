@@ -27,6 +27,21 @@ func (d *Driver) HasRole(ctx context.Context, companyID, userID uuid.UUID, role 
 	return granted, err
 }
 
+func (d *Driver) HasAccountingManagerRole(ctx context.Context, companyID, userID uuid.UUID) (bool, error) {
+	for _, role := range []governance.Role{
+		governance.RoleFinanceManager, governance.RoleController, governance.RoleCFO,
+	} {
+		granted, err := d.HasRole(ctx, companyID, userID, role)
+		if err != nil {
+			return false, err
+		}
+		if granted {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (d *Driver) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID) (masterdata.Company, error) {
 	var company masterdata.Company
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {

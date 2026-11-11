@@ -301,6 +301,16 @@ func (s allowanceSource) ExistingAllowance(context.Context, uuid.UUID, uuid.UUID
 	return s.allowance, nil
 }
 
+func (s allowanceSource) ExistingAllowanceAsOf(
+	context.Context,
+	uuid.UUID,
+	uuid.UUID,
+	string,
+	time.Time,
+) (financialtypes.Money, error) {
+	return s.allowance, nil
+}
+
 func TestECLJobGeneratesMonthlyAdjustment(t *testing.T) {
 	companyID, journalID := uuid.New(), uuid.New()
 	exposureAmount := mustMoney(t, "1000", "USD")

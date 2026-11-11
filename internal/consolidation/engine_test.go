@@ -179,6 +179,49 @@ func TestConsolidateRecognizesGoodwillAndAllocatesNCI(t *testing.T) {
 	if !result.Totals.Balanced {
 		t.Fatalf("NCI allocation did not balance: %+v", result.Totals)
 	}
+	group.Ownerships[0].GoodwillMethod = FullGoodwill
+	group.Ownerships[0].NCIAtFairValue = dec("50")
+	fullGoodwill, err := NewEngine(nil).Consolidate(group, tbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fullGoodwill.Account("goodwill").Amount.Equal(dec("10")) ||
+		!fullGoodwill.Account("nci").Amount.Equal(dec("-54")) {
+		t.Fatalf("full-goodwill result has goodwill %s and NCI %s, want 10 and -54",
+			fullGoodwill.Account("goodwill").Amount, fullGoodwill.Account("nci").Amount)
+	}
+}
+
+func TestConsolidateSupportsNestedOwnershipChain(t *testing.T) {
+	group, tbs := basicFixture()
+	grandchildID := "00000000-0000-4000-8000-000000000003"
+	group.Entities = append(group.Entities, Entity{ID: grandchildID, FunctionalCurrency: "USD"})
+	group.Mappings = append(group.Mappings,
+		AccountMapping{EntityID: subCompanyID, SourceAccountID: "investment", GroupAccountID: "investment", RateClass: RateClosing},
+		AccountMapping{EntityID: grandchildID, SourceAccountID: "cash", GroupAccountID: "cash", RateClass: RateClosing},
+		AccountMapping{EntityID: grandchildID, SourceAccountID: "equity", GroupAccountID: "sub-equity", RateClass: RateHistorical, HistoricalDate: dt(2024, 1, 1)})
+	group.Ownerships = append(group.Ownerships, Ownership{
+		ParentEntityID: subCompanyID, SubsidiaryEntityID: grandchildID, Percentage: dec("1"),
+		AcquisitionDate: dt(2024, 1, 1), Consideration: dec("10"), FairValueNetAssets: dec("10"),
+		InvestmentAccountID: "investment", GoodwillAccountID: "goodwill",
+		NCIAccountID: "parent-equity", ParentRetainedEarningsAccountID: "retained",
+	})
+	tbs[1].Lines = []TrialBalanceLine{
+		{AccountID: "cash", EndingDebit: dec("40")},
+		{AccountID: "investment", EndingDebit: dec("10")},
+		{AccountID: "equity", EndingCredit: dec("50")},
+	}
+	tbs = append(tbs, TrialBalance{
+		EntityID: grandchildID, StartDate: group.Period.StartDate, EndDate: group.Period.EndDate, Currency: "USD",
+		Lines: []TrialBalanceLine{{AccountID: "cash", EndingDebit: dec("10")}, {AccountID: "equity", EndingCredit: dec("10")}},
+	})
+	result, err := NewEngine(nil).Consolidate(group, tbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Totals.Balanced || !result.Account("investment").Amount.IsZero() {
+		t.Fatalf("nested investments were not eliminated in a balanced consolidation: %+v", result.Totals)
+	}
 }
 
 func TestConsolidateRejectsInvalidInputs(t *testing.T) {

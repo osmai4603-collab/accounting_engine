@@ -78,6 +78,10 @@ type JournalEntryLine struct {
 }
 
 func (l JournalEntryLine) Validate() error {
+	return l.ValidateWithRounding(nil)
+}
+
+func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) (financialtypes.Money, error)) error {
 	resolved, err := normalizeLineCurrencies(l)
 	if err != nil {
 		return err
@@ -114,7 +118,11 @@ func (l JournalEntryLine) Validate() error {
 	if err != nil {
 		return err
 	}
-	expected, err = expected.Rounded()
+	if round != nil {
+		expected, err = round(expected)
+	} else {
+		expected, err = expected.Rounded()
+	}
 	if err != nil {
 		return err
 	}
@@ -122,7 +130,11 @@ func (l JournalEntryLine) Validate() error {
 	if resolved.FunctionalCredit.Amount().IsPositive() {
 		actual = resolved.FunctionalCredit
 	}
-	actual, err = actual.Rounded()
+	if round != nil {
+		actual, err = round(actual)
+	} else {
+		actual, err = actual.Rounded()
+	}
 	if err != nil {
 		return err
 	}
@@ -202,6 +214,10 @@ func NewJournalEntry(journalID uuid.UUID, date time.Time, createdBy string, line
 }
 
 func (e *JournalEntry) Validate() error {
+	return e.ValidateWithRounding(nil)
+}
+
+func (e *JournalEntry) ValidateWithRounding(round func(financialtypes.Money) (financialtypes.Money, error)) error {
 	if len(e.Lines) < 2 {
 		return ErrMinimumLines
 	}
@@ -216,7 +232,7 @@ func (e *JournalEntry) Validate() error {
 	totals := make(map[string]decimal.Decimal)
 	hasDebit, hasCredit, layered := false, false, false
 	for _, line := range e.Lines {
-		if err := line.Validate(); err != nil {
+		if err := line.ValidateWithRounding(round); err != nil {
 			return err
 		}
 		resolved, err := normalizeLineCurrencies(line)

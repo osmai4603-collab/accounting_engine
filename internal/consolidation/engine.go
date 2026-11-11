@@ -108,8 +108,8 @@ func (e *Engine) Consolidate(group Group, trialBalances []TrialBalance) (Result,
 
 	nciIncome := decimal.Zero
 	for _, subsidiaryID := range sortedOwnershipIDs(validated.ownership) {
-		ownership := validated.ownership[subsidiaryID]
-		nciIncome = nciIncome.Add(decimal.NewFromInt(1).Sub(ownership.Percentage).Mul(entityIncome[subsidiaryID]))
+		groupShare := effectiveGroupOwnership(group.ParentEntityID, subsidiaryID, validated.ownership)
+		nciIncome = nciIncome.Add(decimal.NewFromInt(1).Sub(groupShare).Mul(entityIncome[subsidiaryID]))
 	}
 	result.Totals = calculateTotals(validated, balances, nciIncome)
 	for _, account := range group.Accounts {
@@ -281,9 +281,12 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 	}
 
 	for _, ownership := range group.Ownerships {
-		if ownership.ParentEntityID != group.ParentEntityID || ownership.SubsidiaryEntityID == group.ParentEntityID ||
+		if ownership.ParentEntityID == ownership.SubsidiaryEntityID || ownership.SubsidiaryEntityID == group.ParentEntityID ||
 			!nonblank(ownership.SubsidiaryEntityID) {
-			return fail("only direct ownership by group parent %q is supported", group.ParentEntityID)
+			return fail("ownership must link distinct entities in the group")
+		}
+		if _, ok := result.entities[ownership.ParentEntityID]; !ok {
+			return fail("ownership references unknown parent %q", ownership.ParentEntityID)
 		}
 		if _, ok := result.entities[ownership.SubsidiaryEntityID]; !ok {
 			return fail("ownership references unknown subsidiary %q", ownership.SubsidiaryEntityID)
@@ -293,7 +296,10 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 		}
 		if !ownership.Percentage.IsPositive() || ownership.Percentage.GreaterThan(decimal.NewFromInt(1)) ||
 			!validDate(ownership.AcquisitionDate) || dateAfter(ownership.AcquisitionDate, group.Period.StartDate) ||
-			ownership.Consideration.IsNegative() || ownership.FairValueNetAssets.IsNegative() {
+			ownership.Consideration.IsNegative() || ownership.FairValueNetAssets.IsNegative() ||
+			(ownership.GoodwillMethod != "" && ownership.GoodwillMethod != PartialGoodwill && ownership.GoodwillMethod != FullGoodwill) ||
+			(ownership.GoodwillMethod == FullGoodwill && !ownership.NCIAtFairValue.IsPositive()) ||
+			ownership.NCIAtFairValue.IsNegative() {
 			return fail("ownership must predate or equal the reporting period; invalid acquisition values for %q", ownership.SubsidiaryEntityID)
 		}
 		if !mappedAccountType(result, ownership.ParentEntityID, ownership.InvestmentAccountID, AccountAsset) {
@@ -317,6 +323,21 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 	for id := range result.entities {
 		if id != group.ParentEntityID && result.ownership[id].SubsidiaryEntityID == "" {
 			return fail("subsidiary %q has no ownership/acquisition data", id)
+		}
+	}
+	for id := range result.ownership {
+		seen := map[string]bool{}
+		current := id
+		for current != group.ParentEntityID {
+			if seen[current] {
+				return fail("ownership chain contains a cycle at %q", current)
+			}
+			seen[current] = true
+			ownership, ok := result.ownership[current]
+			if !ok {
+				return fail("ownership chain for %q does not reach group parent", id)
+			}
+			current = ownership.ParentEntityID
 		}
 	}
 	if group.TranslationReserveAccountID != "" {
@@ -473,7 +494,7 @@ func (e *Engine) eliminateInventory(group Group, v validatedGroup, source map[so
 }
 
 func (e *Engine) eliminateInvestments(group Group, v validatedGroup, source map[sourceAccount]decimal.Decimal, balances map[string]decimal.Decimal, result *Result) error {
-	for _, subsidiaryID := range sortedOwnershipIDs(v.ownership) {
+	for _, subsidiaryID := range ownershipLeafFirst(v.ownership) {
 		ownership := v.ownership[subsidiaryID]
 		deltas := make(map[string]decimal.Decimal)
 		var currentNetAssets decimal.Decimal
@@ -503,7 +524,14 @@ func (e *Engine) eliminateInvestments(group Group, v validatedGroup, source map[
 			source[investmentKey] = decimal.Zero
 		}
 
+		method := ownership.GoodwillMethod
+		if method == "" {
+			method = PartialGoodwill
+		}
 		goodwill := ownership.Consideration.Sub(ownership.Percentage.Mul(ownership.FairValueNetAssets))
+		if method == FullGoodwill {
+			goodwill = ownership.Consideration.Add(ownership.NCIAtFairValue).Sub(ownership.FairValueNetAssets)
+		}
 		if goodwill.IsPositive() {
 			deltas[ownership.GoodwillAccountID] = deltas[ownership.GoodwillAccountID].Add(goodwill)
 		} else if goodwill.IsNegative() {
@@ -515,6 +543,12 @@ func (e *Engine) eliminateInvestments(group Group, v validatedGroup, source map[
 				deltas[group.BargainPurchaseGainAccountID].Add(goodwill)
 		}
 		nci := decimal.NewFromInt(1).Sub(ownership.Percentage).Mul(currentNetAssets)
+		if method == FullGoodwill {
+			nci = ownership.NCIAtFairValue.Add(
+				decimal.NewFromInt(1).Sub(ownership.Percentage).
+					Mul(currentNetAssets.Sub(ownership.FairValueNetAssets)),
+			)
+		}
 		deltas[ownership.NCIAccountID] = deltas[ownership.NCIAccountID].Sub(nci)
 
 		var netDelta decimal.Decimal
@@ -600,6 +634,42 @@ func sortedOwnershipIDs(ownership map[string]Ownership) []string {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	return ids
+}
+
+func effectiveGroupOwnership(groupParent, entity string, ownership map[string]Ownership) decimal.Decimal {
+	share := decimal.NewFromInt(1)
+	for entity != groupParent {
+		link, ok := ownership[entity]
+		if !ok {
+			return decimal.Zero
+		}
+		share = share.Mul(link.Percentage)
+		entity = link.ParentEntityID
+	}
+	return share
+}
+
+func ownershipLeafFirst(ownership map[string]Ownership) []string {
+	ids := sortedOwnershipIDs(ownership)
+	depth := func(id string) int {
+		n := 0
+		for current := id; ; {
+			link, ok := ownership[current]
+			if !ok {
+				return n
+			}
+			n++
+			current = link.ParentEntityID
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		di, dj := depth(ids[i]), depth(ids[j])
+		if di != dj {
+			return di > dj
+		}
+		return ids[i] < ids[j]
+	})
 	return ids
 }
 

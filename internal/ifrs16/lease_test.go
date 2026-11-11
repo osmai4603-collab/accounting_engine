@@ -169,6 +169,7 @@ func TestLeaseValidation(t *testing.T) {
 		{"invalid date", decimal.Zero, []LeasePayment{{DueDate: date(2026, 1, 1), Amount: money(t, "100", "USD")}}},
 		{"unordered dates", decimal.Zero, []LeasePayment{validPayment, validPayment}},
 	}
+
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := NewLeaseContract(
@@ -177,6 +178,22 @@ func TestLeaseValidation(t *testing.T) {
 				t.Fatal("expected invalid lease terms error")
 			}
 		})
+	}
+}
+
+func TestUnitClosePeriodBuildsPaymentAndDepreciationEntries(t *testing.T) {
+	unit := NewUnit()
+	entries, err := unit.ClosePeriod(
+		testContract(t), date(2026, 3, 1), testAccounts(), uuid.New(), uuid.New(), "lease-close",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("ClosePeriod() returned %d entries, want payment and depreciation for two periods", len(entries))
+	}
+	for _, entry := range entries {
+		assertBalanced(t, entry)
 	}
 }
 

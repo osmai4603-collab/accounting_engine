@@ -16,4 +16,8 @@
 // not create accounting postings. Missing source data, access failures, and
 // unbalanced or unreconciled conditions are surfaced through results or
 // errors rather than concealed.
+//
+// Engine can be connected to the policy unit to resolve an omitted statement
+// currency to the company's effective presentation currency. Explicit
+// translation currencies are checked against the policy's allowed currencies.
 package reporting

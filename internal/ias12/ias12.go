@@ -72,6 +72,10 @@ type TaxBalance struct {
 	CarryingAmount financialtypes.Money
 	TaxBase        financialtypes.Money
 	Rate           TaxRate
+	// When non-nil, controls recognition of a DTA for this deductible
+	// temporary difference based on probable future taxable profit. Nil
+	// preserves the historical behavior for existing callers.
+	FutureTaxableProfitProbable *bool
 }
 
 type MeasuredBalance struct {
@@ -143,6 +147,9 @@ func Measure(balances []TaxBalance, period MeasurementPeriod) (Measurement, erro
 			taxable = difference.Abs()
 		}
 		dtaAmount := deductible.Mul(balance.Rate.Value)
+		if balance.FutureTaxableProfitProbable != nil && !*balance.FutureTaxableProfitProbable {
+			dtaAmount = decimal.Zero
+		}
 		dtlAmount := taxable.Mul(balance.Rate.Value)
 		taxableMoney, err := financialtypes.NewMoney(taxable, currency)
 		if err != nil {

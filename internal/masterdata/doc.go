@@ -15,4 +15,8 @@
 // require an explicit company and a repository that implements the matching
 // scoped interface. Errors from validation and repository access are returned
 // rather than converted to success-shaped defaults.
+//
+// GetPeriodForCompanyDateContext deliberately returns a period regardless of
+// close state for policy checks; posting should otherwise use an open-period
+// lookup.
 package masterdata

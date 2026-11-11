@@ -420,7 +420,7 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
 	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE fiscal_periods
-			SET state=$3,closed_at=CASE WHEN $3='open' THEN NULL ELSE COALESCE(closed_at,NOW()) END
+			SET state=$3,closed_at=CASE WHEN $3::varchar='open' THEN NULL ELSE COALESCE(closed_at,NOW()) END
 			WHERE company_id=$1 AND id=$2`, companyID, id, state)
 		return err
 	})

@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"accounting_engine/internal/consolidation"
 	"accounting_engine/internal/governance"
+	"accounting_engine/internal/ias12"
+	"accounting_engine/internal/ifrs15"
+	"accounting_engine/internal/ifrs16"
+	"accounting_engine/internal/ifrs9"
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/policy"
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/subledgers"
@@ -21,6 +27,26 @@ var ErrStoragePortRequired = errors.New("required storage port is missing")
 type Config struct {
 	// StrictGovernance denies posting until the company has configured an approval policy.
 	StrictGovernance bool
+	Standards        StandardsConfig
+	Policies         PolicyConfig
+}
+
+// PolicyConfig enables policy enforcement using the optional policy storage
+// port and supports deployment-specific approval adapters.
+type PolicyConfig struct {
+	Enabled                       bool
+	AccountingManagerAuthorizer   policy.AccountingManagerAuthorizer
+	BackdatingExceptionAuthorizer policy.BackdatingExceptionAuthorizer
+}
+
+// StandardsConfig enables standard units by injecting only the units licensed
+// and configured for the current deployment.
+type StandardsConfig struct {
+	IFRS9         *ifrs9.Unit
+	IFRS15        *ifrs15.Unit
+	IFRS16        *ifrs16.Unit
+	IAS12         *ias12.Unit
+	Consolidation *consolidation.Unit
 }
 
 func DefaultConfig() Config {
@@ -39,6 +65,10 @@ type ReportingStoragePort interface {
 type MasterDataStoragePort interface {
 	masterdata.ContextStorageRepository
 	masterdata.FinancialDimensionRepository
+}
+
+type PolicyStoragePort interface {
+	policy.Repository
 }
 
 type SubledgerStoragePort interface {
@@ -66,6 +96,7 @@ type StoragePorts struct {
 	Governance         GovernanceStoragePort
 	Valuation          valuation.RateProviderSPI
 	MakerCheckerPolicy posting.MakerCheckerPolicy
+	Policy             PolicyStoragePort
 }
 
 func New(driver StorageDriver, config Config) (*AccountingEngine, error) {
@@ -80,7 +111,16 @@ func New(driver StorageDriver, config Config) (*AccountingEngine, error) {
 		Governance:         driver,
 		Valuation:          driver,
 		MakerCheckerPolicy: optionalMakerCheckerPolicy(driver),
+		Policy:             optionalPolicyStorage(driver, config.Policies.Enabled),
 	}, config)
+}
+
+func optionalPolicyStorage(driver StorageDriver, enabled bool) PolicyStoragePort {
+	if !enabled {
+		return nil
+	}
+	repository, _ := driver.(PolicyStoragePort)
+	return repository
 }
 
 func optionalMakerCheckerPolicy(driver StorageDriver) posting.MakerCheckerPolicy {
@@ -89,14 +129,20 @@ func optionalMakerCheckerPolicy(driver StorageDriver) posting.MakerCheckerPolicy
 }
 
 type AccountingEngine struct {
-	MasterData *masterdata.Service
-	Posting    *posting.Engine
-	Subledgers *subledgers.Service
-	Valuation  *valuation.Engine
-	Reporting  *reporting.Engine
-	Governance *governance.Engine
-	Dimensions masterdata.FinancialDimensionRepository
-	Config     Config
+	MasterData    *masterdata.Service
+	Posting       *posting.Engine
+	Subledgers    *subledgers.Service
+	Valuation     *valuation.Engine
+	Reporting     *reporting.Engine
+	Governance    *governance.Engine
+	IFRS9         *ifrs9.Unit
+	IFRS15        *ifrs15.Unit
+	IFRS16        *ifrs16.Unit
+	IAS12         *ias12.Unit
+	Consolidation *consolidation.Unit
+	Policies      *policy.Unit
+	Dimensions    masterdata.FinancialDimensionRepository
+	Config        Config
 }
 
 func (e *AccountingEngine) GeneralLedger(
@@ -105,8 +151,12 @@ func (e *AccountingEngine) GeneralLedger(
 	start, end time.Time,
 	currency string,
 ) (reporting.GeneralLedgerAccountReport, error) {
+	resolved, err := e.Reporting.ResolvePresentationCurrency(ctx, companyID, end, currency)
+	if err != nil {
+		return reporting.GeneralLedgerAccountReport{}, err
+	}
 	return e.Reporting.GeneralLedger.GenerateForCompanyContext(
-		ctx, companyID, accountID, start, end, currency,
+		ctx, companyID, accountID, start, end, resolved,
 	)
 }
 
@@ -116,7 +166,11 @@ func (e *AccountingEngine) FinancialRatios(
 	start, end time.Time,
 	currency string,
 ) (reporting.FinancialRatios, error) {
-	return e.Reporting.Ratios.GenerateForCompanyContext(ctx, companyID, start, end, currency)
+	resolved, err := e.Reporting.ResolvePresentationCurrency(ctx, companyID, end, currency)
+	if err != nil {
+		return reporting.FinancialRatios{}, err
+	}
+	return e.Reporting.Ratios.GenerateForCompanyContext(ctx, companyID, start, end, resolved)
 }
 
 func (e *AccountingEngine) StatementBundle(
@@ -125,7 +179,7 @@ func (e *AccountingEngine) StatementBundle(
 	start, end time.Time,
 	currency string,
 ) (reporting.StatementBundle, error) {
-	return e.Reporting.Bundle.GenerateForCompanyContext(ctx, companyID, start, end, currency)
+	return e.Reporting.GenerateBundleForCompanyContext(ctx, companyID, start, end, currency)
 }
 
 // ReconcileBalances runs the continuous balance reconciliation engine for a
@@ -158,8 +212,12 @@ func (e *AccountingEngine) DimensionProfitAndLossForCompanyContext(
 	start, end time.Time,
 	currency string,
 ) (reporting.DimensionProfitAndLoss, error) {
+	resolved, err := e.Reporting.ResolvePresentationCurrency(ctx, companyID, end, currency)
+	if err != nil {
+		return reporting.DimensionProfitAndLoss{}, err
+	}
 	return e.Reporting.GenerateDimensionProfitAndLossForCompanyContext(
-		ctx, companyID, start, end, currency,
+		ctx, companyID, start, end, resolved,
 	)
 }
 
@@ -236,6 +294,7 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(ports.MasterData))
 	postingEngine := posting.NewEngine(ports.Posting, masterService)
 	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(ports.Posting))
+	reportingEngine := reporting.NewEngine(ports.Reporting)
 	governanceEngine := governance.NewEngine(ports.Governance)
 	approvalGate := governanceEngine.ApprovalGate()
 	if approvalGate == nil && config.StrictGovernance {
@@ -248,16 +307,39 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 	if ports.MakerCheckerPolicy != nil {
 		postingEngine.SetMakerCheckerPolicy(ports.MakerCheckerPolicy)
 	}
+	var policyUnit *policy.Unit
+	if ports.Policy != nil || config.Policies.Enabled {
+		if ports.Policy == nil {
+			return nil, fmt.Errorf("%w: policy", policy.ErrPolicyStorageUnavailable)
+		}
+		policyUnit = policy.NewUnit(ports.Policy)
+		managerAuthorizer := config.Policies.AccountingManagerAuthorizer
+		if managerAuthorizer == nil {
+			if roleRepository, ok := ports.Governance.(policy.AccountingManagerRoleRepository); ok {
+				managerAuthorizer = policy.NewGovernanceManagerAuthorizer(roleRepository)
+			}
+		}
+		policyUnit.SetAccountingManagerAuthorizer(managerAuthorizer)
+		policyUnit.SetBackdatingExceptionAuthorizer(config.Policies.BackdatingExceptionAuthorizer)
+		postingEngine.SetPolicyUnit(policyUnit)
+		reportingEngine.SetPolicyUnit(policyUnit)
+	}
 	subledgerService := subledgers.NewService(ports.Subledger, postingEngine)
 	return &AccountingEngine{
-		MasterData: masterService,
-		Posting:    postingEngine,
-		Subledgers: subledgerService,
-		Valuation:  valuation.NewEngine(ports.Valuation),
-		Reporting:  reporting.NewEngine(ports.Reporting),
-		Governance: governanceEngine,
-		Dimensions: ports.MasterData,
-		Config:     config,
+		MasterData:    masterService,
+		Posting:       postingEngine,
+		Subledgers:    subledgerService,
+		Valuation:     valuation.NewEngine(ports.Valuation),
+		Reporting:     reportingEngine,
+		Governance:    governanceEngine,
+		IFRS9:         config.Standards.IFRS9,
+		IFRS15:        config.Standards.IFRS15,
+		IFRS16:        config.Standards.IFRS16,
+		IAS12:         config.Standards.IAS12,
+		Consolidation: config.Standards.Consolidation,
+		Policies:      policyUnit,
+		Dimensions:    ports.MasterData,
+		Config:        config,
 	}, nil
 }
 

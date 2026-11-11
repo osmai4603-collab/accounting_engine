@@ -51,6 +51,7 @@ func TestGenerateDeferredTaxEntryRejectsInvalidAndZeroMovements(t *testing.T) {
 		Closing:  DeferredTaxPosition{DTA: testMoney(t, "1", "USD"), DTL: testMoney(t, "0", "USD")},
 		Accounts: DeferredTaxAccounts{Expense: uuid.New(), DTA: uuid.New(), DTL: uuid.New()},
 	}
+
 	if _, err := GenerateDeferredTaxEntry(input); !errors.Is(err, ErrNoDeferredTaxMovement) {
 		t.Fatalf("zero movement error = %v, want %v", err, ErrNoDeferredTaxMovement)
 	}
@@ -62,6 +63,36 @@ func TestGenerateDeferredTaxEntryRejectsInvalidAndZeroMovements(t *testing.T) {
 	if _, err := GenerateDeferredTaxEntry(input); !errors.Is(err, ErrCurrencyMismatch) {
 		t.Fatalf("mixed currency error = %v, want %v", err, ErrCurrencyMismatch)
 	}
+}
+
+func TestGenerateDeferredTaxEntryRoutesOCIAndCurrentTaxAccrual(t *testing.T) {
+	expense, dta, dtl, oci := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	zero := testMoney(t, "0", "USD")
+	entry, err := GenerateDeferredTaxEntry(DeferredTaxEntryInput{
+		CompanyID: uuid.New(), JournalID: uuid.New(), EntryDate: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC),
+		CreatedBy: "tax-engine",
+		Previous:  DeferredTaxPosition{DTA: zero, DTL: zero},
+		Closing:   DeferredTaxPosition{DTA: testMoney(t, "5", "USD"), DTL: zero},
+		OCIChange: DeferredTaxPosition{DTA: testMoney(t, "2", "USD"), DTL: zero},
+		Accounts:  DeferredTaxAccounts{Expense: expense, DTA: dta, DTL: dtl, OCI: oci},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBalanced(t, entry)
+	assertAccountTotal(t, entry, expense, "0", "3")
+	assertAccountTotal(t, entry, oci, "0", "2")
+	assertAccountTotal(t, entry, dta, "5", "0")
+
+	currentTax, err := GenerateCurrentTaxEntry(CurrentTaxEntryInput{
+		CompanyID: uuid.New(), JournalID: uuid.New(), EntryDate: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC),
+		CreatedBy: "tax-engine", Amount: testMoney(t, "25", "USD"),
+		ExpenseAccountID: expense, PayableAccountID: uuid.New(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBalanced(t, currentTax)
 }
 
 func assertBalanced(t *testing.T, entry posting.JournalEntry) {

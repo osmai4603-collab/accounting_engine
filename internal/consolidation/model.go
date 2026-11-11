@@ -69,15 +69,26 @@ type AccountMapping struct {
 	HistoricalDate  time.Time
 }
 
-// Ownership describes a direct, parent-held acquisition. Acquisition values
-// are supplied in group currency; goodwill uses the partial-goodwill method.
+// GoodwillMethod selects the IFRS 3 measurement basis for non-controlling
+// interests. An empty value is treated as partial goodwill for compatibility.
+type GoodwillMethod string
+
+const (
+	PartialGoodwill GoodwillMethod = "partial"
+	FullGoodwill    GoodwillMethod = "full"
+)
+
+// Ownership describes one direct ownership link in the group's ownership
+// chain. Acquisition values are supplied in group currency.
 type Ownership struct {
 	ParentEntityID                  string
 	SubsidiaryEntityID              string
 	Percentage                      decimal.Decimal
+	GoodwillMethod                  GoodwillMethod
 	AcquisitionDate                 time.Time
 	Consideration                   decimal.Decimal
 	FairValueNetAssets              decimal.Decimal
+	NCIAtFairValue                  decimal.Decimal
 	InvestmentAccountID             string
 	GoodwillAccountID               string
 	NCIAccountID                    string

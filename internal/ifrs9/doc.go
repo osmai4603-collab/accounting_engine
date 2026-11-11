@@ -1,15 +1,14 @@
-// Package ifrs9 calculates expected credit loss (ECL) provisions.
+// Package ifrs9 provides a simplified provision-matrix unit for trade
+// receivables and a general multi-stage ECL calculation for financial assets.
 //
-// It classifies exposures into impairment stages using configured backstops
-// and qualitative credit-risk flags, then calculates expected losses using
-// portfolio data and the supplied probability-of-default, loss-given-default,
-// and exposure assumptions. Provision-matrix inputs and allowance adjustments
-// are represented explicitly so callers can inspect the resulting provision
-// before recording it.
+// CalculateSimplifiedECL applies lifetime matrix rates to receivables.
+// CalculateGeneralECL applies 12-month PD to Stage 1 and lifetime PD to
+// Stages 2 and 3, combines scenario-weighted PD with LGD and EAD, and discounts
+// expected losses using the effective interest rate. Model implementations
+// provide risk estimates and remain responsible for forward-looking scenario
+// support.
 //
-// Engine-based calculations load the inputs through a context-aware provider;
-// direct calculation functions support deterministic in-memory inputs. The
-// package does not persist allowances or post journals. Configuration and
-// portfolio validation errors, including out-of-range rates, are returned to
-// the caller.
+// Unit loads receivables and allowance balances through explicit sources and
+// produces a balanced adjustment draft. It never substitutes a current
+// allowance for a requested historical balance; it does not persist or post.
 package ifrs9
