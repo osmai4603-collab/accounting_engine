@@ -62,7 +62,12 @@ func NewEventBridgeForCompany(repo EventBridgeRepository, creator JournalCreator
 	return bridge
 }
 
+// Deprecated: use RegisterMappingContext.
 func (b *EventBridge) RegisterMapping(mapping SubledgerEventMapping) error {
+	return b.RegisterMappingContext(context.Background(), mapping)
+}
+
+func (b *EventBridge) RegisterMappingContext(ctx context.Context, mapping SubledgerEventMapping) error {
 	if b.companyID != uuid.Nil && mapping.CompanyID != b.companyID {
 		return ErrCompanyMismatch
 	}
@@ -80,7 +85,7 @@ func (b *EventBridge) RegisterMapping(mapping SubledgerEventMapping) error {
 			{AccountID: mapping.CreditAccountID, Side: EventLineCredit, AmountFormula: "amount"},
 		},
 	}
-	if err := b.RegisterRule(rule); err != nil {
+	if err := b.RegisterRuleContext(ctx, rule); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -89,7 +94,15 @@ func (b *EventBridge) RegisterMapping(mapping SubledgerEventMapping) error {
 	return nil
 }
 
+// Deprecated: use RegisterRuleContext.
 func (b *EventBridge) RegisterRule(rule EventAccountingRule) error {
+	return b.RegisterRuleContext(context.Background(), rule)
+}
+
+func (b *EventBridge) RegisterRuleContext(ctx context.Context, rule EventAccountingRule) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if rule.ID == uuid.Nil {
 		rule.ID = uuid.New()
 	}
@@ -104,7 +117,7 @@ func (b *EventBridge) RegisterRule(rule EventAccountingRule) error {
 	key := eventMappingKey{companyID: rule.CompanyID, eventType: rule.EventType}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.repo.SaveEventAccountingRule(context.Background(), rule); err != nil {
+	if err := b.repo.SaveEventAccountingRule(ctx, rule); err != nil {
 		return err
 	}
 	rules := b.rules[key]
@@ -119,6 +132,7 @@ func (b *EventBridge) RegisterRule(rule EventAccountingRule) error {
 	return nil
 }
 
+// Deprecated: use ProcessContext.
 func (b *EventBridge) Process(event EconomicEvent) (posting.JournalEntry, error) {
 	return b.ProcessContext(context.Background(), event)
 }
@@ -208,10 +222,6 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 	}
 	b.entries[idempotencyKey] = cachedEconomicEvent{entry: entry, payloadHash: payloadHash}
 	return entry, nil
-}
-
-func (b *EventBridge) matchingRule(event EconomicEvent) (EventAccountingRule, error) {
-	return b.matchingRuleContext(context.Background(), event)
 }
 
 func (b *EventBridge) matchingRuleContext(ctx context.Context, event EconomicEvent) (EventAccountingRule, error) {

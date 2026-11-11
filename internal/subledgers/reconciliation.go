@@ -32,20 +32,33 @@ func NewMatchingEngineForCompany(repo MatchingRepository, companyID uuid.UUID) *
 	return &MatchingEngine{repo: repo, companyID: companyID}
 }
 
+// Deprecated: use MatchContext.
 func (m *MatchingEngine) Match(lineID, counterpartID uuid.UUID, amount financialtypes.Money) (string, error) {
-	matchingNumber, _, err := m.MatchWithFX(lineID, counterpartID, amount, FXMatchingParams{})
+	return m.MatchContext(context.Background(), lineID, counterpartID, amount)
+}
+
+func (m *MatchingEngine) MatchContext(ctx context.Context, lineID, counterpartID uuid.UUID, amount financialtypes.Money) (string, error) {
+	matchingNumber, _, err := m.MatchWithFXContext(ctx, lineID, counterpartID, amount, FXMatchingParams{})
 	return matchingNumber, err
 }
 
+// Deprecated: use MatchWithFXContext.
 func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount financialtypes.Money, params FXMatchingParams) (string, *posting.JournalEntry, error) {
+	return m.MatchWithFXContext(context.Background(), lineID, counterpartID, amount, params)
+}
+
+func (m *MatchingEngine) MatchWithFXContext(ctx context.Context, lineID, counterpartID uuid.UUID, amount financialtypes.Money, params FXMatchingParams) (string, *posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	if lineID == counterpartID {
 		return "", nil, ErrUnmatchedLine
 	}
-	line, err := m.repo.GetOpenLine(context.Background(), m.companyID, lineID)
+	line, err := m.repo.GetOpenLine(ctx, m.companyID, lineID)
 	if err != nil {
 		return "", nil, err
 	}
-	counterpart, err := m.repo.GetOpenLine(context.Background(), m.companyID, counterpartID)
+	counterpart, err := m.repo.GetOpenLine(ctx, m.companyID, counterpartID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -176,7 +189,7 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 				return "", nil, err
 			}
 
-			if err := m.repo.CompareAndSaveOpenLinesAndDraft(context.Background(),
+			if err := m.repo.CompareAndSaveOpenLinesAndDraft(ctx,
 				[]OpenLine{expectedLine, expectedCounterpart},
 				[]OpenLine{line, counterpart},
 				fxEntry,
@@ -187,7 +200,7 @@ func (m *MatchingEngine) MatchWithFX(lineID, counterpartID uuid.UUID, amount fin
 		}
 	}
 
-	if err := m.repo.CompareAndSaveOpenLines(context.Background(),
+	if err := m.repo.CompareAndSaveOpenLines(ctx,
 		[]OpenLine{expectedLine, expectedCounterpart},
 		[]OpenLine{line, counterpart},
 	); err != nil {
@@ -262,8 +275,16 @@ func matchedFunctionalAmount(line OpenLine, amount financialtypes.Money) (financ
 	return result.RoundForPosting(), nil
 }
 
+// Deprecated: use UnreconcileContext.
 func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
-	line, err := m.repo.GetOpenLine(context.Background(), m.companyID, lineID)
+	return m.UnreconcileContext(context.Background(), lineID)
+}
+
+func (m *MatchingEngine) UnreconcileContext(ctx context.Context, lineID uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	line, err := m.repo.GetOpenLine(ctx, m.companyID, lineID)
 	if err != nil {
 		return err
 	}
@@ -283,7 +304,7 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 	for _, match := range matches {
 		counterpart, ok := updated[match.CounterpartID]
 		if !ok {
-			counterpart, err = m.repo.GetOpenLine(context.Background(), line.CompanyID, match.CounterpartID)
+			counterpart, err = m.repo.GetOpenLine(ctx, line.CompanyID, match.CounterpartID)
 			if err != nil {
 				return err
 			}
@@ -361,7 +382,7 @@ func (m *MatchingEngine) Unreconcile(lineID uuid.UUID) error {
 	sort.Slice(toSaveUpdated, func(i, j int) bool {
 		return toSaveUpdated[i].ID.String() < toSaveUpdated[j].ID.String()
 	})
-	return m.repo.CompareAndSaveOpenLines(context.Background(), toSaveExpected, toSaveUpdated)
+	return m.repo.CompareAndSaveOpenLines(ctx, toSaveExpected, toSaveUpdated)
 }
 
 func markMatchReversed(history *[]OpenLineMatch, matchingNumber string, counterpartID uuid.UUID, reversedAt time.Time) {

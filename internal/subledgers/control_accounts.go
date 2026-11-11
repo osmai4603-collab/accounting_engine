@@ -49,7 +49,8 @@ func NewPostingOpenLineAttachment(line OpenLine) (posting.OpenLineAttachment, er
 	}, nil
 }
 
-func postInvoiceEntry(
+func postInvoiceEntryContext(
+	ctx context.Context,
 	engine *posting.Engine,
 	entry *posting.JournalEntry,
 	companyID, partnerID, controlAccountID uuid.UUID,
@@ -58,6 +59,9 @@ func postInvoiceEntry(
 	documentDate, dueDate time.Time,
 	reference, posterID string,
 ) (OpenLine, error) {
+	if ctx == nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
 	if engine == nil || entry == nil || companyID == uuid.Nil || entry.CompanyID != companyID ||
 		partnerID == uuid.Nil || controlAccountID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
@@ -79,7 +83,7 @@ func postInvoiceEntry(
 	if err != nil {
 		return OpenLine{}, err
 	}
-	if err := engine.PostEntryWithOpenLine(entry, attachment, posterID); err != nil {
+	if err := engine.PostEntryWithOpenLineContext(ctx, entry, attachment, posterID); err != nil {
 		return OpenLine{}, err
 	}
 	return line, nil
@@ -151,6 +155,7 @@ func postedControlAmount(entry posting.JournalEntry, line OpenLine) (financialty
 }
 
 func addPostedInvoice(
+	ctx context.Context,
 	repo PostedInvoiceRepository,
 	companyID, partnerID, controlAccountID, journalEntryID uuid.UUID,
 	amount financialtypes.Money,
@@ -162,7 +167,9 @@ func addPostedInvoice(
 		amount.Currency() == "" || amount.IsNegative() || amount.Amount().IsZero() {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
-	ctx := context.Background()
+	if ctx == nil {
+		return OpenLine{}, ErrInvalidOpenLine
+	}
 	account, err := repo.GetAccountByIDForCompany(ctx, companyID, controlAccountID)
 	if err != nil {
 		return OpenLine{}, err

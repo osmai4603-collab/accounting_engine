@@ -29,52 +29,82 @@ func NewPayableLedgerForCompany(repo PayableRepository, companyID uuid.UUID) *Pa
 	return &PayableLedger{repo: repo, companyID: companyID}
 }
 
+// Deprecated: use AddInvoiceContext.
 func (l *PayableLedger) AddInvoice(partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
-	if l.companyID == uuid.Nil {
-		return l.addInvoice(uuid.Nil, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
-	}
-	return l.addInvoice(l.companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
+	return l.AddInvoiceContext(context.Background(), partnerID, amount, documentDate, dueDate, reference)
 }
 
+func (l *PayableLedger) AddInvoiceContext(ctx context.Context, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if l.companyID == uuid.Nil {
+		return l.addInvoiceContext(ctx, uuid.Nil, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
+	}
+	return l.addInvoiceContext(ctx, l.companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
+}
+
+// Deprecated: use AddInvoiceWithControlContext.
 func (l *PayableLedger) AddInvoiceWithControl(partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return l.AddInvoiceWithControlContext(context.Background(), partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceWithControlContext(ctx context.Context, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if controlAccountID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
 	if l.companyID == uuid.Nil {
-		return l.addInvoice(uuid.Nil, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+		return l.addInvoiceContext(ctx, uuid.Nil, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
 	}
-	return l.AddInvoiceForCompanyWithControl(l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+	return l.AddInvoiceForCompanyWithControlContext(ctx, l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
 }
 
+// Deprecated: use AddInvoiceForCompanyContext.
 func (l *PayableLedger) AddInvoiceForCompany(companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return l.AddInvoiceForCompanyContext(context.Background(), companyID, partnerID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceForCompanyContext(ctx context.Context, companyID, partnerID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if err := l.validateCompany(companyID); err != nil {
 		return OpenLine{}, err
 	}
-	return l.addInvoice(companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
+	return l.addInvoiceContext(ctx, companyID, partnerID, uuid.Nil, uuid.Nil, amount, documentDate, dueDate, reference)
 }
 
+// Deprecated: use AddInvoiceForCompanyWithControlContext.
 func (l *PayableLedger) AddInvoiceForCompanyWithControl(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return l.AddInvoiceForCompanyWithControlContext(context.Background(), companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceForCompanyWithControlContext(ctx context.Context, companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if err := l.validateCompany(companyID); err != nil {
 		return OpenLine{}, err
 	}
 	if controlAccountID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
-	return l.addInvoice(companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+	return l.addInvoiceContext(ctx, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
 }
 
+// Deprecated: use AddInvoiceFromPostedEntryContext.
 func (l *PayableLedger) AddInvoiceFromPostedEntry(partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return l.AddInvoiceFromPostedEntryContext(context.Background(), partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceFromPostedEntryContext(ctx context.Context, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if l.companyID == uuid.Nil {
 		return OpenLine{}, ErrInvalidOpenLine
 	}
-	return addPostedInvoice(l.repo, l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
+	return addPostedInvoice(ctx, l.repo, l.companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
 }
 
+// Deprecated: use AddInvoiceFromPostedEntryForCompanyContext.
 func (l *PayableLedger) AddInvoiceFromPostedEntryForCompany(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	return l.AddInvoiceFromPostedEntryForCompanyContext(context.Background(), companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference)
+}
+
+func (l *PayableLedger) AddInvoiceFromPostedEntryForCompanyContext(ctx context.Context, companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
 	if err := l.validateCompany(companyID); err != nil {
 		return OpenLine{}, err
 	}
-	return addPostedInvoice(l.repo, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
+	return addPostedInvoice(ctx, l.repo, companyID, partnerID, controlAccountID, journalEntryID, amount, documentDate, dueDate, reference, LinePayable)
 }
 
 func (l *PayableLedger) validateCompany(companyID uuid.UUID) error {
@@ -87,6 +117,7 @@ func (l *PayableLedger) validateCompany(companyID uuid.UUID) error {
 	return nil
 }
 
+// Deprecated: use PostInvoiceEntryContext.
 func (l *PayableLedger) PostInvoiceEntry(
 	engine *posting.Engine,
 	entry *posting.JournalEntry,
@@ -95,13 +126,29 @@ func (l *PayableLedger) PostInvoiceEntry(
 	documentDate, dueDate time.Time,
 	reference, posterID string,
 ) (OpenLine, error) {
-	return postInvoiceEntry(
+	return l.PostInvoiceEntryContext(context.Background(), engine, entry, partnerID, controlAccountID, amount, documentDate, dueDate, reference, posterID)
+}
+
+func (l *PayableLedger) PostInvoiceEntryContext(
+	ctx context.Context,
+	engine *posting.Engine,
+	entry *posting.JournalEntry,
+	partnerID, controlAccountID uuid.UUID,
+	amount financialtypes.Money,
+	documentDate, dueDate time.Time,
+	reference, posterID string,
+) (OpenLine, error) {
+	return postInvoiceEntryContext(
+		ctx,
 		engine, entry, l.companyID, partnerID, controlAccountID, LinePayable,
 		amount, documentDate, dueDate, reference, posterID,
 	)
 }
 
-func (l *PayableLedger) addInvoice(companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+func (l *PayableLedger) addInvoiceContext(ctx context.Context, companyID, partnerID, controlAccountID, journalEntryID uuid.UUID, amount financialtypes.Money, documentDate, dueDate time.Time, reference string) (OpenLine, error) {
+	if err := ctx.Err(); err != nil {
+		return OpenLine{}, err
+	}
 	if partnerID == uuid.Nil || amount.Currency() == "" || amount.IsNegative() {
 		return OpenLine{}, ErrInvalidAmount
 	}
@@ -121,18 +168,23 @@ func (l *PayableLedger) addInvoice(companyID, partnerID, controlAccountID, journ
 		DueDate:                  dueDate,
 		Reference:                reference,
 	}
-	if err := l.repo.SaveOpenLine(context.Background(), line); err != nil {
+	if err := l.repo.SaveOpenLine(ctx, line); err != nil {
 		return OpenLine{}, err
 	}
 	return line, nil
 }
 
+// Deprecated: use AgingContext.
 func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedule, error) {
+	return l.AgingContext(context.Background(), asOf, partnerID)
+}
+
+func (l *PayableLedger) AgingContext(ctx context.Context, asOf time.Time, partnerID *uuid.UUID) (AgingSchedule, error) {
 	partnerKey := ""
 	if partnerID != nil {
 		partnerKey = partnerID.String()
 	}
-	lines, err := l.listOpenLines(partnerKey)
+	lines, err := l.listOpenLines(ctx, partnerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +214,9 @@ func (l *PayableLedger) Aging(asOf time.Time, partnerID *uuid.UUID) (AgingSchedu
 	return result, nil
 }
 
-func (l *PayableLedger) listOpenLines(partnerID string) ([]OpenLine, error) {
+func (l *PayableLedger) listOpenLines(ctx context.Context, partnerID string) ([]OpenLine, error) {
 	if l.companyID == uuid.Nil {
-		return l.repo.ListOpenLines(context.Background(), partnerID)
+		return l.repo.ListOpenLines(ctx, partnerID)
 	}
-	return l.repo.ListOpenLinesForCompanyContext(context.Background(), l.companyID, partnerID)
+	return l.repo.ListOpenLinesForCompanyContext(ctx, l.companyID, partnerID)
 }

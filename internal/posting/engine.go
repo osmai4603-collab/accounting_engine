@@ -319,7 +319,7 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			if entry.CompanyID != uuid.Nil {
 				period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
 			} else {
-				period, err = e.masterdata.GetOpenAdjustmentPeriodForDate(effectiveDate(entry), entry.TargetPeriodNumber)
+				period, err = e.masterdata.GetOpenAdjustmentPeriodForDateContext(ctx, effectiveDate(entry), entry.TargetPeriodNumber)
 			}
 			if err != nil {
 				return err
@@ -333,7 +333,7 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			if entry.CompanyID != uuid.Nil {
 				period, err = e.masterdata.GetOpenPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
 			} else {
-				period, err = e.masterdata.GetOpenPeriodForDate(effectiveDate(entry))
+				period, err = e.masterdata.GetOpenPeriodForDateContext(ctx, effectiveDate(entry))
 			}
 			if err != nil {
 				return err
@@ -345,7 +345,7 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			if entry.CompanyID != uuid.Nil {
 				err = e.masterdata.ValidateCanPostToAccountForCompanyContext(ctx, entry.CompanyID, line.AccountID)
 			} else {
-				err = e.masterdata.ValidateCanPostToAccount(line.AccountID)
+				err = e.masterdata.ValidateCanPostToAccountContext(ctx, line.AccountID)
 			}
 			if err != nil {
 				return err

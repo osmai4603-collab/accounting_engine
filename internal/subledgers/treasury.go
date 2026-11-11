@@ -30,32 +30,53 @@ func NewTreasuryLedgerForCompany(repo TreasuryRepository, companyID uuid.UUID) *
 	return &TreasuryLedger{repo: repo, companyID: companyID}
 }
 
+// Deprecated: use RecordItemContext.
 func (l *TreasuryLedger) RecordItem(accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
-	if l.companyID == uuid.Nil {
-		return l.recordItem(uuid.Nil, accountID, uuid.Nil, date, amount, reference, status)
-	}
-	return l.recordItem(l.companyID, accountID, uuid.Nil, date, amount, reference, status)
+	return l.RecordItemContext(context.Background(), accountID, date, amount, reference, status)
 }
 
+func (l *TreasuryLedger) RecordItemContext(ctx context.Context, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+	if l.companyID == uuid.Nil {
+		return l.recordItem(ctx, uuid.Nil, accountID, uuid.Nil, date, amount, reference, status)
+	}
+	return l.recordItem(ctx, l.companyID, accountID, uuid.Nil, date, amount, reference, status)
+}
+
+// Deprecated: use RecordItemForCompanyContext.
 func (l *TreasuryLedger) RecordItemForCompany(companyID, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+	return l.RecordItemForCompanyContext(context.Background(), companyID, accountID, date, amount, reference, status)
+}
+
+func (l *TreasuryLedger) RecordItemForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	if companyID == uuid.Nil {
 		return BankItem{}, ErrCompanyScopeRequired
 	}
 	if l.companyID != uuid.Nil && l.companyID != companyID {
 		return BankItem{}, ErrCompanyMismatch
 	}
-	return l.recordItem(companyID, accountID, uuid.Nil, date, amount, reference, status)
+	return l.recordItem(ctx, companyID, accountID, uuid.Nil, date, amount, reference, status)
 }
 
+// Deprecated: use RecordItemWithJournalContext.
 func (l *TreasuryLedger) RecordItemWithJournal(accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+	return l.RecordItemWithJournalContext(context.Background(), accountID, journalEntryID, date, amount, reference, status)
+}
+
+func (l *TreasuryLedger) RecordItemWithJournalContext(ctx context.Context, accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
 	companyID := l.companyID
 	if companyID == uuid.Nil || journalEntryID == uuid.Nil {
 		return BankItem{}, ErrInvalidOpenLine
 	}
-	return l.recordItem(companyID, accountID, journalEntryID, date, amount, reference, status)
+	return l.recordItem(ctx, companyID, accountID, journalEntryID, date, amount, reference, status)
 }
 
-func (l *TreasuryLedger) recordItem(companyID, accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+func (l *TreasuryLedger) recordItem(ctx context.Context, companyID, accountID, journalEntryID uuid.UUID, date time.Time, amount financialtypes.Money, reference string, status BankItemStatus) (BankItem, error) {
+	if ctx == nil {
+		return BankItem{}, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return BankItem{}, err
+	}
 	if accountID == uuid.Nil || amount.Currency() == "" || status == "" {
 		return BankItem{}, ErrInvalidAmount
 	}
@@ -63,22 +84,39 @@ func (l *TreasuryLedger) recordItem(companyID, accountID, journalEntryID uuid.UU
 		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, JournalEntryID: journalEntryID,
 		Date: date, Amount: amount, Reference: reference, Status: status,
 	}
-	if err := l.repo.SaveBankItem(context.Background(), item); err != nil {
+	if err := l.repo.SaveBankItem(ctx, item); err != nil {
 		return BankItem{}, err
 	}
 	return item, nil
 }
 
+// Deprecated: use ReconcileMultiLineContext.
 func (l *TreasuryLedger) ReconcileMultiLine(
 	accountID uuid.UUID,
 	statement []BankItem,
 	toleranceDays int,
 	feeParams BankFeeParams,
 ) (BankReconciliationMatch, *posting.JournalEntry, error) {
+	return l.ReconcileMultiLineContext(context.Background(), accountID, statement, toleranceDays, feeParams)
+}
+
+func (l *TreasuryLedger) ReconcileMultiLineContext(
+	ctx context.Context,
+	accountID uuid.UUID,
+	statement []BankItem,
+	toleranceDays int,
+	feeParams BankFeeParams,
+) (BankReconciliationMatch, *posting.JournalEntry, error) {
+	if ctx == nil {
+		return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return BankReconciliationMatch{}, nil, err
+	}
 	if accountID == uuid.Nil || len(statement) == 0 || toleranceDays < 0 || toleranceDays > 5 {
 		return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
 	}
-	ledgerItems, err := l.listBankItems(accountID.String())
+	ledgerItems, err := l.listBankItems(ctx, accountID.String())
 	if err != nil {
 		return BankReconciliationMatch{}, nil, err
 	}
@@ -203,14 +241,14 @@ func (l *TreasuryLedger) ReconcileMultiLine(
 		if err := draft.Validate(); err != nil {
 			return BankReconciliationMatch{}, nil, err
 		}
-		if err := l.repo.CompareAndSaveBankItemsAndDraft(context.Background(), expected, updated, draft); err != nil {
+		if err := l.repo.CompareAndSaveBankItemsAndDraft(ctx, expected, updated, draft); err != nil {
 			return BankReconciliationMatch{}, nil, err
 		}
 		match.BankFeesAmount = fee
 		match.Difference = decimal.Zero
 		return match, &draft, nil
 	}
-	if err := l.repo.CompareAndSaveBankItems(context.Background(), expected, updated); err != nil {
+	if err := l.repo.CompareAndSaveBankItems(ctx, expected, updated); err != nil {
 		return BankReconciliationMatch{}, nil, err
 	}
 	return match, nil, nil
@@ -289,11 +327,27 @@ func selectBankReconciliationSubset(candidates []BankItem, target decimal.Decima
 	return states[bestKey].indices, bestTotal, nil
 }
 
+// Deprecated: use ReconcileContext.
 func (l *TreasuryLedger) Reconcile(accountID uuid.UUID, statement []BankItem) (matched []BankItem, pending []BankItem, unrecorded []BankItem, err error) {
-	return l.ReconcileWithTolerance(accountID, statement, 0)
+	return l.ReconcileContext(context.Background(), accountID, statement)
 }
 
+func (l *TreasuryLedger) ReconcileContext(ctx context.Context, accountID uuid.UUID, statement []BankItem) (matched []BankItem, pending []BankItem, unrecorded []BankItem, err error) {
+	return l.ReconcileWithToleranceContext(ctx, accountID, statement, 0)
+}
+
+// Deprecated: use ReconcileWithToleranceContext.
 func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement []BankItem, toleranceDays int) (matched []BankItem, pending []BankItem, unrecorded []BankItem, err error) {
+	return l.ReconcileWithToleranceContext(context.Background(), accountID, statement, toleranceDays)
+}
+
+func (l *TreasuryLedger) ReconcileWithToleranceContext(ctx context.Context, accountID uuid.UUID, statement []BankItem, toleranceDays int) (matched []BankItem, pending []BankItem, unrecorded []BankItem, err error) {
+	if ctx == nil {
+		return nil, nil, nil, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	if l.companyID != uuid.Nil {
 		for _, item := range statement {
 			if item.CompanyID != uuid.Nil && item.CompanyID != l.companyID {
@@ -301,7 +355,7 @@ func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement [
 			}
 		}
 	}
-	ledger, err := l.listBankItems(accountID.String())
+	ledger, err := l.listBankItems(ctx, accountID.String())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -331,7 +385,7 @@ func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement [
 		}
 	}
 	if len(expectedMatched) != 0 {
-		if err := l.repo.CompareAndSaveBankItems(context.Background(), expectedMatched, updatedMatched); err != nil {
+		if err := l.repo.CompareAndSaveBankItems(ctx, expectedMatched, updatedMatched); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -343,11 +397,11 @@ func (l *TreasuryLedger) ReconcileWithTolerance(accountID uuid.UUID, statement [
 	return matched, pending, unrecorded, nil
 }
 
-func (l *TreasuryLedger) listBankItems(accountID string) ([]BankItem, error) {
+func (l *TreasuryLedger) listBankItems(ctx context.Context, accountID string) ([]BankItem, error) {
 	if l.companyID == uuid.Nil {
-		return l.repo.ListBankItems(context.Background(), accountID)
+		return l.repo.ListBankItems(ctx, accountID)
 	}
-	return l.repo.ListBankItemsForCompany(context.Background(), l.companyID, accountID)
+	return l.repo.ListBankItemsForCompany(ctx, l.companyID, accountID)
 }
 
 func sameDay(a, b time.Time) bool {
@@ -369,7 +423,18 @@ func withinValueDateTolerance(a, b time.Time, days int) bool {
 	return delta <= time.Duration(days)*24*time.Hour
 }
 
+// Deprecated: use ProcessBankFeeAtomicContext.
 func (l *TreasuryLedger) ProcessBankFeeAtomic(item BankItem, params BankFeeParams) (BankItem, posting.JournalEntry, error) {
+	return l.ProcessBankFeeAtomicContext(context.Background(), item, params)
+}
+
+func (l *TreasuryLedger) ProcessBankFeeAtomicContext(ctx context.Context, item BankItem, params BankFeeParams) (BankItem, posting.JournalEntry, error) {
+	if ctx == nil {
+		return BankItem{}, posting.JournalEntry{}, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return BankItem{}, posting.JournalEntry{}, err
+	}
 	if item.ID == uuid.Nil || item.CompanyID == uuid.Nil || item.Amount.Currency() == "" ||
 		item.Amount.IsNegative() || item.Amount.Amount().IsZero() {
 		return BankItem{}, posting.JournalEntry{}, ErrInvalidAmount
@@ -413,7 +478,7 @@ func (l *TreasuryLedger) ProcessBankFeeAtomic(item BankItem, params BankFeeParam
 	if err := draft.Validate(); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}
-	if err := l.repo.CompareAndSaveBankItemsAndDraft(context.Background(), []BankItem{expected}, []BankItem{updated}, draft); err != nil {
+	if err := l.repo.CompareAndSaveBankItemsAndDraft(ctx, []BankItem{expected}, []BankItem{updated}, draft); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}
 	return updated, draft, nil

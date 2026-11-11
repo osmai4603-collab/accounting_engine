@@ -32,12 +32,7 @@ func (e *ConversionEngine) Convert(ctx context.Context, amount financialtypes.Mo
 }
 
 func getTypedSpotRate(ctx context.Context, provider RateProviderSPI, from, to string, date time.Time) (decimal.Decimal, error) {
-	if typed, ok := provider.(interface {
-		GetRateOfType(context.Context, RateType, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return typed.GetRateOfType(ctx, SpotRate, from, to, date)
-	}
-	return provider.GetRate(ctx, from, to, date)
+	return provider.GetRateOfType(ctx, SpotRate, from, to, date)
 }
 
 func ConvertAtRate(amount financialtypes.Money, toCurrency string, rate decimal.Decimal) (financialtypes.Money, error) {

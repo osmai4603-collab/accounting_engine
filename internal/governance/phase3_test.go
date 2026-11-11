@@ -163,6 +163,17 @@ func TestApprovalGateFailsClosedWhenPolicyHasNoApprovalRepository(t *testing.T) 
 	}
 }
 
+func TestApprovalGateStrictGovernanceRequiresConfiguredPolicy(t *testing.T) {
+	gate := &ApprovalGate{
+		policy:           makerCheckerPolicyStub{configured: false},
+		StrictGovernance: true,
+	}
+	approved, err := gate.IsApproved(context.Background(), uuid.New(), uuid.New())
+	if approved || !errors.Is(err, ErrUnconfiguredApprovalPolicy) {
+		t.Fatalf("approval gate result = %v, %v; want false and unconfigured policy error", approved, err)
+	}
+}
+
 func TestAuditExportSignatureDetectsChanges(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {

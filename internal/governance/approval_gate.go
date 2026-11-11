@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 
 	"accounting_engine/internal/posting"
 	"github.com/google/uuid"
@@ -11,19 +12,24 @@ import (
 // When a company has configured a maker-checker threshold, entries whose
 // functional total is at or below it are allowed without an approval request;
 // larger entries require a completed approval whose stored fingerprint still
-// matches the draft. Companies without a configured policy keep the historical
-// behaviour of posting without a mandatory approval request.
+// matches the draft. StrictGovernance requires a configured company policy.
 type ApprovalGate struct {
-	approvals *ApprovalEngine
-	entries   ApprovalEntryRepository
-	policy    posting.MakerCheckerPolicy
+	approvals        *ApprovalEngine
+	entries          ApprovalEntryRepository
+	policy           posting.MakerCheckerPolicy
+	StrictGovernance bool
 }
+
+var ErrUnconfiguredApprovalPolicy = errors.New("company approval policy is not configured")
 
 func (g *ApprovalGate) IsApproved(ctx context.Context, companyID, entryID uuid.UUID) (bool, error) {
 	if g == nil {
 		return true, nil
 	}
 	if g.policy == nil {
+		if g.StrictGovernance {
+			return false, ErrUnconfiguredApprovalPolicy
+		}
 		return true, nil
 	}
 	threshold, configured, err := g.policy.MakerCheckerThreshold(ctx, companyID)
@@ -31,6 +37,9 @@ func (g *ApprovalGate) IsApproved(ctx context.Context, companyID, entryID uuid.U
 		return false, err
 	}
 	if !configured {
+		if g.StrictGovernance {
+			return false, ErrUnconfiguredApprovalPolicy
+		}
 		return true, nil
 	}
 	if g.approvals == nil {

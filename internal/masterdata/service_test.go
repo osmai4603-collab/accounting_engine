@@ -77,6 +77,17 @@ func TestRegisterAccountAndRejectDuplicateCode(t *testing.T) {
 	}
 }
 
+func TestRegisterAccountContextHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := NewService(NewMockRepository()).RegisterAccountContext(
+		ctx, newAccount("1001", AccountTypeAsset, nil),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("registration error = %v; want context.Canceled", err)
+	}
+}
+
 func TestCannotPostToParentAccount(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewService(repo)

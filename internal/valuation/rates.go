@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	financialtypes "accounting_engine/internal/types"
@@ -20,9 +21,10 @@ var (
 type RateType string
 
 const (
-	SpotRate    RateType = "SPOT"
-	ClosingRate RateType = "CLOSING"
-	AverageRate RateType = "AVERAGE"
+	SpotRate       RateType = "SPOT"
+	ClosingRate    RateType = "CLOSING"
+	AverageRate    RateType = "AVERAGE"
+	HistoricalRate RateType = "HISTORICAL"
 )
 
 type ExchangeRate struct {
@@ -46,7 +48,7 @@ func (r ExchangeRate) Validate() error {
 		return ErrInvalidRate
 	}
 	switch r.Type {
-	case SpotRate, ClosingRate, AverageRate:
+	case SpotRate, ClosingRate, AverageRate, HistoricalRate:
 	default:
 		return ErrInvalidRate
 	}
@@ -54,6 +56,7 @@ func (r ExchangeRate) Validate() error {
 }
 
 type RateRegistry struct {
+	mu    sync.RWMutex
 	rates []ExchangeRate
 }
 
@@ -72,6 +75,8 @@ func (r *RateRegistry) Register(rate ExchangeRate) error {
 	rate.FromCurrency = strings.ToUpper(strings.TrimSpace(rate.FromCurrency))
 	rate.ToCurrency = strings.ToUpper(strings.TrimSpace(rate.ToCurrency))
 	rate.EffectiveDate = dateOnly(rate.EffectiveDate)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for i, current := range r.rates {
 		if sameRateKey(current, rate) {
 			r.rates[i] = rate
@@ -98,6 +103,8 @@ func (r *RateRegistry) GetRate(ctx context.Context, from, to string, date time.T
 		return decimal.NewFromInt(1), nil
 	}
 
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	targetDate := dateOnly(date)
 	var candidates []ExchangeRate
 	for _, rate := range r.rates {
@@ -134,11 +141,24 @@ func (r *RateRegistry) GetRateOfType(ctx context.Context, rateType RateType, fro
 	if err := ctx.Err(); err != nil {
 		return decimal.Zero, err
 	}
+	switch rateType {
+	case SpotRate, ClosingRate, AverageRate, HistoricalRate:
+	default:
+		return decimal.Zero, ErrInvalidRate
+	}
 	from = strings.ToUpper(strings.TrimSpace(from))
 	to = strings.ToUpper(strings.TrimSpace(to))
+	if _, ok := financialtypes.LookupCurrency(from); !ok {
+		return decimal.Zero, ErrInvalidCurrency
+	}
+	if _, ok := financialtypes.LookupCurrency(to); !ok {
+		return decimal.Zero, ErrInvalidCurrency
+	}
 	if from == to {
 		return decimal.NewFromInt(1), nil
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	targetDate := dateOnly(date)
 	var direct, inverse []ExchangeRate
 	for _, rate := range r.rates {
@@ -164,6 +184,8 @@ func (r *RateRegistry) GetRateOfType(ctx context.Context, rateType RateType, fro
 }
 
 func (r *RateRegistry) GetRates() []ExchangeRate {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	rates := append([]ExchangeRate(nil), r.rates...)
 	sort.Slice(rates, func(i, j int) bool {
 		return rates[i].EffectiveDate.After(rates[j].EffectiveDate)

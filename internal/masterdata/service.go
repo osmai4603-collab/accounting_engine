@@ -19,7 +19,18 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
 }
 
+// Deprecated: use RegisterAccountContext.
 func (s *Service) RegisterAccount(account Account) error {
+	return s.RegisterAccountContext(context.Background(), account)
+}
+
+func (s *Service) RegisterAccountContext(ctx context.Context, account Account) error {
+	if ctx == nil {
+		return errors.New("account registration context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if account.NormalBalance == "" {
 		account.NormalBalance = DefaultNormalBalance(account.AccountType)
 	}
@@ -32,12 +43,12 @@ func (s *Service) RegisterAccount(account Account) error {
 		if !ok {
 			return ErrCompanyScopeRequired
 		}
-		if _, err := repository.GetAccountByCodeForCompany(account.CompanyID, account.Code); err == nil {
+		if _, err := s.getAccountByCodeForCompany(ctx, repository, account.CompanyID, account.Code); err == nil {
 			return errors.New("duplicate account code")
 		} else if !errors.Is(err, ErrAccountNotFound) {
 			return err
 		}
-	} else if _, err := s.repo.GetAccountByCode(account.Code); err == nil {
+	} else if _, err := s.getAccountByCode(ctx, account.Code); err == nil {
 		return errors.New("duplicate account code")
 	} else if !errors.Is(err, ErrAccountNotFound) {
 		return err
@@ -50,9 +61,9 @@ func (s *Service) RegisterAccount(account Account) error {
 			if !ok {
 				return ErrCompanyScopeRequired
 			}
-			parent, err = repository.GetAccountByIDForCompany(account.CompanyID, *account.ParentID)
+			parent, err = s.getAccountByIDForCompany(ctx, repository, account.CompanyID, *account.ParentID)
 		} else {
-			parent, err = s.repo.GetAccountByID(*account.ParentID)
+			parent, err = s.getAccountByID(ctx, *account.ParentID)
 		}
 		if err != nil {
 			return ErrInvalidParent
@@ -60,7 +71,7 @@ func (s *Service) RegisterAccount(account Account) error {
 		if parent.AccountType != account.AccountType {
 			return ErrInvalidParent
 		}
-		if hasCycle, err := s.accountWouldCycle(context.Background(), account.CompanyID, account.ID, *account.ParentID); err != nil {
+		if hasCycle, err := s.accountWouldCycle(ctx, account.CompanyID, account.ID, *account.ParentID); err != nil {
 			return err
 		} else if hasCycle {
 			return ErrAccountCycle
@@ -73,7 +84,62 @@ func (s *Service) RegisterAccount(account Account) error {
 		account.CreatedAt = time.Now().UTC()
 	}
 	account.UpdatedAt = account.CreatedAt
-	return s.repo.CreateAccount(account)
+	return s.createAccountContext(ctx, account)
+}
+
+func (s *Service) getAccountByCode(ctx context.Context, code string) (Account, error) {
+	if repository, ok := s.repo.(interface {
+		GetAccountByCodeContext(context.Context, string) (Account, error)
+	}); ok {
+		return repository.GetAccountByCodeContext(ctx, code)
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return s.repo.GetAccountByCode(code)
+}
+
+func (s *Service) getAccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
+	if repository, ok := s.repo.(interface {
+		GetAccountByIDContext(context.Context, uuid.UUID) (Account, error)
+	}); ok {
+		return repository.GetAccountByIDContext(ctx, id)
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return s.repo.GetAccountByID(id)
+}
+
+func (s *Service) getAccountByCodeForCompany(
+	ctx context.Context,
+	repository CompanyScopedRepository,
+	companyID uuid.UUID,
+	code string,
+) (Account, error) {
+	if contextual, ok := s.repo.(interface {
+		GetAccountByCodeForCompanyContext(context.Context, uuid.UUID, string) (Account, error)
+	}); ok {
+		return contextual.GetAccountByCodeForCompanyContext(ctx, companyID, code)
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return repository.GetAccountByCodeForCompany(companyID, code)
+}
+
+func (s *Service) getAccountByIDForCompany(
+	ctx context.Context,
+	repository CompanyScopedRepository,
+	companyID, accountID uuid.UUID,
+) (Account, error) {
+	if contextual, ok := s.repo.(ContextCompanyScopedRepository); ok {
+		return contextual.GetAccountByIDForCompanyContext(ctx, companyID, accountID)
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	return repository.GetAccountByIDForCompany(companyID, accountID)
 }
 
 func (s *Service) accountWouldCycle(ctx context.Context, companyID, accountID, parentID uuid.UUID) (bool, error) {
@@ -105,6 +171,7 @@ func (s *Service) accountWouldCycle(ctx context.Context, companyID, accountID, p
 	return false, nil
 }
 
+// Deprecated: use UpdateAccountParentContext.
 func (s *Service) UpdateAccountParent(account Account, parentID *uuid.UUID) error {
 	return s.UpdateAccountParentContext(context.Background(), account, parentID)
 }
@@ -177,14 +244,42 @@ func (s *Service) createAccountContext(ctx context.Context, account Account) err
 	return s.repo.CreateAccount(account)
 }
 
+// Deprecated: use ValidateCanPostToAccountContext.
 func (s *Service) ValidateCanPostToAccount(accountID uuid.UUID) error {
-	account, err := s.repo.GetAccountByID(accountID)
+	return s.ValidateCanPostToAccountContext(context.Background(), accountID)
+}
+
+func (s *Service) ValidateCanPostToAccountContext(ctx context.Context, accountID uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	account, err := s.getAccountByID(ctx, accountID)
 	if err != nil {
+		return err
+	}
+	if account.IsHeader {
+		return errors.New("cannot post to header account")
+	}
+	var hasChildren bool
+	if repository, ok := s.repo.(interface {
+		HasChildrenContext(context.Context, uuid.UUID) (bool, error)
+	}); ok {
+		hasChildren, err = repository.HasChildrenContext(ctx, accountID)
+		if err != nil {
+			return err
+		}
+		if hasChildren {
+			return errors.New("cannot post to parent account with children")
+		}
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return validatePostableAccount(s.repo, accountID, account)
 }
 
+// Deprecated: use GetCompanyByIDContext.
 func (s *Service) GetCompanyByID(companyID uuid.UUID) (Company, error) {
 	repository, ok := s.repo.(CompanyRepository)
 	if !ok {
@@ -204,6 +299,7 @@ func (s *Service) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID
 	return repository.GetCompanyByIDContext(ctx, companyID)
 }
 
+// Deprecated: use ValidateCanPostToAccountForCompanyContext.
 func (s *Service) ValidateCanPostToAccountForCompany(companyID, accountID uuid.UUID) error {
 	repository, ok := s.repo.(CompanyScopedRepository)
 	if !ok {
@@ -255,8 +351,16 @@ func validatePostableAccount(repository Repository, accountID uuid.UUID, account
 	return nil
 }
 
+// Deprecated: use GetOpenPeriodForDateContext.
 func (s *Service) GetOpenPeriodForDate(date time.Time) (FiscalPeriod, error) {
-	period, err := s.repo.GetPeriodByDate(date)
+	return s.GetOpenPeriodForDateContext(context.Background(), date)
+}
+
+func (s *Service) GetOpenPeriodForDateContext(ctx context.Context, date time.Time) (FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	period, err := s.getPeriodByDate(ctx, date)
 	if err != nil {
 		return FiscalPeriod{}, err
 	}
@@ -266,6 +370,7 @@ func (s *Service) GetOpenPeriodForDate(date time.Time) (FiscalPeriod, error) {
 	return period, nil
 }
 
+// Deprecated: use GetOpenPeriodForCompanyDateContext.
 func (s *Service) GetOpenPeriodForCompanyDate(companyID uuid.UUID, date time.Time) (FiscalPeriod, error) {
 	repository, ok := s.repo.(CompanyScopedRepository)
 	if !ok {
@@ -299,15 +404,23 @@ func (s *Service) GetOpenPeriodForCompanyDateContext(ctx context.Context, compan
 	return period, nil
 }
 
+// Deprecated: use GetOpenAdjustmentPeriodContext.
 func (s *Service) GetOpenAdjustmentPeriod(fiscalYearID uuid.UUID, periodNumber int) (FiscalPeriod, error) {
+	return s.GetOpenAdjustmentPeriodContext(context.Background(), fiscalYearID, periodNumber)
+}
+
+func (s *Service) GetOpenAdjustmentPeriodContext(ctx context.Context, fiscalYearID uuid.UUID, periodNumber int) (FiscalPeriod, error) {
 	if periodNumber != 13 && periodNumber != 14 {
 		return FiscalPeriod{}, ErrFiscalPeriodNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
 	}
 	expectedType := FiscalPeriodTypeYearEndAdjustment
 	if periodNumber == 14 {
 		expectedType = FiscalPeriodTypeAuditAdjustment
 	}
-	fiscalYear, err := s.repo.GetFiscalYear(fiscalYearID)
+	fiscalYear, err := s.getFiscalYear(ctx, fiscalYearID)
 	if err != nil {
 		return FiscalPeriod{}, err
 	}
@@ -316,7 +429,7 @@ func (s *Service) GetOpenAdjustmentPeriod(fiscalYearID uuid.UUID, periodNumber i
 		if !ok {
 			return FiscalPeriod{}, ErrCompanyScopeRequired
 		}
-		period, err := repository.GetPeriodByNumberForCompany(fiscalYear.CompanyID, fiscalYearID, periodNumber)
+		period, err := s.getPeriodByNumberForCompany(ctx, repository, fiscalYear.CompanyID, fiscalYearID, periodNumber)
 		if err != nil {
 			return FiscalPeriod{}, err
 		}
@@ -342,14 +455,23 @@ func (s *Service) GetOpenAdjustmentPeriod(fiscalYearID uuid.UUID, periodNumber i
 	return FiscalPeriod{}, ErrFiscalPeriodNotFound
 }
 
+// Deprecated: use GetOpenAdjustmentPeriodForDateContext.
 func (s *Service) GetOpenAdjustmentPeriodForDate(date time.Time, periodNumber int) (FiscalPeriod, error) {
-	regularPeriod, err := s.repo.GetPeriodByDate(date)
+	return s.GetOpenAdjustmentPeriodForDateContext(context.Background(), date, periodNumber)
+}
+
+func (s *Service) GetOpenAdjustmentPeriodForDateContext(ctx context.Context, date time.Time, periodNumber int) (FiscalPeriod, error) {
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	regularPeriod, err := s.getPeriodByDate(ctx, date)
 	if err != nil {
 		return FiscalPeriod{}, err
 	}
-	return s.GetOpenAdjustmentPeriod(regularPeriod.FiscalYearID, periodNumber)
+	return s.GetOpenAdjustmentPeriodContext(ctx, regularPeriod.FiscalYearID, periodNumber)
 }
 
+// Deprecated: use GetOpenAdjustmentPeriodForCompanyDateContext.
 func (s *Service) GetOpenAdjustmentPeriodForCompanyDate(companyID uuid.UUID, date time.Time, periodNumber int) (FiscalPeriod, error) {
 	if periodNumber != 13 && periodNumber != 14 {
 		return FiscalPeriod{}, ErrFiscalPeriodNotFound
@@ -411,6 +533,58 @@ func (s *Service) GetOpenAdjustmentPeriodForCompanyDateContext(ctx context.Conte
 	return period, nil
 }
 
+// Deprecated: use NextJournalNumberContext.
 func (s *Service) NextJournalNumber(journalID uuid.UUID) (int64, error) {
+	return s.NextJournalNumberContext(context.Background(), journalID)
+}
+
+func (s *Service) NextJournalNumberContext(ctx context.Context, journalID uuid.UUID) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if repository, ok := s.repo.(interface {
+		GetNextSequenceWithLockContext(context.Context, uuid.UUID) (int64, error)
+	}); ok {
+		return repository.GetNextSequenceWithLockContext(ctx, journalID)
+	}
 	return s.repo.GetNextSequenceWithLock(journalID)
+}
+
+func (s *Service) getPeriodByDate(ctx context.Context, date time.Time) (FiscalPeriod, error) {
+	if repository, ok := s.repo.(interface {
+		GetPeriodByDateContext(context.Context, time.Time) (FiscalPeriod, error)
+	}); ok {
+		return repository.GetPeriodByDateContext(ctx, date)
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	return s.repo.GetPeriodByDate(date)
+}
+
+func (s *Service) getFiscalYear(ctx context.Context, fiscalYearID uuid.UUID) (FiscalYear, error) {
+	if repository, ok := s.repo.(interface {
+		GetFiscalYearContext(context.Context, uuid.UUID) (FiscalYear, error)
+	}); ok {
+		return repository.GetFiscalYearContext(ctx, fiscalYearID)
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalYear{}, err
+	}
+	return s.repo.GetFiscalYear(fiscalYearID)
+}
+
+func (s *Service) getPeriodByNumberForCompany(
+	ctx context.Context,
+	repository CompanyScopedRepository,
+	companyID, fiscalYearID uuid.UUID,
+	number int,
+) (FiscalPeriod, error) {
+	if contextual, ok := s.repo.(ContextCompanyScopedRepository); ok {
+		return contextual.GetPeriodByNumberForCompanyContext(ctx, companyID, fiscalYearID, number)
+	}
+	if err := ctx.Err(); err != nil {
+		return FiscalPeriod{}, err
+	}
+	return repository.GetPeriodByNumberForCompany(companyID, fiscalYearID, number)
 }

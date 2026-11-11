@@ -36,6 +36,42 @@ func TestSpotConversion(t *testing.T) {
 	}
 }
 
+func TestConversionAndRevaluationUseTheirRequiredRateTypes(t *testing.T) {
+	registry := NewRateRegistry()
+	date := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)
+	for rateType, rate := range map[RateType]string{
+		SpotRate: "3.75", ClosingRate: "4.00", AverageRate: "3.50",
+	} {
+		if err := registry.Register(ExchangeRate{
+			FromCurrency: "USD", ToCurrency: "SAR", Rate: decimal.RequireFromString(rate),
+			EffectiveDate: date, Type: rateType,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	converted, err := NewConversionEngine(registry).Convert(
+		context.Background(), testMoney(t, "100", "USD"), "SAR", date,
+	)
+	if err != nil || !converted.Amount().Equal(decimal.NewFromInt(375)) {
+		t.Fatalf("spot conversion = %v, %v; want SAR 375", converted, err)
+	}
+
+	position := MonetaryPosition{
+		AccountID: uuid.New(), ForeignCurrencyBalance: decimal.NewFromInt(100),
+		TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+		CarryingAmount: testMoney(t, "350", "SAR"), Type: Monetary,
+	}
+	result, err := NewRevaluationEngine(registry).Calculate(context.Background(), position, date)
+	if err != nil || !result.Difference.Amount().Equal(decimal.NewFromInt(50)) {
+		t.Fatalf("closing-rate revaluation = %v, %v; want SAR 50", result.Difference, err)
+	}
+	average, err := registry.GetRateOfType(context.Background(), AverageRate, "USD", "SAR", date)
+	if err != nil || !average.Equal(decimal.RequireFromString("3.50")) {
+		t.Fatalf("average rate = %s, %v; want 3.50", average, err)
+	}
+}
+
 func TestRevaluationGainLossAndZero(t *testing.T) {
 	registry := NewRateRegistry()
 	date := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)

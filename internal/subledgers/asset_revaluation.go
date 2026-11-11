@@ -10,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Deprecated: use RevalueAssetContext.
 func (l *FixedAssetLedger) RevalueAsset(assetID, journalID uuid.UUID, fairValue financialtypes.Money, asOf time.Time) (posting.JournalEntry, error) {
 	return l.RevalueAssetContext(context.Background(), assetID, journalID, fairValue, asOf)
 }
@@ -50,6 +51,7 @@ func (l *FixedAssetLedger) RevalueAssetContext(
 	return entry, nil
 }
 
+// Deprecated: use ConfirmRevaluationContext.
 func (l *FixedAssetLedger) ConfirmRevaluation(assetID, postedEntryID uuid.UUID, fairValue financialtypes.Money, asOf time.Time) error {
 	return l.ConfirmRevaluationContext(context.Background(), assetID, postedEntryID, fairValue, asOf)
 }

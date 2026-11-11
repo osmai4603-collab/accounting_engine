@@ -39,6 +39,8 @@ func NewFixedAssetLedger(repo FixedAssetLedgerRepository, _ JournalCreator) *Fix
 func NewFixedAssetLedgerForCompany(repo FixedAssetLedgerRepository, _ JournalCreator, companyID uuid.UUID) *FixedAssetLedger {
 	return &FixedAssetLedger{repo: repo, companyID: companyID}
 }
+
+// Deprecated: use RegisterAssetContext.
 func (l *FixedAssetLedger) RegisterAsset(asset FixedAsset) error {
 	return l.RegisterAssetContext(context.Background(), asset)
 }
@@ -388,6 +390,7 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 }
 
 // Deprecated: Use DepreciateAssetAtomic instead.
+// Deprecated: use MonthlyDepreciationContext.
 func (l *FixedAssetLedger) MonthlyDepreciation(assetID uuid.UUID, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, financialtypes.Money, error) {
 	return l.MonthlyDepreciationContext(context.Background(), assetID, journalID, asOf)
 }
@@ -442,6 +445,7 @@ func (l *FixedAssetLedger) MonthlyDepreciationContext(
 }
 
 // Deprecated: Use DepreciateAssetAtomic instead.
+// Deprecated: use ConfirmDepreciationContext.
 func (l *FixedAssetLedger) ConfirmDepreciation(assetID, postedEntryID uuid.UUID, depAmount financialtypes.Money, asOf time.Time) error {
 	return l.ConfirmDepreciationContext(context.Background(), assetID, postedEntryID, depAmount, asOf)
 }
@@ -737,6 +741,7 @@ func (l *FixedAssetLedger) Impair(assetID uuid.UUID, loss financialtypes.Money) 
 	return err
 }
 
+// Deprecated: use PostImpairmentContext.
 func (l *FixedAssetLedger) PostImpairment(assetID uuid.UUID, recoverableAmount financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
 	return l.PostImpairmentContext(context.Background(), assetID, recoverableAmount, journalID, asOf)
 }
@@ -769,6 +774,7 @@ func (l *FixedAssetLedger) PostImpairmentContext(
 	return l.ImpairAssetContext(ctx, assetID, loss, journalID, asOf)
 }
 
+// Deprecated: use ImpairAssetContext.
 func (l *FixedAssetLedger) ImpairAsset(assetID uuid.UUID, loss financialtypes.Money, journalID uuid.UUID, asOf time.Time) (posting.JournalEntry, error) {
 	return l.ImpairAssetContext(context.Background(), assetID, loss, journalID, asOf)
 }
@@ -851,6 +857,7 @@ func impairmentReference(assetID uuid.UUID, asOf time.Time) string {
 	return impairmentReferencePrefix(assetID) + asOf.UTC().Format("2006-01")
 }
 
+// Deprecated: use ConfirmImpairmentContext.
 func (l *FixedAssetLedger) ConfirmImpairment(assetID, postedEntryID uuid.UUID, loss financialtypes.Money, asOf time.Time) error {
 	return l.ConfirmImpairmentContext(context.Background(), assetID, postedEntryID, loss, asOf)
 }
@@ -896,6 +903,7 @@ func (l *FixedAssetLedger) ConfirmImpairmentContext(
 	return l.confirmAssetMutation(ctx, asset, updated, expectedEntry)
 }
 
+// Deprecated: use DisposeAssetContext.
 func (l *FixedAssetLedger) DisposeAsset(assetID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money, journalID uuid.UUID) (posting.JournalEntry, error) {
 	return l.DisposeAssetContext(context.Background(), assetID, disposalDate, proceeds, journalID)
 }
@@ -1002,6 +1010,7 @@ func disposalReference(assetID uuid.UUID, disposalDate time.Time) string {
 	return disposalReferencePrefix(assetID) + disposalDate.UTC().Format("2006-01-02")
 }
 
+// Deprecated: use ConfirmDisposalContext.
 func (l *FixedAssetLedger) ConfirmDisposal(assetID, postedEntryID uuid.UUID, disposalDate time.Time, proceeds financialtypes.Money) error {
 	return l.ConfirmDisposalContext(context.Background(), assetID, postedEntryID, disposalDate, proceeds)
 }

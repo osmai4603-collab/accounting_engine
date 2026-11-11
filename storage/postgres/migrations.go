@@ -3,12 +3,11 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +19,9 @@ import (
 
 const migrationLockID int64 = 0x414343544D494752
 
+//go:embed migrations/*.sql
+var embeddedMigrations embed.FS
+
 var ErrDownMigrationMissing = errors.New("down migration is missing")
 
 type migrationFile struct {
@@ -30,15 +32,11 @@ type migrationFile struct {
 }
 
 func migrationDirectory() (string, error) {
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", errors.New("unable to locate PostgreSQL migrations")
-	}
-	return filepath.Join(filepath.Dir(source), "migrations"), nil
+	return "migrations", nil
 }
 
 func listMigrations(directory string) ([]migrationFile, error) {
-	entries, err := os.ReadDir(directory)
+	entries, err := embeddedMigrations.ReadDir(directory)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +53,7 @@ func listMigrations(directory string) ([]migrationFile, error) {
 				migration = &migrationFile{name: base}
 				byName[base] = migration
 			}
-			migration.downPath = filepath.Join(directory, name)
+			migration.downPath = path.Join(directory, name)
 			continue
 		}
 		versionText := strings.SplitN(name, "_", 2)[0]
@@ -70,7 +68,7 @@ func listMigrations(directory string) ([]migrationFile, error) {
 			byName[base] = migration
 		}
 		migration.version = version
-		migration.upPath = filepath.Join(directory, name)
+		migration.upPath = path.Join(directory, name)
 	}
 	migrations := make([]migrationFile, 0, len(byName))
 	for _, migration := range byName {
@@ -129,7 +127,7 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool) (result error) {
 		return err
 	}
 	for _, migration := range pending {
-		content, err := os.ReadFile(migration.upPath)
+		content, err := embeddedMigrations.ReadFile(migration.upPath)
 		if err != nil {
 			return err
 		}
@@ -206,7 +204,7 @@ func pendingMigrations(ctx context.Context, pool *pgxpool.Pool, migrations []mig
 			pending = append(pending, migration)
 			continue
 		}
-		content, err := os.ReadFile(migration.upPath)
+		content, err := embeddedMigrations.ReadFile(migration.upPath)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +263,7 @@ func MigrateDown(ctx context.Context, pool *pgxpool.Pool, steps int) (result err
 		if !found || migration.downPath == "" {
 			return fmt.Errorf("%w: %s", ErrDownMigrationMissing, name)
 		}
-		content, err := os.ReadFile(migration.downPath)
+		content, err := embeddedMigrations.ReadFile(migration.downPath)
 		if err != nil {
 			return err
 		}

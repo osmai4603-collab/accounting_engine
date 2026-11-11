@@ -63,6 +63,9 @@ const (
 )
 
 func (p FiscalPeriod) Contains(date time.Time) bool {
+	if p.Type == FiscalPeriodTypeYearEndAdjustment || p.Type == FiscalPeriodTypeAuditAdjustment {
+		return false
+	}
 	date = date.UTC()
 	start := p.StartDate.UTC()
 	end := p.EndDate.UTC()
@@ -87,10 +90,11 @@ func GenerateFiscalYear(start time.Time) FiscalYear {
 			StartDate: periodStart, EndDate: periodEnd, State: PeriodOpen, Type: FiscalPeriodTypeNormal,
 		})
 	}
-	// Adjustment periods follow all regular monthly periods.
+	// Adjustment periods are procedural buckets on the year-end date, not
+	// calendar ranges. They are selected by period number, never by date.
 	year.Periods = append(year.Periods,
-		FiscalPeriod{ID: uuid.New(), FiscalYearID: id, Number: 13, Name: "Period 13", StartDate: year.EndDate.Add(-time.Hour), EndDate: year.EndDate, State: PeriodOpen, Type: FiscalPeriodTypeYearEndAdjustment},
-		FiscalPeriod{ID: uuid.New(), FiscalYearID: id, Number: 14, Name: "Period 14", StartDate: year.EndDate.Add(-time.Hour), EndDate: year.EndDate, State: PeriodOpen, Type: FiscalPeriodTypeAuditAdjustment},
+		FiscalPeriod{ID: uuid.New(), FiscalYearID: id, Number: 13, Name: "Period 13", StartDate: year.EndDate, EndDate: year.EndDate, State: PeriodOpen, Type: FiscalPeriodTypeYearEndAdjustment},
+		FiscalPeriod{ID: uuid.New(), FiscalYearID: id, Number: 14, Name: "Period 14", StartDate: year.EndDate, EndDate: year.EndDate, State: PeriodOpen, Type: FiscalPeriodTypeAuditAdjustment},
 	)
 	return year
 }

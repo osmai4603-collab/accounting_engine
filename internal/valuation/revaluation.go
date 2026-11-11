@@ -80,12 +80,7 @@ func (e *RevaluationEngine) Calculate(ctx context.Context, position MonetaryPosi
 }
 
 func getClosingRate(ctx context.Context, provider RateProviderSPI, from, to string, date time.Time) (decimal.Decimal, error) {
-	if typed, ok := provider.(interface {
-		GetRateOfType(context.Context, RateType, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return typed.GetRateOfType(ctx, ClosingRate, from, to, date)
-	}
-	return provider.GetRate(ctx, from, to, date)
+	return provider.GetRateOfType(ctx, ClosingRate, from, to, date)
 }
 
 func (e *RevaluationEngine) Revalue(ctx context.Context, positions []MonetaryPosition, asOf time.Time) ([]FXResult, error) {

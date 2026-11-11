@@ -17,6 +17,7 @@
   * **المعيار الأمني:** معيار NIST SP 800-53 (SC-24 Fail-Safe Defaults) الذي يفرض أن أي فشل في التحقق من الصلاحيات أو غياب التهيئة يؤدي إلى الرفض الفوري للعملية المالية (`Deny by Default`).
 * **خطوات التنفيذ المحددة:**
   1. إضافة خيار تشغيلي صريح في `accounting_engine.Config` باسم `StrictGovernance bool` أو `EnforceProductionGovernance bool`.
+     في التنفيذ، يبقى `StrictGovernance` معطلاً افتراضياً للتوافق، ويؤدي تفعيله إلى رفض الترحيل مع `ErrUnconfiguredApprovalPolicy` عند غياب سياسة الشركة.
   2. تعديل دالة `IsApproved` في [`approval_gate.go`](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/internal/governance/approval_gate.go) لتقبل حالة التشغيل؛ وفي حال كان النمط صارماً ولم تكن السياسة مهيأة، تُرجع خطأ مالي رسمي صريح: `ErrUnconfiguredApprovalPolicy`.
   3. التحقق الإلزامي من عدم قيام منشئ القيد (`CreatorID`) بالموافقة عليه بنفسه (`ApproverID != CreatorID`) عند تجاوز الحد المالي.
 * **معايير قبول نفاذ المهمة (Acceptance Criteria):**
@@ -133,6 +134,7 @@
 * **خطوات التنفيذ المحددة:**
   1. مراجعة واستبدال كافة استدعاءات `context.Background()` في الحزم التنفيذية، وإلزام الدوال باستقبال السياق من المستدعي.
   2. الاحتفاظ بالدوال التوافقية القديمة التي لا تستقبل السياق كمغلفات (Wrappers) مؤقتة تستدعي الدوال الجديدة مع وضع علامة `Deprecated`.
+     أضيفت واجهات سياقية للعمليات الحساسة في الذمم والخزينة والمطابقة، وتُبقي الواجهات القديمة للتوافق مع وسمها `Deprecated`.
 * **معايير قبول نفاذ المهمة (Acceptance Criteria):**
   * [ ] تمرير سياق يحمل `context.WithTimeout` وإثبات إلغاء العملية المصرفية وقفل قاعدة البيانات فور انتهاء المهلة.
   * [ ] التحقق من عدم وجود أي استدعاء صامت لـ `context.Background()` داخل كود الإنتاج (غير ملفات الاختبارات).

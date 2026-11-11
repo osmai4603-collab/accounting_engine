@@ -159,10 +159,5 @@ func getTranslationRate(
 	from, to string,
 	date time.Time,
 ) (decimal.Decimal, error) {
-	if typed, ok := provider.(interface {
-		GetRateOfType(context.Context, valuation.RateType, string, string, time.Time) (decimal.Decimal, error)
-	}); ok {
-		return typed.GetRateOfType(ctx, rateType, from, to, date)
-	}
-	return provider.GetRate(ctx, from, to, date)
+	return provider.GetRateOfType(ctx, rateType, from, to, date)
 }

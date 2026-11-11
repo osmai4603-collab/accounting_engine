@@ -18,7 +18,10 @@ import (
 var ErrUnsupportedStorageDriver = errors.New("unsupported storage driver")
 var ErrStoragePortRequired = errors.New("required storage port is missing")
 
-type Config struct{}
+type Config struct {
+	// StrictGovernance denies posting until the company has configured an approval policy.
+	StrictGovernance bool
+}
 
 func DefaultConfig() Config {
 	return Config{}
@@ -234,7 +237,14 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 	postingEngine := posting.NewEngine(ports.Posting, masterService)
 	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(ports.Posting))
 	governanceEngine := governance.NewEngine(ports.Governance)
-	postingEngine.SetApprovalGate(governanceEngine.ApprovalGate())
+	approvalGate := governanceEngine.ApprovalGate()
+	if approvalGate == nil && config.StrictGovernance {
+		approvalGate = &governance.ApprovalGate{}
+	}
+	if gate, ok := approvalGate.(*governance.ApprovalGate); ok {
+		gate.StrictGovernance = config.StrictGovernance
+	}
+	postingEngine.SetApprovalGate(approvalGate)
 	if ports.MakerCheckerPolicy != nil {
 		postingEngine.SetMakerCheckerPolicy(ports.MakerCheckerPolicy)
 	}

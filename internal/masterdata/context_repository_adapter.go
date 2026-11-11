@@ -11,7 +11,8 @@ type contextRepositoryAdapter struct {
 	repository ContextStorageRepository
 }
 
-// NewRepositoryAdapter bridges contextless service methods while context-aware methods delegate directly.
+// NewRepositoryAdapter bridges legacy contextless service methods. Service
+// operations with context use the corresponding context-forwarding methods.
 func NewRepositoryAdapter(repository ContextStorageRepository) Repository {
 	return contextRepositoryAdapter{repository: repository}
 }
@@ -36,8 +37,16 @@ func (r contextRepositoryAdapter) GetAccountByID(id uuid.UUID) (Account, error) 
 	return r.repository.GetAccountByID(context.Background(), id)
 }
 
+func (r contextRepositoryAdapter) GetAccountByIDContext(ctx context.Context, id uuid.UUID) (Account, error) {
+	return r.repository.GetAccountByID(ctx, id)
+}
+
 func (r contextRepositoryAdapter) GetAccountByCode(code string) (Account, error) {
 	return r.repository.GetAccountByCode(context.Background(), code)
+}
+
+func (r contextRepositoryAdapter) GetAccountByCodeContext(ctx context.Context, code string) (Account, error) {
+	return r.repository.GetAccountByCode(ctx, code)
 }
 
 func (r contextRepositoryAdapter) ListAccounts() ([]Account, error) {
@@ -48,6 +57,10 @@ func (r contextRepositoryAdapter) HasChildren(id uuid.UUID) (bool, error) {
 	return r.repository.HasChildren(context.Background(), id)
 }
 
+func (r contextRepositoryAdapter) HasChildrenContext(ctx context.Context, id uuid.UUID) (bool, error) {
+	return r.repository.HasChildren(ctx, id)
+}
+
 func (r contextRepositoryAdapter) CreateFiscalYear(year FiscalYear) error {
 	return r.repository.CreateFiscalYear(context.Background(), year)
 }
@@ -56,19 +69,31 @@ func (r contextRepositoryAdapter) GetFiscalYear(id uuid.UUID) (FiscalYear, error
 	return r.repository.GetFiscalYear(context.Background(), id)
 }
 
+func (r contextRepositoryAdapter) GetFiscalYearContext(ctx context.Context, id uuid.UUID) (FiscalYear, error) {
+	return r.repository.GetFiscalYear(ctx, id)
+}
+
 func (r contextRepositoryAdapter) UpdateFiscalYearState(id uuid.UUID, state FiscalYearState) error {
-	year, err := r.repository.GetFiscalYear(context.Background(), id)
+	return r.UpdateFiscalYearStateContext(context.Background(), id, state)
+}
+
+func (r contextRepositoryAdapter) UpdateFiscalYearStateContext(ctx context.Context, id uuid.UUID, state FiscalYearState) error {
+	year, err := r.repository.GetFiscalYear(ctx, id)
 	if err != nil {
 		return err
 	}
 	if year.CompanyID == uuid.Nil {
 		return ErrCompanyScopeRequired
 	}
-	return r.repository.UpdateFiscalYearState(context.Background(), year.CompanyID, id, state)
+	return r.repository.UpdateFiscalYearState(ctx, year.CompanyID, id, state)
 }
 
 func (r contextRepositoryAdapter) GetPeriodByDate(date time.Time) (FiscalPeriod, error) {
 	return r.repository.GetPeriodByDate(context.Background(), date)
+}
+
+func (r contextRepositoryAdapter) GetPeriodByDateContext(ctx context.Context, date time.Time) (FiscalPeriod, error) {
+	return r.repository.GetPeriodByDate(ctx, date)
 }
 
 func (r contextRepositoryAdapter) UpdatePeriodState(uuid.UUID, PeriodState) error {
@@ -79,12 +104,20 @@ func (r contextRepositoryAdapter) GetNextSequenceWithLock(uuid.UUID) (int64, err
 	return 0, ErrCompanyScopeRequired
 }
 
+func (r contextRepositoryAdapter) GetNextSequenceWithLockContext(ctx context.Context, id uuid.UUID) (int64, error) {
+	return r.repository.GetNextSequenceWithLock(ctx, uuid.Nil, id)
+}
+
 func (r contextRepositoryAdapter) GetAccountByIDForCompany(companyID, accountID uuid.UUID) (Account, error) {
 	return r.repository.GetAccountByIDForCompany(context.Background(), companyID, accountID)
 }
 
 func (r contextRepositoryAdapter) GetAccountByCodeForCompany(companyID uuid.UUID, code string) (Account, error) {
 	return r.repository.GetAccountByCodeForCompany(context.Background(), companyID, code)
+}
+
+func (r contextRepositoryAdapter) GetAccountByCodeForCompanyContext(ctx context.Context, companyID uuid.UUID, code string) (Account, error) {
+	return r.repository.GetAccountByCodeForCompany(ctx, companyID, code)
 }
 
 func (r contextRepositoryAdapter) GetFiscalYearForCompany(companyID, fiscalYearID uuid.UUID) (FiscalYear, error) {
