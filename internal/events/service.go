@@ -5,16 +5,16 @@ import (
 	"errors"
 	"sync"
 
-	"accounting_engine/pkg/api/v1/events"
+	apiEvents "accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/spi/storage"
 )
 
 type EventService struct {
-	store          storage.CoreLedgerStore
-	router         *Router
-	mu             sync.Mutex
-	processedKeys  map[string]ledger.JournalEntry
+	store         storage.CoreLedgerStore
+	router        *Router
+	mu            sync.Mutex
+	processedKeys map[string]ledger.JournalEntry
 }
 
 func NewEventService(store storage.CoreLedgerStore, router *Router) *EventService {
@@ -25,7 +25,7 @@ func NewEventService(store storage.CoreLedgerStore, router *Router) *EventServic
 	}
 }
 
-func (s *EventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
+func (s *EventService) ProcessEvent(ctx context.Context, event apiEvents.AccountingEvent) (ledger.JournalEntry, error) {
 	if s.store == nil {
 		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
 	}

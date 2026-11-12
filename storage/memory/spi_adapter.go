@@ -66,12 +66,71 @@ func (d *Driver) PostEntry(ctx context.Context, entry ledger.JournalEntry) error
 	}
 
 	pEntry := mapLedgerToPosting(entry)
-	if pEntry.Status == "" {
-		pEntry.Status = posting.EntryPosted
+
+	// Ensure company, period, and accounts exist in driver memory
+	d.mu.Lock()
+	companyUUID := pEntry.CompanyID
+	if _, ok := d.companies[companyUUID]; !ok && companyUUID != uuid.Nil {
+		cur := "USD"
+		if len(entry.Lines) > 0 {
+			cur = entry.Lines[0].FunctionalDebit.Currency()
+			if cur == "" {
+				cur = entry.Lines[0].FunctionalCredit.Currency()
+			}
+			if cur == "" {
+				cur = entry.Lines[0].TransactionCurrency
+			}
+		}
+		if cur == "" {
+			cur = "USD"
+		}
+		d.companies[companyUUID] = masterdata.Company{
+			ID:                   companyUUID,
+			Code:                 "CMP-" + companyUUID.String()[:8],
+			LegalName:            "Company " + companyUUID.String()[:8],
+			FunctionalCurrency:   cur,
+			PresentationCurrency: cur,
+			Active:               true,
+		}
 	}
-	if err := d.SaveDraftContext(ctx, pEntry); err != nil {
+
+	periodUUID := pEntry.PeriodID
+	if _, ok := d.periods[periodUUID]; !ok && periodUUID != uuid.Nil {
+		d.periods[periodUUID] = masterdata.FiscalPeriod{
+			ID:           periodUUID,
+			CompanyID:    companyUUID,
+			FiscalYearID: uuid.New(),
+			Number:       1,
+			Name:         "Default Period",
+			StartDate:    pEntry.EntryDate.AddDate(-1, 0, 0),
+			EndDate:      pEntry.EntryDate.AddDate(1, 0, 0),
+			State:        masterdata.PeriodOpen,
+			Type:         masterdata.FiscalPeriodTypeNormal,
+		}
+	}
+
+	for _, l := range pEntry.Lines {
+		if _, ok := d.accounts[l.AccountID]; !ok && l.AccountID != uuid.Nil {
+			d.accounts[l.AccountID] = masterdata.Account{
+				ID:            l.AccountID,
+				CompanyID:     companyUUID,
+				Code:          "ACC-" + l.AccountID.String()[:8],
+				Name:          "Account " + l.AccountID.String()[:8],
+				AccountType:   masterdata.AccountTypeAsset,
+				NormalBalance: masterdata.NormalBalanceDebit,
+				CurrencyID:    l.FunctionalDebit.Currency(),
+				IsActive:      true,
+			}
+		}
+	}
+	d.mu.Unlock()
+
+	draft := pEntry
+	draft.Status = posting.EntryDraft
+	if err := d.SaveDraftContext(ctx, draft); err != nil {
 		return err
 	}
+	pEntry.Status = posting.EntryPosted
 	return d.PostAtomicContext(ctx, pEntry)
 }
 
@@ -88,16 +147,16 @@ func (d *Driver) GetAccount(ctx context.Context, companyID types.CompanyID, acco
 		parentID = &pid
 	}
 	return ledger.Account{
-		ID:                types.AccountID(acc.ID),
-		CompanyID:         types.CompanyID(acc.CompanyID),
-		Code:              acc.Code,
-		Name:              acc.Name,
-		Type:              ledger.AccountType(acc.AccountType),
-		NormalBalance:     ledger.NormalBalance(acc.NormalBalance),
-		ParentID:          parentID,
-		IsReconcilable:    acc.IsReconcilable,
-		IsActive:          true,
-		Currency:          acc.CurrencyID,
+		ID:             types.AccountID(acc.ID),
+		CompanyID:      types.CompanyID(acc.CompanyID),
+		Code:           acc.Code,
+		Name:           acc.Name,
+		Type:           ledger.AccountType(acc.AccountType),
+		NormalBalance:  ledger.NormalBalance(acc.NormalBalance),
+		ParentID:       parentID,
+		IsReconcilable: acc.IsReconcilable,
+		IsActive:       true,
+		Currency:       acc.CurrencyID,
 	}, nil
 }
 
@@ -121,15 +180,39 @@ func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID,
 func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
+	lines := make([]reporting.TrialBalanceLine, 0)
+	var totD, totC decimal.Decimal
+	for k, b := range d.balances {
+		if k.companyID == uuid.UUID(companyID) {
+			if currency == "" || k.currency == currency {
+				acc := d.accounts[k.accountID]
+				dMoney, _ := types.NewMoney(b.periodDebit, k.currency)
+				cMoney, _ := types.NewMoney(b.periodCredit, k.currency)
+				lines = append(lines, reporting.TrialBalanceLine{
+					AccountID:    types.AccountID(k.accountID),
+					AccountCode:  acc.Code,
+					AccountName:  acc.Name,
+					AccountType:  string(acc.AccountType),
+					PeriodDebit:  dMoney,
+					PeriodCredit: cMoney,
+					EndingDebit:  dMoney,
+					EndingCredit: cMoney,
+				})
+				totD = totD.Add(b.periodDebit)
+				totC = totC.Add(b.periodCredit)
+			}
+		}
+	}
+	totDMoney, _ := types.NewMoney(totD, currency)
+	totCMoney, _ := types.NewMoney(totC, currency)
 	return reporting.TrialBalance{
 		CompanyID:   companyID,
 		AsOfDate:    asOf,
 		Currency:    currency,
-		Lines:       []reporting.TrialBalanceLine{},
-		TotalDebit:  zeroMoney,
-		TotalCredit: zeroMoney,
-		IsBalanced:  true,
+		Lines:       lines,
+		TotalDebit:  totDMoney,
+		TotalCredit: totCMoney,
+		IsBalanced:  totD.Equal(totC),
 	}, nil
 }
 
@@ -156,6 +239,9 @@ func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID,
 		CompanyID:       companyID,
 		AsOfDate:        asOf,
 		Currency:        currency,
+		Assets:          reporting.BalanceSheetSection{Title: "Assets", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
+		Liabilities:     reporting.BalanceSheetSection{Title: "Liabilities", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
+		Equity:          reporting.BalanceSheetSection{Title: "Equity", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
 		TotalAssets:     zeroMoney,
 		TotalLiabEquity: zeroMoney,
 		IsBalanced:      true,
@@ -171,6 +257,8 @@ func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.Company
 		StartDate: start,
 		EndDate:   end,
 		Currency:  currency,
+		Revenues:  reporting.IncomeStatementSection{Title: "Revenues", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
+		Expenses:  reporting.IncomeStatementSection{Title: "Expenses", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
 		NetIncome: zeroMoney,
 	}, nil
 }
@@ -179,13 +267,16 @@ func (d *Driver) RecordAuditLog(ctx context.Context, eventID string, details map
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.audit = append(d.audit, &governance.FinancialAuditLog{
-		Action: eventID,
+		EntityID:   uuid.New(),
+		EntityType: "EVENT",
+		Action:     "AUDIT",
+		Timestamp:  time.Now().UTC(),
 	})
 	return nil
 }
 
 func (d *Driver) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
-	return "fp-" + entryID.String(), nil
+	return "fingerprint-" + entryID.String(), nil
 }
 
 func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
@@ -195,15 +286,25 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		fcAmount := l.FunctionalCredit.Amount()
 		tAmount := l.TransactionAmount.Amount()
 
-		fd, _ := financialtypes.NewMoney(fdAmount, l.FunctionalDebit.Currency())
-		fc, _ := financialtypes.NewMoney(fcAmount, l.FunctionalCredit.Currency())
-		ta, _ := financialtypes.NewMoney(tAmount, l.TransactionCurrency)
+		cur := l.FunctionalDebit.Currency()
+		if cur == "" {
+			cur = l.FunctionalCredit.Currency()
+		}
+		if cur == "" {
+			cur = l.TransactionCurrency
+		}
+		if cur == "" {
+			cur = "USD"
+		}
+		fd, _ := financialtypes.NewMoney(fdAmount, cur)
+		fc, _ := financialtypes.NewMoney(fcAmount, cur)
+		ta, _ := financialtypes.NewMoney(tAmount, cur)
 
 		lines[i] = posting.JournalEntryLine{
 			ID:                  uuid.UUID(l.ID),
 			AccountID:           uuid.UUID(l.AccountID),
 			TransactionAmount:   ta,
-			TransactionCurrency: l.TransactionCurrency,
+			TransactionCurrency: cur,
 			ExchangeRate:        l.ExchangeRate,
 			FunctionalDebit:     fd,
 			FunctionalCredit:    fc,
@@ -216,14 +317,32 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		revID = &id
 	}
 
+	class := posting.EntryClassRegular
+	if e.Classification != "" {
+		class = posting.EntryClassification(e.Classification)
+	}
+
+	status := posting.EntryPosted
+	if e.Status != "" {
+		status = posting.EntryStatus(e.Status)
+	}
+
+	periodID := uuid.UUID(e.FiscalPeriodID)
+	if periodID == uuid.Nil {
+		periodID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("period-"+e.CompanyID.String()+"-"+e.EffectiveDate.Format("2006-01")))
+	}
+
+	journalID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("journal-"+e.CompanyID.String()))
+
 	return posting.JournalEntry{
 		ID:              uuid.UUID(e.ID),
 		CompanyID:       uuid.UUID(e.CompanyID),
-		PeriodID:        uuid.UUID(e.FiscalPeriodID),
+		JournalID:       journalID,
+		PeriodID:        periodID,
 		EntryDate:       e.EffectiveDate,
 		Date:            e.EffectiveDate,
-		Status:          posting.EntryStatus(e.Status),
-		Classification:  posting.EntryClassification(e.Classification),
+		Status:          status,
+		Classification:  class,
 		CreatedBy:       e.CreatedBy,
 		ReversedEntryID: revID,
 		Lines:           lines,

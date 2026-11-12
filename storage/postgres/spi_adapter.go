@@ -2,16 +2,15 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"accounting_engine/internal/governance"
-	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
 	"accounting_engine/pkg/api/v1/types"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -66,12 +65,12 @@ func (d *Driver) PostEntry(ctx context.Context, entry ledger.JournalEntry) error
 	}
 
 	pEntry := mapLedgerToPosting(entry)
-	if pEntry.Status == "" {
-		pEntry.Status = posting.EntryPosted
-	}
-	if err := d.SaveDraftContext(ctx, pEntry); err != nil {
+	draft := pEntry
+	draft.Status = posting.EntryDraft
+	if err := d.SaveDraftContext(ctx, draft); err != nil {
 		return err
 	}
+	pEntry.Status = posting.EntryPosted
 	return d.PostAtomicContext(ctx, pEntry)
 }
 
@@ -86,16 +85,16 @@ func (d *Driver) GetAccount(ctx context.Context, companyID types.CompanyID, acco
 		parentID = &pid
 	}
 	return ledger.Account{
-		ID:                types.AccountID(acc.ID),
-		CompanyID:         types.CompanyID(acc.CompanyID),
-		Code:              acc.Code,
-		Name:              acc.Name,
-		Type:              ledger.AccountType(acc.AccountType),
-		NormalBalance:     ledger.NormalBalance(acc.NormalBalance),
-		ParentID:          parentID,
-		IsReconcilable:    acc.IsReconcilable,
-		IsActive:          true,
-		Currency:          acc.CurrencyID,
+		ID:             types.AccountID(acc.ID),
+		CompanyID:      types.CompanyID(acc.CompanyID),
+		Code:           acc.Code,
+		Name:           acc.Name,
+		Type:           ledger.AccountType(acc.AccountType),
+		NormalBalance:  ledger.NormalBalance(acc.NormalBalance),
+		ParentID:       parentID,
+		IsReconcilable: acc.IsReconcilable,
+		IsActive:       true,
+		Currency:       acc.CurrencyID,
 	}, nil
 }
 
@@ -142,6 +141,9 @@ func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID,
 		CompanyID:       companyID,
 		AsOfDate:        asOf,
 		Currency:        currency,
+		Assets:          reporting.BalanceSheetSection{Title: "Assets", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
+		Liabilities:     reporting.BalanceSheetSection{Title: "Liabilities", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
+		Equity:          reporting.BalanceSheetSection{Title: "Equity", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
 		TotalAssets:     zeroMoney,
 		TotalLiabEquity: zeroMoney,
 		IsBalanced:      true,
@@ -155,18 +157,24 @@ func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.Company
 		StartDate: start,
 		EndDate:   end,
 		Currency:  currency,
+		Revenues:  reporting.IncomeStatementSection{Title: "Revenues", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
+		Expenses:  reporting.IncomeStatementSection{Title: "Expenses", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
 		NetIncome: zeroMoney,
 	}, nil
 }
 
 func (d *Driver) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
-	return d.AppendAuditLog(ctx, governance.FinancialAuditLog{
-		Action: eventID,
-	})
+	audit := governance.FinancialAuditLog{
+		EntityID:   uuid.New(),
+		EntityType: "EVENT",
+		Action:     "AUDIT",
+		Timestamp:  time.Now().UTC(),
+	}
+	return d.AppendAuditLog(ctx, audit)
 }
 
 func (d *Driver) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
-	return "fp-" + entryID.String(), nil
+	return "fingerprint-" + entryID.String(), nil
 }
 
 func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
@@ -176,15 +184,25 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		fcAmount := l.FunctionalCredit.Amount()
 		tAmount := l.TransactionAmount.Amount()
 
-		fd, _ := financialtypes.NewMoney(fdAmount, l.FunctionalDebit.Currency())
-		fc, _ := financialtypes.NewMoney(fcAmount, l.FunctionalCredit.Currency())
-		ta, _ := financialtypes.NewMoney(tAmount, l.TransactionCurrency)
+		cur := l.FunctionalDebit.Currency()
+		if cur == "" {
+			cur = l.FunctionalCredit.Currency()
+		}
+		if cur == "" {
+			cur = l.TransactionCurrency
+		}
+		if cur == "" {
+			cur = "USD"
+		}
+		fd, _ := financialtypes.NewMoney(fdAmount, cur)
+		fc, _ := financialtypes.NewMoney(fcAmount, cur)
+		ta, _ := financialtypes.NewMoney(tAmount, cur)
 
 		lines[i] = posting.JournalEntryLine{
 			ID:                  uuid.UUID(l.ID),
 			AccountID:           uuid.UUID(l.AccountID),
 			TransactionAmount:   ta,
-			TransactionCurrency: l.TransactionCurrency,
+			TransactionCurrency: cur,
 			ExchangeRate:        l.ExchangeRate,
 			FunctionalDebit:     fd,
 			FunctionalCredit:    fc,
@@ -197,14 +215,32 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		revID = &id
 	}
 
+	class := posting.EntryClassRegular
+	if e.Classification != "" {
+		class = posting.EntryClassification(e.Classification)
+	}
+
+	status := posting.EntryPosted
+	if e.Status != "" {
+		status = posting.EntryStatus(e.Status)
+	}
+
+	periodID := uuid.UUID(e.FiscalPeriodID)
+	if periodID == uuid.Nil {
+		periodID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("period-"+e.CompanyID.String()+"-"+e.EffectiveDate.Format("2006-01")))
+	}
+
+	journalID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("journal-"+e.CompanyID.String()))
+
 	return posting.JournalEntry{
 		ID:              uuid.UUID(e.ID),
 		CompanyID:       uuid.UUID(e.CompanyID),
-		PeriodID:        uuid.UUID(e.FiscalPeriodID),
+		JournalID:       journalID,
+		PeriodID:        periodID,
 		EntryDate:       e.EffectiveDate,
 		Date:            e.EffectiveDate,
-		Status:          posting.EntryStatus(e.Status),
-		Classification:  posting.EntryClassification(e.Classification),
+		Status:          status,
+		Classification:  class,
 		CreatedBy:       e.CreatedBy,
 		ReversedEntryID: revID,
 		Lines:           lines,

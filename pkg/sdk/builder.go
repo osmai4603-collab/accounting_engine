@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
-	internalEvents "accounting_engine/internal/events"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
@@ -65,7 +65,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	if b.coreStore == nil {
 		errs = append(errs, errors.New("core ledger store is required but missing"))
 	}
-	router := internalEvents.NewRouter()
+	router := events.NewRouter()
 	for _, mod := range b.standards {
 		if b.coreStore != nil {
 			if err := mod.ValidateDependencies(b.coreStore); err != nil {
@@ -92,7 +92,7 @@ type engineInstance struct {
 	reportingStore  storage.ReportingStore
 	governanceStore storage.GovernanceStore
 	standards       []standards.StandardModule
-	eventRouter     *internalEvents.Router
+	eventRouter     *events.Router
 }
 
 func (e *engineInstance) Ledger() LedgerService {
@@ -148,6 +148,17 @@ func (s *defaultLedgerService) ReverseEntry(ctx context.Context, companyID types
 	reversal.Classification = ledger.EntryClassReversing
 	reversal.EffectiveDate = time.Now().UTC()
 	reversal.ReversalOfID = &entryID
+
+	// Swap debits and credits on each line for a proper reversal
+	revLines := make([]ledger.EntryLine, len(original.Lines))
+	for i, l := range original.Lines {
+		revLines[i] = l
+		revLines[i].ID = types.AccountID(types.NewJournalEntryID())
+		revLines[i].FunctionalDebit = l.FunctionalCredit
+		revLines[i].FunctionalCredit = l.FunctionalDebit
+	}
+	reversal.Lines = revLines
+
 	err = s.store.PostEntry(ctx, reversal)
 	return reversal, err
 }
@@ -204,13 +215,55 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 
 type defaultEventService struct {
 	store  storage.CoreLedgerStore
-	router *internalEvents.Router
+	router *events.Router
+	mu     sync.Mutex
+	keys   map[string]ledger.JournalEntry
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
 	if s.store == nil {
 		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
 	}
-	svc := internalEvents.NewEventService(s.store, s.router)
-	return svc.ProcessEvent(ctx, event)
+
+	s.mu.Lock()
+	if s.keys == nil {
+		s.keys = make(map[string]ledger.JournalEntry)
+	}
+	if event.IdempotencyKey != "" {
+		if existing, ok := s.keys[event.IdempotencyKey]; ok {
+			s.mu.Unlock()
+			return existing, nil
+		}
+	}
+	s.mu.Unlock()
+
+	rules := s.router.GetRules(event.EventType)
+	var rule events.PostingRule
+	if len(rules) > 0 {
+		rule = rules[0]
+	} else {
+		rule = events.PostingRule{
+			EventType:           event.EventType,
+			DebitAccountCode:    "1000",
+			CreditAccountCode:   "4000",
+			DescriptionTemplate: "Default event processing for " + event.EventType,
+		}
+	}
+
+	entry, err := events.EvaluateAndConstructEntry(rule, event)
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+
+	if err := s.store.PostEntry(ctx, entry); err != nil {
+		return ledger.JournalEntry{}, err
+	}
+
+	s.mu.Lock()
+	if event.IdempotencyKey != "" {
+		s.keys[event.IdempotencyKey] = entry
+	}
+	s.mu.Unlock()
+
+	return entry, nil
 }

@@ -1,7 +1,7 @@
 package templates
 
 import (
-	"accounting_engine/internal/events"
+	"accounting_engine/pkg/api/v1/events"
 )
 
 func LoadRetailTemplate() []events.PostingRule {
