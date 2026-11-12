@@ -339,14 +339,138 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 	if s.store == nil && s.postingEngine == nil {
 		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
 	}
-	if event.Amount.IsNegative() || event.Amount.IsZero() {
-		return ledger.JournalEntry{}, errors.New("event amount must be positive")
-	}
 	if strings.TrimSpace(event.EventType) == "" {
 		return ledger.JournalEntry{}, errors.New("event type is required")
 	}
+	if event.JournalDraft == nil && (event.Amount.IsNegative() || event.Amount.IsZero()) {
+		return ledger.JournalEntry{}, errors.New("event amount must be positive")
+	}
 
 	key := strings.TrimSpace(event.IdempotencyKey)
+	companyUUID := uuid.UUID(event.CompanyID)
+	idemStore, _ := s.store.(PublicEventIdempotencyStore)
+	mapStore, _ := s.store.(PublicEventMappingStore)
+
+	// B.4: resolve mapping (configurable per company/ledger) or accept ready draft.
+	var (
+		entry    ledger.JournalEntry
+		err      error
+		ruleUsed events.PostingRule
+		hasRule  bool
+	)
+	if event.JournalDraft != nil {
+		// Ready Journal Draft from adapter: canonical ingestion path.
+		draft := *event.JournalDraft
+		if draft.CompanyID == (types.CompanyID{}) || draft.CompanyID == types.CompanyID(uuid.Nil) {
+			draft.CompanyID = event.CompanyID
+		}
+		if draft.CompanyID != event.CompanyID {
+			return ledger.JournalEntry{}, errors.New("journal draft company mismatch")
+		}
+		if strings.TrimSpace(draft.SourceModule) == "" {
+			draft.SourceModule = event.EventType
+		}
+		if strings.TrimSpace(draft.ReferenceID) == "" {
+			draft.ReferenceID = event.EventID
+		}
+		normalizeLedgerEntryIDs(&draft)
+		entry = draft
+	} else {
+		if mapStore != nil && companyUUID != uuid.Nil {
+			m, ok, mErr := mapStore.GetPublicEventAccountMapping(ctx, companyUUID, event.EventType, strings.TrimSpace(event.LedgerID))
+			if mErr != nil {
+				return ledger.JournalEntry{}, mErr
+			}
+			if !ok && strings.TrimSpace(event.LedgerID) != "" {
+				m, ok, mErr = mapStore.GetPublicEventAccountMapping(ctx, companyUUID, event.EventType, "")
+				if mErr != nil {
+					return ledger.JournalEntry{}, mErr
+				}
+			}
+			if ok {
+				ruleUsed = events.PostingRule{
+					EventType:           event.EventType,
+					DebitAccountCode:    m.DebitAccountCode,
+					CreditAccountCode:   m.CreditAccountCode,
+					DescriptionTemplate: m.DescriptionTemplate,
+				}
+				hasRule = true
+			}
+		}
+		if !hasRule {
+			rules := s.router.GetRules(event.EventType)
+			if len(rules) == 0 {
+				// B.3/B.4: no default guessing; require explicit mapping/rule or ready draft.
+				return ledger.JournalEntry{}, fmt.Errorf("no account mapping/rule registered for event type %q", event.EventType)
+			}
+			ruleUsed = rules[0]
+			hasRule = true
+		}
+		entry, err = s.constructEventEntry(ctx, ruleUsed, event)
+		if err != nil {
+			return ledger.JournalEntry{}, err
+		}
+	}
+	normalizeLedgerEntryIDs(&entry)
+
+	amountStr := ""
+	amountCur := ""
+	if event.Amount.Currency() != "" {
+		amountStr = event.Amount.Amount().String()
+		amountCur = event.Amount.Currency()
+	}
+	fp := publicEventFingerprint(event.EventType, event.CompanyID, event.LedgerID, func() *ledger.JournalEntry {
+		if event.JournalDraft != nil {
+			return &entry
+		}
+		return nil
+	}(), amountCur, amountStr, ruleUsed.DebitAccountCode, ruleUsed.CreditAccountCode)
+
+	// B.2: durable idempotency when key+store available.
+	if key != "" && idemStore != nil && companyUUID != uuid.Nil {
+		rec := PublicEventIngestion{
+			CompanyID: companyUUID, IdempotencyKey: key, EventType: event.EventType,
+			PayloadHash: fp, EntryID: uuid.UUID(entry.ID), Status: "processing",
+		}
+		existing, claimed, cErr := idemStore.ClaimPublicEventIngestion(ctx, rec)
+		if cErr != nil {
+			return ledger.JournalEntry{}, cErr
+		}
+		if !claimed {
+			if existing.Status == "processed" && existing.EntryID != uuid.Nil {
+				if existing.PayloadHash != "" && existing.PayloadHash != fp {
+					return ledger.JournalEntry{}, ErrIdempotencyKeyConflict
+				}
+				if uuid.UUID(existing.Entry.ID) != uuid.Nil || len(existing.Entry.Lines) > 0 {
+					return existing.Entry, nil
+				}
+				// Fetch posted entry by id if snapshot missing.
+				if posted, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID)); gErr == nil {
+					return posted, nil
+				}
+				return ledger.JournalEntry{}, ErrIdempotencyInProgress
+			}
+			if existing.PayloadHash != "" && existing.PayloadHash != fp {
+				return ledger.JournalEntry{}, ErrIdempotencyKeyConflict
+			}
+			if existing.Status == "processing" {
+				return ledger.JournalEntry{}, ErrIdempotencyInProgress
+			}
+			return ledger.JournalEntry{}, errors.New("idempotency key is in an invalid state")
+		}
+		posted, pErr := s.postEventEntry(ctx, entry)
+		if pErr != nil {
+			_ = idemStore.FailPublicEventIngestion(ctx, companyUUID, key, pErr.Error())
+			return ledger.JournalEntry{}, pErr
+		}
+		if err := idemStore.CompletePublicEventIngestion(ctx, companyUUID, key, posted); err != nil {
+			// Posting succeeded and key is durably claimed; return posted result.
+			return posted, nil
+		}
+		return posted, nil
+	}
+
+	// In-process idempotency fallback (non-durable backends).
 	if key != "" {
 		s.mu.Lock()
 		if s.keys == nil {
@@ -372,38 +496,32 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 		}()
 	}
 
-	rules := s.router.GetRules(event.EventType)
-	if len(rules) == 0 {
-		// P0-3: do not guess with default accounts; require explicit rule/mapping.
-		return ledger.JournalEntry{}, fmt.Errorf("no accounting rule registered for event type %q", event.EventType)
-	}
-	rule := rules[0]
-
-	entry, err := s.constructEventEntry(ctx, rule, event)
+	posted, err := s.postEventEntry(ctx, entry)
 	if err != nil {
 		return ledger.JournalEntry{}, err
 	}
-
-	// Route posting through real posting engine when available (P0-1).
-	var posted ledger.JournalEntry
-	if s.postingEngine != nil {
-		ledgerSvc := &defaultLedgerService{store: s.store, postingEngine: s.postingEngine}
-		posted, err = ledgerSvc.PostEntry(ctx, entry)
-	} else {
-		posted = entry
-		err = s.store.PostEntry(ctx, entry)
-	}
-	if err != nil {
-		return ledger.JournalEntry{}, err
-	}
-
 	if key != "" {
 		s.mu.Lock()
 		s.keys[key] = posted
 		s.mu.Unlock()
 	}
-
 	return posted, nil
+}
+
+func (s *defaultEventService) postEventEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	if s.postingEngine != nil {
+		ledgerSvc := &defaultLedgerService{store: s.store, postingEngine: s.postingEngine}
+		return ledgerSvc.PostEntry(ctx, entry)
+	}
+	if s.store == nil {
+		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
+	}
+	return entry, s.store.PostEntry(ctx, entry)
+}
+
+func (s *defaultEventService) fetchPostedEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
+	ledgerSvc := &defaultLedgerService{store: s.store, postingEngine: s.postingEngine}
+	return ledgerSvc.GetEntry(ctx, companyID, entryID)
 }
 
 func (s *defaultEventService) constructEventEntry(ctx context.Context, rule events.PostingRule, event events.AccountingEvent) (ledger.JournalEntry, error) {

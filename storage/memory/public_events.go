@@ -1,0 +1,144 @@
+package memory
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"sync"
+
+	"accounting_engine/pkg/api/v1/ledger"
+	"accounting_engine/pkg/sdk"
+
+	"github.com/google/uuid"
+)
+
+type publicEventIngestionKey struct {
+	companyID uuid.UUID
+	key       string
+}
+
+type publicEventMappingKey struct {
+	companyID uuid.UUID
+	eventType string
+	ledgerID  string
+}
+
+type publicEventState struct {
+	ingestions map[publicEventIngestionKey]sdk.PublicEventIngestion
+	mappings   map[publicEventMappingKey]sdk.PublicEventAccountMapping
+}
+
+var (
+	publicEventMu     sync.Mutex
+	publicEventByDrv  = map[*Driver]*publicEventState{}
+)
+
+func (d *Driver) publicEventState() *publicEventState {
+	publicEventMu.Lock()
+	defer publicEventMu.Unlock()
+	st, ok := publicEventByDrv[d]
+	if !ok {
+		st = &publicEventState{
+			ingestions: map[publicEventIngestionKey]sdk.PublicEventIngestion{},
+			mappings:   map[publicEventMappingKey]sdk.PublicEventAccountMapping{},
+		}
+		publicEventByDrv[d] = st
+	}
+	return st
+}
+
+func (d *Driver) GetPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string) (sdk.PublicEventIngestion, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.PublicEventIngestion{}, false, err
+	}
+	st := d.publicEventState()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rec, ok := st.ingestions[publicEventIngestionKey{companyID: companyID, key: strings.TrimSpace(idempotencyKey)}]
+	return rec, ok, nil
+}
+
+func (d *Driver) ClaimPublicEventIngestion(ctx context.Context, record sdk.PublicEventIngestion) (sdk.PublicEventIngestion, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.PublicEventIngestion{}, false, err
+	}
+	key := strings.TrimSpace(record.IdempotencyKey)
+	record.IdempotencyKey = key
+	if record.Status == "" {
+		record.Status = "processing"
+	}
+	st := d.publicEventState()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	k := publicEventIngestionKey{companyID: record.CompanyID, key: key}
+	if existing, ok := st.ingestions[k]; ok {
+		return existing, false, nil
+	}
+	st.ingestions[k] = record
+	return record, true, nil
+}
+
+func (d *Driver) CompletePublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string, entry ledger.JournalEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	st := d.publicEventState()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	k := publicEventIngestionKey{companyID: companyID, key: strings.TrimSpace(idempotencyKey)}
+	rec, ok := st.ingestions[k]
+	if !ok {
+		return context.Canceled
+	}
+	rec.Status = "processed"
+	rec.EntryID = uuid.UUID(entry.ID)
+	rec.Entry = entry
+	st.ingestions[k] = rec
+	return nil
+}
+
+func (d *Driver) FailPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	st := d.publicEventState()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	k := publicEventIngestionKey{companyID: companyID, key: strings.TrimSpace(idempotencyKey)}
+	rec, ok := st.ingestions[k]
+	if !ok {
+		return nil
+	}
+	rec.Status = "failed"
+	st.ingestions[k] = rec
+	_ = reason
+	return nil
+}
+
+func (d *Driver) GetPublicEventAccountMapping(ctx context.Context, companyID uuid.UUID, eventType, ledgerID string) (sdk.PublicEventAccountMapping, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.PublicEventAccountMapping{}, false, err
+	}
+	st := d.publicEventState()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	m, ok := st.mappings[publicEventMappingKey{companyID: companyID, eventType: strings.TrimSpace(eventType), ledgerID: strings.TrimSpace(ledgerID)}]
+	return m, ok, nil
+}
+
+func (d *Driver) SavePublicEventAccountMapping(ctx context.Context, mapping sdk.PublicEventAccountMapping) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	st := d.publicEventState()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	st.mappings[publicEventMappingKey{companyID: mapping.CompanyID, eventType: strings.TrimSpace(mapping.EventType), ledgerID: strings.TrimSpace(mapping.LedgerID)}] = mapping
+	_ = json.RawMessage{}
+	return nil
+}
+
+var (
+	_ sdk.PublicEventIdempotencyStore = (*Driver)(nil)
+	_ sdk.PublicEventMappingStore     = (*Driver)(nil)
+)
