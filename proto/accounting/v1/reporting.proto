@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "accounting_engine/proto/accounting/v1;accountingv1";
+
+service ReportingService {
+  rpc GetBalanceSheet (GetBalanceSheetRequest) returns (GetBalanceSheetResponse);
+  rpc GetIncomeStatement (GetIncomeStatementRequest) returns (GetIncomeStatementResponse);
+}
+
+message GetBalanceSheetRequest {
+  string company_id = 1;
+  string as_of_date = 2;
+  string currency = 3;
+}
+
+message GetBalanceSheetResponse {
+  string company_id = 1;
+  bool success = 2;
+}
+
+message GetIncomeStatementRequest {
+  string company_id = 1;
+  string start_date = 2;
+  string end_date = 3;
+  string currency = 4;
+}
+
+message GetIncomeStatementResponse {
+  string company_id = 1;
+  bool success = 2;
+}

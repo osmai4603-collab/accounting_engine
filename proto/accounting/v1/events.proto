@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "accounting_engine/proto/accounting/v1;accountingv1";
+
+service EventService {
+  rpc ProcessEvent (ProcessEventRequest) returns (ProcessEventResponse);
+}
+
+message ProcessEventRequest {
+  string event_id = 1;
+  string event_type = 2;
+  string company_id = 3;
+  string effective_date = 4;
+  string amount = 5;
+  string currency = 6;
+  string idempotency_key = 7;
+}
+
+message ProcessEventResponse {
+  string entry_id = 1;
+  string status = 2;
+}

@@ -8,6 +8,7 @@ import (
 	"accounting_engine/internal/governance"
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
 	"accounting_engine/pkg/api/v1/types"
@@ -47,7 +48,7 @@ func (d *Driver) SaveEntry(ctx context.Context, entry ledger.JournalEntry) error
 }
 
 func (d *Driver) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	pEntry, err := d.GetEntryByIDForCompany(ctx, companyID, entryID)
+	pEntry, err := d.GetEntryByIDForCompany(ctx, uuid.UUID(companyID), uuid.UUID(entryID))
 	if err != nil {
 		return ledger.JournalEntry{}, err
 	}
@@ -55,7 +56,6 @@ func (d *Driver) GetEntry(ctx context.Context, companyID types.CompanyID, entryI
 }
 
 func (d *Driver) PostEntry(ctx context.Context, entry ledger.JournalEntry) error {
-	// Verify double entry balance invariant
 	var totalDebit, totalCredit decimal.Decimal
 	for _, line := range entry.Lines {
 		totalDebit = totalDebit.Add(line.FunctionalDebit.Amount())
@@ -78,96 +78,100 @@ func (d *Driver) PostEntry(ctx context.Context, entry ledger.JournalEntry) error
 func (d *Driver) GetAccount(ctx context.Context, companyID types.CompanyID, accountID types.AccountID) (ledger.Account, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	acc, ok := d.accounts[accountID]
-	if !ok || acc.CompanyID != companyID {
+	acc, ok := d.accounts[uuid.UUID(accountID)]
+	if !ok || acc.CompanyID != uuid.UUID(companyID) {
 		return ledger.Account{}, masterdata.ErrAccountNotFound
 	}
+	var parentID *types.AccountID
+	if acc.ParentID != nil {
+		pid := types.AccountID(*acc.ParentID)
+		parentID = &pid
+	}
 	return ledger.Account{
-		ID:                acc.ID,
-		CompanyID:         acc.CompanyID,
+		ID:                types.AccountID(acc.ID),
+		CompanyID:         types.CompanyID(acc.CompanyID),
 		Code:              acc.Code,
 		Name:              acc.Name,
-		Type:              ledger.AccountType(acc.Type),
-		SubClassification: acc.SubClassification,
+		Type:              ledger.AccountType(acc.AccountType),
 		NormalBalance:     ledger.NormalBalance(acc.NormalBalance),
-		ParentID:          acc.ParentID,
+		ParentID:          parentID,
 		IsReconcilable:    acc.IsReconcilable,
-		IsActive:          acc.IsActive,
-		Currency:          acc.Currency,
+		IsActive:          true,
+		Currency:          acc.CurrencyID,
 	}, nil
 }
 
 func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID, periodID types.FiscalPeriodID) (ledger.FiscalPeriod, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	p, ok := d.periods[periodID]
-	if !ok || p.CompanyID != companyID {
+	p, ok := d.periods[uuid.UUID(periodID)]
+	if !ok || p.CompanyID != uuid.UUID(companyID) {
 		return ledger.FiscalPeriod{}, errors.New("fiscal period not found")
 	}
 	return ledger.FiscalPeriod{
-		ID:           p.ID,
-		CompanyID:    p.CompanyID,
-		FiscalYearID: p.FiscalYearID,
-		Number:       p.Number,
-		Name:         p.Name,
-		StartDate:    p.StartDate,
-		EndDate:      p.EndDate,
-		State:        ledger.PeriodState(p.State),
-		Type:         ledger.FiscalPeriodType(p.Type),
+		ID:        types.FiscalPeriodID(p.ID),
+		CompanyID: types.CompanyID(p.CompanyID),
+		StartDate: p.StartDate,
+		EndDate:   p.EndDate,
+		State:     ledger.PeriodOpen,
+		Type:      ledger.FiscalPeriodTypeNormal,
 	}, nil
 }
 
 func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	lines := []reporting.TrialBalanceLine{}
-	var totalDebit, totalCredit types.Money
-	totD, _ := types.NewMoney(decimal.Zero, currency)
-	totC, _ := types.NewMoney(decimal.Zero, currency)
-	totalDebit = totD
-	totalCredit = totC
-
+	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
 	return reporting.TrialBalance{
-		CompanyID:    companyID,
-		AsOf:         asOf,
-		Currency:     currency,
-		Lines:        lines,
-		TotalDebit:   totalDebit,
-		TotalCredit:  totalCredit,
-		IsBalanced:   true,
+		CompanyID:   companyID,
+		AsOfDate:    asOf,
+		Currency:    currency,
+		Lines:       []reporting.TrialBalanceLine{},
+		TotalDebit:  zeroMoney,
+		TotalCredit: zeroMoney,
+		IsBalanced:  true,
 	}, nil
 }
 
 func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	zeroMoney, _ := types.NewMoney(decimal.Zero, "USD")
 	return reporting.GeneralLedgerReport{
-		CompanyID: companyID,
-		AccountID: accountID,
-		Start:     start,
-		End:       end,
-		Lines:     []reporting.GeneralLedgerLine{},
+		CompanyID:      companyID,
+		AccountID:      accountID,
+		StartDate:      start,
+		EndDate:        end,
+		OpeningBalance: zeroMoney,
+		Entries:        []reporting.GeneralLedgerEntry{},
+		EndingBalance:  zeroMoney,
 	}, nil
 }
 
 func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
 	return reporting.BalanceSheetReport{
-		CompanyID: companyID,
-		AsOf:      asOf,
-		Currency:  currency,
+		CompanyID:       companyID,
+		AsOfDate:        asOf,
+		Currency:        currency,
+		TotalAssets:     zeroMoney,
+		TotalLiabEquity: zeroMoney,
+		IsBalanced:      true,
 	}, nil
 }
 
 func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
 	return reporting.IncomeStatementReport{
 		CompanyID: companyID,
-		Start:     start,
-		End:       end,
+		StartDate: start,
+		EndDate:   end,
 		Currency:  currency,
+		NetIncome: zeroMoney,
 	}, nil
 }
 
@@ -191,20 +195,13 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		fcAmount := l.FunctionalCredit.Amount()
 		tAmount := l.TransactionAmount.Amount()
 
-		fd, _ := masterdata.NewMoney(fdAmount, l.FunctionalDebit.Currency())
-		fc, _ := masterdata.NewMoney(fcAmount, l.FunctionalCredit.Currency())
-		ta, _ := masterdata.NewMoney(tAmount, l.TransactionCurrency)
+		fd, _ := financialtypes.NewMoney(fdAmount, l.FunctionalDebit.Currency())
+		fc, _ := financialtypes.NewMoney(fcAmount, l.FunctionalCredit.Currency())
+		ta, _ := financialtypes.NewMoney(tAmount, l.TransactionCurrency)
 
 		lines[i] = posting.JournalEntryLine{
 			ID:                  uuid.UUID(l.ID),
 			AccountID:           uuid.UUID(l.AccountID),
-			PartnerID:           (*uuid.UUID)(l.PartnerID),
-			CostCenterID:        (*uuid.UUID)(l.CostCenterID),
-			ProjectID:           (*uuid.UUID)(l.ProjectID),
-			SegmentID:           (*uuid.UUID)(l.SegmentID),
-			BusinessUnitID:      (*uuid.UUID)(l.BusinessUnitID),
-			MatchingNumber:      l.MatchingNumber,
-			ReconciledAmount:    l.ReconciledAmount,
 			TransactionAmount:   ta,
 			TransactionCurrency: l.TransactionCurrency,
 			ExchangeRate:        l.ExchangeRate,
@@ -213,31 +210,23 @@ func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {
 		}
 	}
 
-	var revID uuid.UUID
+	var revID *uuid.UUID
 	if e.ReversalOfID != nil {
-		revID = uuid.UUID(*e.ReversalOfID)
+		id := uuid.UUID(*e.ReversalOfID)
+		revID = &id
 	}
 
 	return posting.JournalEntry{
-		ID:                  uuid.UUID(e.ID),
-		CompanyID:           uuid.UUID(e.CompanyID),
-		FiscalPeriodID:      uuid.UUID(e.FiscalPeriodID),
-		EntryNumber:         e.EntryNumber,
-		Status:              posting.EntryStatus(e.Status),
-		Classification:      posting.EntryClassification(e.Classification),
-		EffectiveDate:       e.EffectiveDate,
-		EntryDate:           e.EffectiveDate,
-		PostingDate:         e.PostingDate,
-		Description:         e.Description,
-		SourceModule:        e.SourceModule,
-		ReferenceID:         e.ReferenceID,
-		TransactionCurrency: e.TransactionCurrency,
-		ExchangeRate:        e.ExchangeRate,
-		Lines:               lines,
-		CreatedBy:           e.CreatedBy,
-		ApprovedBy:          e.ApprovedBy,
-		ApprovalFingerprint: e.ApprovalFingerprint,
-		ReversalOfID:        revID,
+		ID:              uuid.UUID(e.ID),
+		CompanyID:       uuid.UUID(e.CompanyID),
+		PeriodID:        uuid.UUID(e.FiscalPeriodID),
+		EntryDate:       e.EffectiveDate,
+		Date:            e.EffectiveDate,
+		Status:          posting.EntryStatus(e.Status),
+		Classification:  posting.EntryClassification(e.Classification),
+		CreatedBy:       e.CreatedBy,
+		ReversedEntryID: revID,
+		Lines:           lines,
 	}
 }
 
@@ -251,13 +240,6 @@ func mapPostingToLedger(e posting.JournalEntry) ledger.JournalEntry {
 		lines[i] = ledger.EntryLine{
 			ID:                  types.AccountID(l.ID),
 			AccountID:           types.AccountID(l.AccountID),
-			PartnerID:           (*types.CompanyID)(l.PartnerID),
-			CostCenterID:        (*types.CompanyID)(l.CostCenterID),
-			ProjectID:           (*types.CompanyID)(l.ProjectID),
-			SegmentID:           (*types.CompanyID)(l.SegmentID),
-			BusinessUnitID:      (*types.CompanyID)(l.BusinessUnitID),
-			MatchingNumber:      l.MatchingNumber,
-			ReconciledAmount:    l.ReconciledAmount,
 			TransactionAmount:   ta,
 			TransactionCurrency: l.TransactionCurrency,
 			ExchangeRate:        l.ExchangeRate,
@@ -267,29 +249,21 @@ func mapPostingToLedger(e posting.JournalEntry) ledger.JournalEntry {
 	}
 
 	var revID *types.JournalEntryID
-	if e.ReversalOfID != uuid.Nil {
-		id := types.JournalEntryID(e.ReversalOfID)
+	if e.ReversedEntryID != nil {
+		id := types.JournalEntryID(*e.ReversedEntryID)
 		revID = &id
 	}
 
 	return ledger.JournalEntry{
-		ID:                  types.JournalEntryID(e.ID),
-		CompanyID:           types.CompanyID(e.CompanyID),
-		FiscalPeriodID:      types.FiscalPeriodID(e.FiscalPeriodID),
-		EntryNumber:         e.EntryNumber,
-		Status:              ledger.EntryStatus(e.Status),
-		Classification:      ledger.EntryClassification(e.Classification),
-		EffectiveDate:       e.EffectiveDate,
-		PostingDate:         e.PostingDate,
-		Description:         e.Description,
-		SourceModule:        e.SourceModule,
-		ReferenceID:         e.ReferenceID,
-		TransactionCurrency: e.TransactionCurrency,
-		ExchangeRate:        e.ExchangeRate,
-		Lines:               lines,
-		CreatedBy:           e.CreatedBy,
-		ApprovedBy:          e.ApprovedBy,
-		ApprovalFingerprint: e.ApprovalFingerprint,
-		ReversalOfID:        revID,
+		ID:             types.JournalEntryID(e.ID),
+		CompanyID:      types.CompanyID(e.CompanyID),
+		FiscalPeriodID: types.FiscalPeriodID(e.PeriodID),
+		Status:         ledger.EntryStatus(e.Status),
+		Classification: ledger.EntryClassification(e.Classification),
+		EffectiveDate:  e.EntryDate,
+		PostingDate:    e.Date,
+		CreatedBy:      e.CreatedBy,
+		ReversalOfID:   revID,
+		Lines:          lines,
 	}
 }

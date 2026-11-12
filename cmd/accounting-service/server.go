@@ -4,8 +4,13 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
+	"accounting_engine/pkg/api/v1/events"
+	"accounting_engine/pkg/api/v1/ledger"
+	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
+	"github.com/google/uuid"
 )
 
 type Server struct {
@@ -30,6 +35,7 @@ func RunServer(cfg Config, engine sdk.Engine) error {
 	})
 	mux.HandleFunc("/api/v1/entries", srv.handleEntries)
 	mux.HandleFunc("/api/v1/trial-balance", srv.handleTrialBalance)
+	mux.HandleFunc("/api/v1/events", srv.handleEvents)
 
 	addr := ":" + cfg.HTTPPort
 	log.Printf("Starting Standalone Accounting Service HTTP Daemon on %s", addr)
@@ -41,11 +47,19 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	var entry ledger.JournalEntry
+	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	posted, err := s.engine.Ledger().PostEntry(r.Context(), entry)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":   "success",
-		"entry_id": "entry-stub-001",
-	})
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(posted)
 }
 
 func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
@@ -53,10 +67,37 @@ func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	companyIDStr := r.URL.Query().Get("company_id")
+	currency := r.URL.Query().Get("currency")
+	if currency == "" {
+		currency = "USD"
+	}
+	companyID := types.CompanyID(uuid.MustParse(companyIDStr))
+	tb, err := s.engine.Reporting().GetTrialBalance(r.Context(), companyID, time.Now().UTC(), currency)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"company_id":  r.URL.Query().Get("company_id"),
-		"is_balanced": true,
-		"lines":       []any{},
-	})
+	_ = json.NewEncoder(w).Encode(tb)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var ev events.AccountingEvent
+	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	entry, err := s.engine.Events().ProcessEvent(r.Context(), ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(entry)
 }

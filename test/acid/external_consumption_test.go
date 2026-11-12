@@ -8,35 +8,18 @@ import (
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
-	"accounting_engine/pkg/spi/storage"
+	"accounting_engine/storage/memory"
+	"github.com/shopspring/decimal"
 )
-
-type acidCoreStore struct {
-	storage.CoreLedgerStore
-	entries map[types.JournalEntryID]ledger.JournalEntry
-}
-
-func (s *acidCoreStore) PostEntry(ctx context.Context, entry ledger.JournalEntry) error {
-	if s.entries == nil {
-		s.entries = make(map[types.JournalEntryID]ledger.JournalEntry)
-	}
-	s.entries[entry.ID] = entry
-	return nil
-}
-
-func (s *acidCoreStore) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	if entry, ok := s.entries[entryID]; ok {
-		return entry, nil
-	}
-	return ledger.JournalEntry{}, types.ErrAccountNotFound
-}
 
 func TestExternalConsumption(t *testing.T) {
 	ctx := context.Background()
-	store := &acidCoreStore{}
+	store := memory.New()
 
 	engine, err := sdk.NewBuilder(
 		sdk.WithCoreStorage(store),
+		sdk.WithReporting(store),
+		sdk.WithGovernance(store),
 	).Build(ctx)
 	if err != nil {
 		t.Fatalf("External consumption build failed: %v", err)
@@ -47,6 +30,8 @@ func TestExternalConsumption(t *testing.T) {
 	entryID := types.NewJournalEntryID()
 
 	amt, _ := types.NewMoneyFromString("100.00", "USD")
+	zeroAmt, _ := types.NewMoneyFromString("0.00", "USD")
+
 	entry := ledger.JournalEntry{
 		ID:            entryID,
 		CompanyID:     companyID,
@@ -54,8 +39,24 @@ func TestExternalConsumption(t *testing.T) {
 		EffectiveDate: time.Now().UTC(),
 		Description:   "External consumption test entry",
 		Lines: []ledger.EntryLine{
-			{ID: types.NewAccountID(), AccountID: types.NewAccountID(), FunctionalDebit: amt, TransactionAmount: amt, TransactionCurrency: "USD"},
-			{ID: types.NewAccountID(), AccountID: types.NewAccountID(), FunctionalCredit: amt, TransactionAmount: amt, TransactionCurrency: "USD"},
+			{
+				ID:                  types.NewAccountID(),
+				AccountID:           types.NewAccountID(),
+				TransactionAmount:   amt,
+				TransactionCurrency: "USD",
+				ExchangeRate:        decimal.NewFromInt(1),
+				FunctionalDebit:     amt,
+				FunctionalCredit:    zeroAmt,
+			},
+			{
+				ID:                  types.NewAccountID(),
+				AccountID:           types.NewAccountID(),
+				TransactionAmount:   amt,
+				TransactionCurrency: "USD",
+				ExchangeRate:        decimal.NewFromInt(1),
+				FunctionalDebit:     zeroAmt,
+				FunctionalCredit:    amt,
+			},
 		},
 	}
 
@@ -71,5 +72,21 @@ func TestExternalConsumption(t *testing.T) {
 
 	if fetched.ID != entryID {
 		t.Fatalf("Expected retrieved entry ID to match")
+	}
+
+	reversal, err := engine.Ledger().ReverseEntry(ctx, companyID, posted.ID, "Testing reversal")
+	if err != nil {
+		t.Fatalf("Failed to reverse entry: %v", err)
+	}
+	if reversal.ReversalOfID == nil || *reversal.ReversalOfID != entryID {
+		t.Fatalf("Expected reversal reference to match original entry ID")
+	}
+
+	tb, err := engine.Reporting().GetTrialBalance(ctx, companyID, time.Now().UTC(), "USD")
+	if err != nil {
+		t.Fatalf("Failed to generate trial balance: %v", err)
+	}
+	if tb.CompanyID != companyID {
+		t.Fatalf("Trial balance company ID mismatch")
 	}
 }

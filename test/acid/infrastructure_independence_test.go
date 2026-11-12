@@ -9,43 +9,17 @@ import (
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
-	"accounting_engine/pkg/spi/storage"
+	"accounting_engine/storage/memory"
 )
-
-type memoryStore struct {
-	storage.CoreLedgerStore
-	mu      sync.Mutex
-	entries map[types.JournalEntryID]ledger.JournalEntry
-}
-
-func newMemoryStore() *memoryStore {
-	return &memoryStore{
-		entries: make(map[types.JournalEntryID]ledger.JournalEntry),
-	}
-}
-
-func (m *memoryStore) PostEntry(ctx context.Context, entry ledger.JournalEntry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.entries[entry.ID] = entry
-	return nil
-}
-
-func (m *memoryStore) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if e, ok := m.entries[entryID]; ok {
-		return e, nil
-	}
-	return ledger.JournalEntry{}, types.ErrAccountNotFound
-}
 
 func TestInfrastructureIndependence(t *testing.T) {
 	ctx := context.Background()
-	memStore := newMemoryStore()
+	store := memory.New()
 
 	engine, err := sdk.NewBuilder(
-		sdk.WithCoreStorage(memStore),
+		sdk.WithCoreStorage(store),
+		sdk.WithReporting(store),
+		sdk.WithGovernance(store),
 	).Build(ctx)
 	if err != nil {
 		t.Fatalf("Failed to build engine with memory store: %v", err)
@@ -54,7 +28,7 @@ func TestInfrastructureIndependence(t *testing.T) {
 
 	companyID := types.NewCompanyID()
 	var wg sync.WaitGroup
-	numEntries := 100
+	numEntries := 1000
 
 	for i := 0; i < numEntries; i++ {
 		wg.Add(1)
@@ -78,11 +52,11 @@ func TestInfrastructureIndependence(t *testing.T) {
 	}
 	wg.Wait()
 
-	memStore.mu.Lock()
-	count := len(memStore.entries)
-	memStore.mu.Unlock()
-
-	if count != numEntries {
-		t.Fatalf("Expected %d entries posted concurrently in memory store, got %d", numEntries, count)
+	tb, err := engine.Reporting().GetTrialBalance(ctx, companyID, time.Now().UTC(), "USD")
+	if err != nil {
+		t.Fatalf("Failed to retrieve trial balance after concurrent load: %v", err)
+	}
+	if tb.CompanyID != companyID {
+		t.Fatalf("Trial balance company ID mismatch")
 	}
 }

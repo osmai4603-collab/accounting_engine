@@ -36,6 +36,14 @@ func (m *mockStandard) ValidateDependencies(ports storage.CoreLedgerStore) error
 	return m.err
 }
 
+func (m *mockStandard) RegisterRules(router interface{}) error {
+	return nil
+}
+
+func (m *mockStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+	return nil
+}
+
 func TestBuilder_FailFast(t *testing.T) {
 	ctx := context.Background()
 	engine, err := NewBuilder().Build(ctx)

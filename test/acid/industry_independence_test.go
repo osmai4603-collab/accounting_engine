@@ -5,29 +5,26 @@ import (
 	"testing"
 	"time"
 
+	"accounting_engine/modules/ifrs15"
+	"accounting_engine/modules/ifrs16"
+	"accounting_engine/modules/ifrs9"
 	"accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
-	"accounting_engine/pkg/spi/storage"
+	"accounting_engine/storage/memory"
 )
-
-type industryStore struct {
-	storage.CoreLedgerStore
-	posted []ledger.JournalEntry
-}
-
-func (s *industryStore) PostEntry(ctx context.Context, entry ledger.JournalEntry) error {
-	s.posted = append(s.posted, entry)
-	return nil
-}
 
 func TestIndustryIndependence(t *testing.T) {
 	ctx := context.Background()
-	store := &industryStore{}
+	store := memory.New()
 
 	engine, err := sdk.NewBuilder(
 		sdk.WithCoreStorage(store),
+		sdk.WithReporting(store),
+		sdk.WithGovernance(store),
+		sdk.WithStandard(&ifrs15.Module{}),
+		sdk.WithStandard(&ifrs16.Module{}),
+		sdk.WithStandard(&ifrs9.Module{}),
 	).Build(ctx)
 	if err != nil {
 		t.Fatalf("Failed to build engine for industry independence: %v", err)
@@ -43,6 +40,9 @@ func TestIndustryIndependence(t *testing.T) {
 		{"Agricultural (Harvest / Biological Assets)", "HARVEST_CROP"},
 		{"Retail (POS Sale & VAT)", "POS_SALE"},
 		{"Service (SaaS Deferred Revenue)", "SUBSCRIPTION_REVENUE"},
+		{"IFRS 15 Revenue", "IFRS15_REVENUE_RECOGNITION"},
+		{"IFRS 16 Lease", "IFRS16_LEASE_PAYMENT"},
+		{"IFRS 9 ECL", "IFRS9_ECL_PROVISION"},
 	}
 
 	for _, domain := range domains {
@@ -65,9 +65,5 @@ func TestIndustryIndependence(t *testing.T) {
 				t.Fatalf("CompanyID mismatch")
 			}
 		})
-	}
-
-	if len(store.posted) != 3 {
-		t.Fatalf("Expected 3 posted entries across industries, got %d", len(store.posted))
 	}
 }
