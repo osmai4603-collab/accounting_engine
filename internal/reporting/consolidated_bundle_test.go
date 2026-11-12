@@ -1,4 +1,4 @@
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -8,8 +8,10 @@ import (
 
 	"accounting_engine/internal/consolidation"
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/valuation"
 	"accounting_engine/storage/memory"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -75,7 +77,7 @@ func TestGenerateConsolidatedBuildsScopedTrialBalances(t *testing.T) {
 			NCIAccountID: "nci", ParentRetainedEarningsAccountID: "parent-retained",
 		}},
 	}
-	engine := NewBundleEngine(repository)
+	engine := reporting.NewBundleEngine(repository)
 	engine.SetConsolidationAccessChecker(allowConsolidation{})
 	bundle, err := engine.GenerateConsolidated(ctx, group)
 	if err != nil {
@@ -91,15 +93,34 @@ func TestGenerateConsolidatedFailsClosedWithoutAuthorization(t *testing.T) {
 	group := consolidation.Group{
 		ID: "group", Entities: []consolidation.Entity{{ID: uuid.NewString(), FunctionalCurrency: "USD"}},
 	}
-	_, err := NewBundleEngine(memory.New()).GenerateConsolidated(context.Background(), group)
-	if !errors.Is(err, ErrConsolidationAccessCheckerRequired) {
+	_, err := reporting.NewBundleEngine(memory.New()).GenerateConsolidated(context.Background(), group)
+	if !errors.Is(err, reporting.ErrConsolidationAccessCheckerRequired) {
 		t.Fatalf("missing authorization error = %v", err)
 	}
 	denied := errors.New("not authorized")
-	engine := NewBundleEngine(memory.New())
+	engine := reporting.NewBundleEngine(memory.New())
 	engine.SetConsolidationAccessChecker(allowConsolidation{err: denied})
 	_, err = engine.GenerateConsolidated(context.Background(), group)
 	if !errors.Is(err, denied) {
 		t.Fatalf("denied authorization error = %v", err)
 	}
+}
+
+
+func reportAccount(id uuid.UUID, code, name string, accountType masterdata.AccountType, classification string) masterdata.Account {
+	account := masterdata.Account{
+		ID: id, Code: code, Name: name, AccountType: accountType,
+		NormalBalance: masterdata.DefaultNormalBalance(accountType), SubClassification: classification,
+	}
+	switch accountType {
+	case masterdata.AccountTypeIncome, masterdata.AccountTypeExpense:
+		account.IFRSCategory = masterdata.IFRSCategoryOperating
+		account.CashFlowActivity = masterdata.CashFlowOperating
+	case masterdata.AccountTypeEquity:
+		account.IFRSCategory = masterdata.IFRSCategoryBalanceSheetPerpetual
+		account.CashFlowActivity = masterdata.CashFlowFinancing
+	case masterdata.AccountTypeAsset:
+		account.IFRSCategory = masterdata.IFRSCategoryBalanceSheetPerpetual
+	}
+	return account
 }

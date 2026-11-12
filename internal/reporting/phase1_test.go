@@ -1,4 +1,4 @@
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/valuation"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )

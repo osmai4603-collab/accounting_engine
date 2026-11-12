@@ -6,7 +6,7 @@
 //
 // They are expected to FAIL until P2-T1/P2-T2 make fiscal-year confirmation
 // content-aware and atomic.
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+
 	"github.com/google/uuid"
 )
 

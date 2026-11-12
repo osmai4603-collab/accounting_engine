@@ -1,4 +1,4 @@
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -9,7 +9,9 @@ import (
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/storage/memory"
+
 	"github.com/google/uuid"
 )
 
@@ -100,13 +102,13 @@ func BenchmarkTrialBalanceMaterialized10KAccounts(b *testing.B) {
 
 	for _, benchmark := range []struct {
 		name string
-		repo Repository
+		repo reporting.Repository
 	}{
 		{name: "materialized", repo: driver},
 		{name: "historical_aggregation", repo: historicalOnlyBenchmarkRepository{Driver: driver}},
 	} {
 		b.Run(benchmark.name, func(b *testing.B) {
-			engine := NewTrialBalanceEngine(benchmark.repo)
+			engine := reporting.NewTrialBalanceEngine(benchmark.repo)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {

@@ -1,4 +1,4 @@
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/subledgers"
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/internal/valuation"
 	"accounting_engine/storage/memory"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -375,7 +377,7 @@ func (r *memoryRepository) GetEntryByIDForCompanyContext(ctx context.Context, co
 	return posting.JournalEntry{}, posting.ErrEntryNotFound
 }
 
-func trialBalancesEqual(left, right TrialBalance) bool {
+func trialBalancesEqual(left, right reporting.TrialBalance) bool {
 	if !left.StartDate.Equal(right.StartDate) || !left.EndDate.Equal(right.EndDate) ||
 		left.Currency != right.Currency || left.IsAdjusted != right.IsAdjusted ||
 		!left.DebitTotal.Equal(right.DebitTotal) || !left.CreditTotal.Equal(right.CreditTotal) ||
