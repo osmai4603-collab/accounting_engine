@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"accounting_engine/internal/observability"
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
@@ -115,6 +116,7 @@ type ApprovalEngine struct {
 	authorizer *Authorizer
 	audit      ApprovalAuditWriter
 	matrix     []ApprovalRule
+	metrics    *observability.Metrics
 }
 
 type ApprovalRule struct {
@@ -141,6 +143,11 @@ func NewApprovalEngineWithMatrix(repository ApprovalRepository, authorizer *Auth
 		}
 	}
 	return &ApprovalEngine{repository: repository, authorizer: authorizer, audit: audit, matrix: copied}
+}
+
+// SetMetrics attaches the maker-checker pending gauge to the approval engine.
+func (e *ApprovalEngine) SetMetrics(metrics *observability.Metrics) {
+	e.metrics = metrics
 }
 
 func (e *ApprovalEngine) Start(ctx context.Context, companyID, entryID, creatorID uuid.UUID, journalType string, amount financialtypes.Money, at time.Time) (ApprovalRequest, error) {
@@ -191,6 +198,7 @@ func (e *ApprovalEngine) Start(ctx context.Context, companyID, entryID, creatorI
 	if err := e.repository.SaveApproval(ctx, request); err != nil {
 		return ApprovalRequest{}, err
 	}
+	e.metrics.IncMakerCheckerPending()
 	return request, nil
 }
 
@@ -304,6 +312,9 @@ func (e *ApprovalEngine) Approve(ctx context.Context, companyID, approvalID, act
 	}
 	if err := repository.SaveApprovalWithAudit(ctx, request, actorID, step.Role, at); err != nil {
 		return ApprovalRequest{}, err
+	}
+	if request.CompletedAt != nil {
+		e.metrics.DecMakerCheckerPending()
 	}
 	return request, nil
 }

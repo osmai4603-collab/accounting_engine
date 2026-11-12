@@ -1,9 +1,13 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"accounting_engine/internal/observability"
 	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -89,13 +93,22 @@ func TestAnnotateQueryWithTraceparent(t *testing.T) {
 			query:    "SELECT 1;",
 			expected: "SELECT 1;",
 		},
+		{
+			name:     "invalid traceparent cannot inject a comment",
+			query:    "SELECT 1;",
+			expected: "SELECT 1;",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inputTp := tp
-			if tt.name == "empty traceparent leaves query unchanged" {
+			if tt.name == "empty traceparent leaves query unchanged" ||
+				tt.name == "invalid traceparent cannot inject a comment" {
 				inputTp = ""
+			}
+			if tt.name == "invalid traceparent cannot inject a comment" {
+				inputTp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01*/ DROP TABLE account_moves; --"
 			}
 			result := postgres.AnnotateQueryWithTraceparent(tt.query, inputTp)
 			if result != tt.expected {
@@ -156,6 +169,73 @@ func TestPostgresSessionTraceparentPropagation(t *testing.T) {
 		}
 		if sessionTp != "" {
 			t.Fatalf("expected empty session traceparent, got: %q", sessionTp)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTraceparentMatchesApplicationLogAndDatabaseQuery proves the Phase 6
+// acceptance criterion: the trace-id emitted by the structured application log,
+// the PostgreSQL session setting, and the SQL query comment are the same W3C
+// trace-id.
+func TestTraceparentMatchesApplicationLogAndDatabaseQuery(t *testing.T) {
+	ctx := context.Background()
+	driver, err := newIsolatedPostgresDriver(t, ctx)
+	if err != nil {
+		t.Skipf("isolated PostgreSQL schema unavailable: %v", err)
+	}
+
+	companyID, entryID := uuid.New(), uuid.New()
+	tp, err := postgres.GenerateTraceparent(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracedCtx := observability.WithFinancialScope(ctx, companyID, entryID, tp)
+
+	var logBuffer bytes.Buffer
+	logger := observability.NewLogger(&logBuffer, nil)
+	logger.InfoContext(tracedCtx, "financial query executed")
+
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logBuffer.Bytes()), &record); err != nil {
+		t.Fatalf("decode application log: %v", err)
+	}
+	appTraceID, _ := record["trace_id"].(string)
+	if appTraceID == "" {
+		t.Fatal("application log did not include trace_id")
+	}
+	if record["company_id"] != companyID.String() || record["entry_id"] != entryID.String() {
+		t.Fatalf("application log correlation ids = %v / %v", record["company_id"], record["entry_id"])
+	}
+
+	err = driver.WithCompanyTx(tracedCtx, companyID, func(tx pgx.Tx) error {
+		sessionTraceparent, err := driver.CurrentSessionTraceparent(tracedCtx, tx)
+		if err != nil {
+			return err
+		}
+		if sessionTraceparent != tp {
+			t.Fatalf("database session traceparent = %q, want %q", sessionTraceparent, tp)
+		}
+		if observability.TraceIDFromTraceparent(sessionTraceparent) != appTraceID {
+			t.Fatalf("database trace id = %q, application trace id = %q",
+				observability.TraceIDFromTraceparent(sessionTraceparent), appTraceID)
+		}
+
+		// The traced transaction rewrites the statement with a sqlcommenter
+		// annotation. current_query() returns exactly what PostgreSQL received,
+		// including the comment.
+		var currentQuery string
+		if err := tx.QueryRow(tracedCtx, "SELECT current_query()").Scan(&currentQuery); err != nil {
+			return err
+		}
+		if !strings.Contains(currentQuery, "/*traceparent='"+tp+"'*/") {
+			t.Fatalf("PostgreSQL did not receive the traceparent query comment: %q", currentQuery)
+		}
+		if !strings.Contains(currentQuery, appTraceID) {
+			t.Fatalf("PostgreSQL query comment does not carry the application trace id: %q", currentQuery)
 		}
 		return nil
 	})

@@ -29,9 +29,11 @@ func main() {
 	}
 }
 
+const commandUsage = "usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION] [--config PATH] | serve [--addr HOST:PORT]]"
+
 func run(args []string) error {
-	if len(args) < 2 {
-		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION] [--config PATH]]")
+	if len(args) < 1 {
+		return errors.New(commandUsage)
 	}
 
 	switch args[0] {
@@ -39,8 +41,10 @@ func run(args []string) error {
 		return runDB(args[1:])
 	case "ifrs":
 		return runIFRS(args[1:])
+	case "serve":
+		return runServe(args[1:])
 	default:
-		return errors.New("usage: agy [db migrate [up|down] [--steps N] | ifrs [daemon|run] [--interval DURATION] [--config PATH]]")
+		return errors.New(commandUsage)
 	}
 }
 

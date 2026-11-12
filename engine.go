@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"accounting_engine/internal/consolidation"
@@ -14,6 +15,7 @@ import (
 	"accounting_engine/internal/ifrs9"
 	"accounting_engine/internal/ifrsautomation"
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/observability"
 	"accounting_engine/internal/policy"
 	"accounting_engine/internal/posting"
 	"accounting_engine/internal/reporting"
@@ -31,6 +33,16 @@ type Config struct {
 	StrictGovernance bool
 	Standards        StandardsConfig
 	Policies         PolicyConfig
+	// Observability optionally supplies the structured logger and metrics
+	// registry used by the engine. A default metrics registry is always
+	// created so /metrics is never empty.
+	Observability *ObservabilityConfig
+}
+
+// ObservabilityConfig carries the deployment's logging and metrics handles.
+type ObservabilityConfig struct {
+	Logger  *slog.Logger
+	Metrics *observability.Metrics
 }
 
 // PolicyConfig enables policy enforcement using the optional policy storage
@@ -156,6 +168,7 @@ type AccountingEngine struct {
 	Policies      *policy.Unit
 	Dimensions    masterdata.FinancialDimensionRepository
 	Config        Config
+	Telemetry     *observability.Unit
 }
 
 func (e *AccountingEngine) GeneralLedger(
@@ -358,10 +371,20 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 	}
 
 	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(ports.MasterData))
+	telemetry := observability.NewUnit(observability.Config{})
+	if config.Observability != nil {
+		telemetry = observability.NewUnit(observability.Config{
+			Logger:  config.Observability.Logger,
+			Metrics: config.Observability.Metrics,
+		})
+	}
 	postingEngine := posting.NewEngine(ports.Posting, masterService)
+	postingEngine.SetObservability(telemetry.Logger, telemetry.Metrics)
 	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(ports.Posting))
 	reportingEngine := reporting.NewEngine(ports.Reporting)
+	reportingEngine.Reconciliation.SetMetrics(telemetry.Metrics)
 	governanceEngine := governance.NewEngine(ports.Governance)
+	governanceEngine.SetMetrics(telemetry.Metrics)
 	approvalGate := governanceEngine.ApprovalGate()
 	if approvalGate == nil && config.StrictGovernance {
 		approvalGate = &governance.ApprovalGate{}
@@ -410,6 +433,7 @@ func NewWithPorts(ports StoragePorts, config Config) (*AccountingEngine, error) 
 		Policies:      policyUnit,
 		Dimensions:    ports.MasterData,
 		Config:        config,
+		Telemetry:     telemetry,
 	}, nil
 }
 

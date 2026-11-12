@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 
+	"accounting_engine/internal/observability"
 	"accounting_engine/internal/posting"
 )
 
@@ -23,6 +24,14 @@ func NewEngine(repository Repository) *Engine {
 	}
 	engine.Approvals = NewApprovalEngine(approvals, authorizer, nil)
 	return engine
+}
+
+// SetMetrics attaches observability metrics to the governance subsystem.
+func (e *Engine) SetMetrics(metrics *observability.Metrics) {
+	if e == nil || e.Approvals == nil {
+		return
+	}
+	e.Approvals.SetMetrics(metrics)
 }
 
 // ApprovalGate returns the posting-boundary gate backed by this engine's

@@ -334,13 +334,14 @@ func (d *Driver) beginCompanyTx(ctx context.Context, companyID uuid.UUID) (pgx.T
 		}
 		return nil, err
 	}
-	if tp := TraceparentFromContext(ctx); tp != "" {
-		if _, err := tx.Exec(ctx, "SELECT set_config('app.traceparent', $1, true)", tp); err != nil {
+	traceparent := TraceparentFromContext(ctx)
+	if traceparent != "" {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.traceparent', $1, true)", traceparent); err != nil {
 			if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				return nil, errors.Join(err, fmt.Errorf("rollback traceparent context transaction: %w", rollbackErr))
 			}
 			return nil, err
 		}
 	}
-	return tx, nil
+	return newTracedTx(tx, traceparent), nil
 }

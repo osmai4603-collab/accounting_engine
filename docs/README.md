@@ -18,6 +18,7 @@
 | ------- | ------- |
 | [المعمارية القياسية للنواة المحاسبية](./financial_accounting_system_architecture.md) | وصف معمارية المحرك المطبقة (النواة، المحولات، التخزين) |
 | [الدليل المرجعي الموسوعي للقوائم المالية](./global_financial_statements_standards_reference.md) | قواعد المجال المحاسبي والمعايير العالمية (IFRS/GAAP) |
+| [البحث المرجعي الشامل في أنواع المعايير المحاسبية وأطرها](./accounting_standards_types_and_frameworks.md) | بحث مفصل وموثق من المصادر الرسمية لأنواع المعايير المحاسبية (IFRS, US GAAP, IPSAS, AAOIFI, ISSB, SOCPA, CASB) |
 | [التقرير الفني الشامل لتحليل محرك المحاسبة](./engine_errors_analysis.md) | كتالوج الأخطاء المكتشفة في المحرك وتحليلها |
 | [تقرير التحقق الميداني من المشكلات ومطابقة المعايير](./engine_problems_verification_and_standards_compliance.md) | مصفوفة الامتثال للمعايير ومقارنة الواقع بها |
 | [تقرير التحقق من الاختبارات ومستوى الثقة](./testing_confidence_report.md) | نتائج الاختبارات ومستوى الثقة في صحة المحرك |

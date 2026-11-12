@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"accounting_engine/internal/observability"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -73,10 +74,16 @@ func (r ReconciliationReport) Err() error {
 
 type BalanceReconciliationEngine struct {
 	repository Repository
+	metrics    *observability.Metrics
 }
 
 func NewBalanceReconciliationEngine(repository Repository) *BalanceReconciliationEngine {
 	return &BalanceReconciliationEngine{repository: repository}
+}
+
+// SetMetrics attaches the reconciliation discrepancy gauge.
+func (e *BalanceReconciliationEngine) SetMetrics(metrics *observability.Metrics) {
+	e.metrics = metrics
 }
 
 // Reconcile compares the materialized account_balances rows of a company,
@@ -101,8 +108,10 @@ func (e *BalanceReconciliationEngine) Reconcile(
 	if reporter, ok := e.repository.(BalanceReconciliationReporter); ok {
 		report, err := reporter.BuildBalanceReconciliationReport(ctx, companyID, fiscalPeriodID, currencyID)
 		if err != nil {
+			e.metrics.SetReconciliationDiscrepancyCount(1)
 			return ReconciliationReport{}, fmt.Errorf("reconcile account balances: %w", err)
 		}
+		e.metrics.SetReconciliationDiscrepancyCount(len(report.Drifts))
 		return report, report.Err()
 	}
 	repository, ok := e.repository.(BalanceReconciliationRepository)
@@ -110,8 +119,10 @@ func (e *BalanceReconciliationEngine) Reconcile(
 		return ReconciliationReport{}, ErrBalanceReconciliationUnavailable
 	}
 	if err := repository.AssertBalancesMatchMoves(ctx, companyID, fiscalPeriodID, currencyID); err != nil {
+		e.metrics.SetReconciliationDiscrepancyCount(1)
 		return ReconciliationReport{}, fmt.Errorf("reconcile account balances: %w", err)
 	}
+	e.metrics.SetReconciliationDiscrepancyCount(0)
 	return ReconciliationReport{
 		CompanyID:       companyID,
 		FiscalPeriodID:  fiscalPeriodID,

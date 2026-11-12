@@ -3,11 +3,13 @@ package posting
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/observability"
 	"accounting_engine/internal/policy"
 	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
@@ -39,6 +41,8 @@ type Engine struct {
 	approvalGate          ApprovalGate
 	makerCheckerPolicy    MakerCheckerPolicy
 	policyUnit            *policy.Unit
+	logger                *slog.Logger
+	metrics               *observability.Metrics
 }
 
 // MakerCheckerPolicy exposes a company-level maker-checker threshold. The
@@ -66,6 +70,13 @@ func (e *Engine) SetMakerCheckerPolicy(policy MakerCheckerPolicy) {
 
 func (e *Engine) SetPolicyUnit(unit *policy.Unit) {
 	e.policyUnit = unit
+}
+
+// SetObservability attaches the structured logger and metrics registry used to
+// instrument posting latency and outcome.
+func (e *Engine) SetObservability(logger *slog.Logger, metrics *observability.Metrics) {
+	e.logger = logger
+	e.metrics = metrics
 }
 
 func (e *Engine) CreateDraft(entry JournalEntry) error {
@@ -147,7 +158,22 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 }
 
 func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, posterID string) error {
-	if err := ctx.Err(); err != nil {
+	return e.postEntryContext(ctx, entry, posterID, true)
+}
+
+func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, posterID string, observe bool) (err error) {
+	if entry != nil {
+		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
+		ctx = observability.WithEntryID(ctx, entry.ID)
+		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
+			ctx = ensured
+		}
+	}
+	start := time.Now()
+	if observe {
+		defer func() { e.recordPosting(ctx, entry, start, err) }()
+	}
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if entry.Status != EntryDraft {
@@ -156,7 +182,7 @@ func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, post
 		}
 		return ErrEntryNotDraft
 	}
-	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
+	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
 		return err
 	}
 
@@ -168,32 +194,59 @@ func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, post
 	entry.Status = EntryPosted
 	entry.UpdatedAt = now
 	if repository, ok := e.repo.(ContextAtomicPostingRepository); ok {
-		posted, err := repository.PostAndSequenceContext(ctx, *entry)
-		if err != nil {
+		posted, postErr := repository.PostAndSequenceContext(ctx, *entry)
+		if postErr != nil {
 			entry.Status = EntryDraft
 			entry.PostedBy = ""
 			entry.PostedAt = nil
-			return err
+			return postErr
 		}
 		*entry = posted
 		return nil
 	}
-	sequence, err := e.repo.GetNextSequenceForCompanyContext(ctx, entry.CompanyID, entry.JournalID)
-	if err != nil {
+	sequence, sequenceErr := e.repo.GetNextSequenceForCompanyContext(ctx, entry.CompanyID, entry.JournalID)
+	if sequenceErr != nil {
 		entry.Status = EntryDraft
 		entry.PostedBy = ""
 		entry.PostedAt = nil
-		return err
+		return sequenceErr
 	}
 	entry.SequenceNumber = sequence
-	if err := e.repo.PostAtomicContext(ctx, *entry); err != nil {
+	if postErr := e.repo.PostAtomicContext(ctx, *entry); postErr != nil {
 		entry.Status = EntryDraft
 		entry.PostedBy = ""
 		entry.PostedAt = nil
 		entry.SequenceNumber = 0
-		return err
+		return postErr
 	}
 	return nil
+}
+
+// recordPosting records the latency and outcome of one posting attempt and
+// emits a structured, context-enriched log record.
+func (e *Engine) recordPosting(ctx context.Context, entry *JournalEntry, start time.Time, err error) {
+	duration := time.Since(start)
+	if e.metrics != nil {
+		e.metrics.ObservePostingDuration(duration.Seconds())
+		if err == nil {
+			e.metrics.IncPostedEntries()
+		} else {
+			e.metrics.IncPostingFailures()
+		}
+	}
+	if e.logger == nil {
+		return
+	}
+	attrs := []any{"duration_seconds", duration.Seconds()}
+	if entry != nil {
+		attrs = append(attrs, "journal_id", entry.JournalID.String(), "status", string(entry.Status))
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err.Error())
+		e.logger.WarnContext(ctx, "journal entry posting failed", attrs...)
+		return
+	}
+	e.logger.InfoContext(ctx, "journal entry posted", attrs...)
 }
 
 func (e *Engine) PostEntryWithAttachment(entry *JournalEntry, posterID string, attachments ...LedgerAttachment) error {
@@ -201,7 +254,28 @@ func (e *Engine) PostEntryWithAttachment(entry *JournalEntry, posterID string, a
 }
 
 func (e *Engine) PostEntryWithAttachmentContext(ctx context.Context, entry *JournalEntry, posterID string, attachments ...LedgerAttachment) error {
-	if err := ctx.Err(); err != nil {
+	return e.postEntryWithAttachmentContext(ctx, entry, posterID, attachments, true)
+}
+
+func (e *Engine) postEntryWithAttachmentContext(
+	ctx context.Context,
+	entry *JournalEntry,
+	posterID string,
+	attachments []LedgerAttachment,
+	observe bool,
+) (err error) {
+	if entry != nil {
+		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
+		ctx = observability.WithEntryID(ctx, entry.ID)
+		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
+			ctx = ensured
+		}
+	}
+	start := time.Now()
+	if observe {
+		defer func() { e.recordPosting(ctx, entry, start, err) }()
+	}
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if entry.Status != EntryDraft {
@@ -212,12 +286,12 @@ func (e *Engine) PostEntryWithAttachmentContext(ctx context.Context, entry *Jour
 	}
 	for _, att := range attachments {
 		if att != nil {
-			if err := att.ValidateAttachment(ctx, *entry); err != nil {
+			if err = att.ValidateAttachment(ctx, *entry); err != nil {
 				return err
 			}
 		}
 	}
-	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
+	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
 		return err
 	}
 
@@ -232,16 +306,16 @@ func (e *Engine) PostEntryWithAttachmentContext(ctx context.Context, entry *Jour
 	entry.UpdatedAt = now
 
 	if repo, ok := e.repo.(ContextAtomicAttachmentRepository); ok {
-		if err := repo.PostWithAttachmentsContext(ctx, entry, attachments); err != nil {
+		if postErr := repo.PostWithAttachmentsContext(ctx, entry, attachments); postErr != nil {
 			*entry = original
-			return err
+			return postErr
 		}
 		return nil
 	}
 	if repo, ok := e.repo.(AtomicAttachmentRepository); ok {
-		if err := repo.PostWithAttachments(ctx, entry, attachments); err != nil {
+		if postErr := repo.PostWithAttachments(ctx, entry, attachments); postErr != nil {
 			*entry = original
-			return err
+			return postErr
 		}
 		return nil
 	}
@@ -254,9 +328,19 @@ func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachm
 	return e.PostEntryWithOpenLineContext(context.Background(), entry, line, posterID)
 }
 
-func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *JournalEntry, line OpenLineAttachment, posterID string) error {
+func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *JournalEntry, line OpenLineAttachment, posterID string) (err error) {
+	if entry != nil {
+		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
+		ctx = observability.WithEntryID(ctx, entry.ID)
+		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
+			ctx = ensured
+		}
+	}
+	start := time.Now()
+	defer func() { e.recordPosting(ctx, entry, start, err) }()
+
 	attachment := &OpenLineLedgerAttachment{Attachment: line}
-	err := e.PostEntryWithAttachmentContext(ctx, entry, posterID, attachment)
+	err = e.postEntryWithAttachmentContext(ctx, entry, posterID, []LedgerAttachment{attachment}, false)
 	if err == nil {
 		return nil
 	}
@@ -282,7 +366,7 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	if !ok {
 		return ErrAtomicPostingOpenLineRequired
 	}
-	if err := e.prepareForPosting(ctx, entry, posterID); err != nil {
+	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -293,10 +377,10 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
 	entry.UpdatedAt = now
-	posted, err := repository.PostAndSequenceWithOpenLineContext(ctx, *entry, line)
-	if err != nil {
+	posted, postErr := repository.PostAndSequenceWithOpenLineContext(ctx, *entry, line)
+	if postErr != nil {
 		*entry = original
-		return err
+		return postErr
 	}
 	*entry = posted
 	return nil
