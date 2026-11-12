@@ -37,11 +37,11 @@ func TestConcurrentPostingSequenceIntegrity(t *testing.T) {
 	sequences := make(chan int64, totalEntries)
 	errorsFound := make(chan error, workers)
 	var workersGroup sync.WaitGroup
-	for worker := 0; worker < workers; worker++ {
+	for worker := range workers {
 		workersGroup.Add(1)
 		go func(worker int) {
 			defer workersGroup.Done()
-			for index := 0; index < entriesPerWorker; index++ {
+			for range entriesPerWorker {
 				entry, err := posting.NewJournalEntry(journalID, time.Now().UTC(), "maker",
 					[]posting.JournalEntryLine{
 						{ID: uuid.New(), AccountID: debitAccountID, Debit: amount},
@@ -249,7 +249,7 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 		t.Fatalf("trial balance is not balanced: debit=%s credit=%s", trial.DebitTotal, trial.CreditTotal)
 	}
 
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		log := governance.FinancialAuditLog{
 			EntityType: "move", EntityID: uuid.New(), Action: "POST", ActorID: uuid.New(),
 			PayloadBefore: []byte("null"), PayloadAfter: []byte(`{"posted":true}`),
@@ -376,7 +376,7 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 	zero, _ := financialtypes.Zero("SAR")
 	var previousFiscalYearID uuid.UUID
 
-	for yearIndex := 0; yearIndex < 5; yearIndex++ {
+	for yearIndex := range 5 {
 		yearNum := 2022 + yearIndex
 		yearStart := time.Date(yearNum, 1, 1, 0, 0, 0, 0, time.UTC)
 		yearEnd := time.Date(yearNum, 12, 31, 23, 59, 59, 0, time.UTC)

@@ -33,7 +33,19 @@ func (m *mockStandard) Name() string {
 	return m.name
 }
 
+func (m *mockStandard) Version() string {
+	return "1.0.0"
+}
+
+func (m *mockStandard) Dependencies() []string {
+	return nil
+}
+
 func (m *mockStandard) ValidateDependencies(ports storage.CoreLedgerStore) error {
+	return m.err
+}
+
+func (m *mockStandard) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error {
 	return m.err
 }
 
@@ -42,6 +54,10 @@ func (m *mockStandard) RegisterRules(registrar events.RuleRegistrar) error {
 }
 
 func (m *mockStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+	return nil
+}
+
+func (m *mockStandard) Close(ctx context.Context) error {
 	return nil
 }
 
@@ -85,4 +101,37 @@ func TestBuilder_StandardValidation(t *testing.T) {
 	if engine == nil {
 		t.Fatalf("expected engine instance")
 	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("failed to close engine: %v", err)
+	}
 }
+
+type dependentStandard struct {
+	standards.StandardModule
+	name string
+	deps []string
+}
+
+func (m *dependentStandard) Name() string { return m.name }
+func (m *dependentStandard) Version() string { return "1.0.0" }
+func (m *dependentStandard) Dependencies() []string { return m.deps }
+func (m *dependentStandard) ValidateDependencies(ports storage.CoreLedgerStore) error { return nil }
+func (m *dependentStandard) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error { return nil }
+func (m *dependentStandard) RegisterRules(registrar events.RuleRegistrar) error { return nil }
+func (m *dependentStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error { return nil }
+func (m *dependentStandard) Close(ctx context.Context) error { return nil }
+
+func TestBuilder_ModuleDependencies(t *testing.T) {
+	ctx := context.Background()
+	store := &mockCoreStore{}
+	// Module A requires Module B, but B is not provided.
+	modA := &dependentStandard{name: "ModuleA", deps: []string{"ModuleB"}}
+	_, err := NewBuilder(
+		WithCoreStorage(store),
+		WithStandard(modA),
+	).Build(ctx)
+	if err == nil {
+		t.Fatalf("expected error due to missing dependency, got nil")
+	}
+}
+

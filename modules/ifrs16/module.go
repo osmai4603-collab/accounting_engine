@@ -17,11 +17,23 @@ func (m *Module) Name() string {
 	return "IFRS 16"
 }
 
+func (m *Module) Version() string {
+	return "1.0.0"
+}
+
+func (m *Module) Dependencies() []string {
+	return nil
+}
+
 func (m *Module) ValidateDependencies(ports storage.CoreLedgerStore) error {
 	if ports == nil {
 		return errors.New("core ledger store cannot be nil for IFRS 16")
 	}
 	return nil
+}
+
+func (m *Module) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error {
+	return m.ValidateDependencies(ports)
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
@@ -39,5 +51,9 @@ func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
 }
 
 func (m *Module) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+	return nil
+}
+
+func (m *Module) Close(ctx context.Context) error {
 	return nil
 }

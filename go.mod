@@ -1,6 +1,8 @@
 module accounting_engine
 
-go 1.26.11
+go 1.26.0
+
+toolchain go1.26.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.8

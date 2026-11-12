@@ -86,9 +86,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		errs = append(errs, errors.New("core ledger store is required but missing"))
 	}
 
-	// P0-6: use a single typed router instance and fail on registration errors.
-	router := events.NewRouter()
-	seenModules := map[string]struct{}{}
+	seenModules := map[string]standards.StandardModule{}
 	for _, mod := range b.standards {
 		if mod == nil {
 			errs = append(errs, errors.New("standard module is nil"))
@@ -99,10 +97,23 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 			errs = append(errs, fmt.Errorf("duplicate standard module: %s", name))
 			continue
 		}
-		seenModules[name] = struct{}{}
+		seenModules[name] = mod
+	}
+
+	router := events.NewRouter()
+	for _, mod := range b.standards {
+		name := mod.Name()
+		for _, dep := range mod.Dependencies() {
+			if _, ok := seenModules[dep]; !ok {
+				errs = append(errs, fmt.Errorf("module %s requires dependency module %s which is not loaded", name, dep))
+			}
+		}
 		if b.coreStore != nil {
 			if err := mod.ValidateDependencies(b.coreStore); err != nil {
 				errs = append(errs, fmt.Errorf("standard module %s dependency validation failed: %w", name, err))
+			}
+			if err := mod.Initialize(ctx, b.coreStore); err != nil {
+				errs = append(errs, fmt.Errorf("standard module %s initialization failed: %w", name, err))
 			}
 		}
 		if err := mod.RegisterRules(router); err != nil {
@@ -172,6 +183,15 @@ func (e *engineInstance) Events() EventIngestionService {
 }
 
 func (e *engineInstance) Close() error {
+	var errs []error
+	for _, mod := range e.standards {
+		if err := mod.Close(context.Background()); err != nil {
+			errs = append(errs, fmt.Errorf("module %s close failed: %w", mod.Name(), err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 

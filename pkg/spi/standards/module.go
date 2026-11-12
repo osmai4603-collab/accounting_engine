@@ -9,7 +9,11 @@ import (
 
 type StandardModule interface {
 	Name() string
+	Version() string
+	Dependencies() []string
 	ValidateDependencies(ports storage.CoreLedgerStore) error
+	Initialize(ctx context.Context, ports storage.CoreLedgerStore) error
 	RegisterRules(registrar events.RuleRegistrar) error
 	RunScheduledJobs(ctx context.Context, runner interface{}) error
+	Close(ctx context.Context) error
 }
