@@ -10,6 +10,7 @@
 ## السياق
 
 بصمة الاعتماد هي الفاصل بين «ما وافق عليه المعتمِد» و«ما يُرحَّل فعلاً». حالياً:
+
 - `DraftContentMatches` لا يقارن `PeriodID`, `TargetPeriodNumber`, `AdjustmentAuthorized`, `OriginalEntryID`.
 - `EntryContentHash` لا يغطي `SourceEventID`.
 

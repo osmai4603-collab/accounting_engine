@@ -55,33 +55,33 @@ PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by 
 
 ## 3. جدول الحزم والاختبارات
 
-العدّ من ملفات `*_test.go`، والزمن من تشغيل `go test -count=1 ./...` على قاعدة PostgreSQL جديدة.
+العدّ من ملفات `*_test.go`، والزمن من تشغيل `go test -count=1 ./...` على قاعدة PostgreSQL جديدة (تشغيل 2026-11-12).
 
 | الحزمة | ملفات الاختبار | دوال `Test` | النتيجة | الزمن |
 | --- | ---: | ---: | --- | ---: |
-| `accounting_engine` | 7 | 19 | ✅ PASS | 1.69s |
-| `accounting_engine/cmd/agy` | 2 | 4 | ✅ PASS | 0.01s |
+| `accounting_engine` | 7 | 19 | ✅ PASS | 1.54s |
+| `accounting_engine/cmd/agy` | 2 | 4 | ✅ PASS | 0.04s |
 | `accounting_engine/internal/apperrors` | 1 | 6 | ✅ PASS | 0.01s |
-| `accounting_engine/internal/consolidation` | 3 | 11 | ✅ PASS | 0.01s |
-| `accounting_engine/internal/governance` | 6 | 23 | ✅ PASS | 0.71s |
-| `accounting_engine/internal/ias12` | 3 | 12 | ✅ PASS | 0.03s |
-| `accounting_engine/internal/ifrs15` | 1 | 6 | ✅ PASS | 0.02s |
-| `accounting_engine/internal/ifrs16` | 2 | 10 | ✅ PASS | 0.03s |
+| `accounting_engine/internal/consolidation` | 3 | 11 | ✅ PASS | 0.02s |
+| `accounting_engine/internal/governance` | 6 | 23 | ✅ PASS | 0.56s |
+| `accounting_engine/internal/ias12` | 3 | 12 | ✅ PASS | 0.01s |
+| `accounting_engine/internal/ifrs15` | 1 | 6 | ✅ PASS | 0.03s |
+| `accounting_engine/internal/ifrs16` | 2 | 10 | ✅ PASS | 0.04s |
 | `accounting_engine/internal/ifrs9` | 2 | 10 | ✅ PASS | 0.03s |
 | `accounting_engine/internal/ifrsautomation` | 3 | 10 | ✅ PASS | 0.07s |
 | `accounting_engine/internal/masterdata` | 3 | 12 | ✅ PASS | 0.01s |
-| `accounting_engine/internal/observability` | 2 | 11 | ✅ PASS | 0.01s |
+| `accounting_engine/internal/observability` | 2 | 11 | ✅ PASS | 0.04s |
 | `accounting_engine/internal/policy` | 1 | 3 | ✅ PASS | 0.01s |
-| `accounting_engine/internal/posting` | 9 | 37 | ✅ PASS | 0.20s |
+| `accounting_engine/internal/posting` | 9 | 37 | ✅ PASS | 0.17s |
 | `accounting_engine/internal/reconciliation` | 0 | 0 | ⚪ لا ملفات اختبار | 0.00s |
-| `accounting_engine/internal/reporting` | 8 | 40 | ✅ PASS | 0.07s |
+| `accounting_engine/internal/reporting` | 8 | 40 | ✅ PASS | 0.08s |
 | `accounting_engine/internal/reporting/taxonomy` | 1 | 12 | ✅ PASS | 0.01s |
-| `accounting_engine/internal/subledgers` | 5 | 49 | ✅ PASS | 0.03s |
+| `accounting_engine/internal/subledgers` | 5 | 49 | ✅ PASS | 0.02s |
 | `accounting_engine/internal/subledgers/bank_parsers` | 2 | 3 | ✅ PASS | 0.01s |
 | `accounting_engine/internal/types` | 2 | 13 | ✅ PASS | 0.01s |
 | `accounting_engine/internal/valuation` | 2 | 7 | ✅ PASS | 0.01s |
-| `accounting_engine/storage/memory` | 5 | 16 | ✅ PASS | 0.05s |
-| `accounting_engine/storage/postgres` | 31 | 61 | ✅ PASS | POSTGRES_DURATION |
+| `accounting_engine/storage/memory` | 5 | 16 | ✅ PASS | 0.07s |
+| `accounting_engine/storage/postgres` | 31 | 61 | ✅ PASS | 107.24s |
 
 **الإجمالي:** 22 حزمة ناجحة، وحزمة واحدة بلا اختبارات (23 حزمة إجمالاً). لا توجد حزم `FAIL`.
 
@@ -91,14 +91,14 @@ PostgreSQL 18.6 (Ubuntu 18.6-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by 
 go test -race -count=1 ./...
 ```
 
-النتيجة: ✅ **PASS** — لا سباقات بيانات. الزمن الكلي المقاس سابقاً نحو **222 ثانية**، معظمه في `storage/postgres` بسبب اختبارات التزامن والضغط. لا يوجد سباق معروف متبقٍ. أي سباق جديد يفشل مهمة `Race detector (PostgreSQL)` في CI.
+النتيجة: ✅ **PASS** — لا سباقات بيانات. الزمن الكلي المقاس نحو **226 ثانية**، معظمه في `storage/postgres` (225.9 ثانية) بسبب اختبارات التزامن والضغط. لا يوجد سباق معروف متبقٍ. أي سباق جديد يفشل مهمة `Race detector (PostgreSQL)` في CI.
 
 ## 5. التغطية
 
 | القياس | القيمة |
 | --- | --- |
 | التغطية الإجمالية عند خط الأساس | `54.1%` |
-| التغطية الإجمالية بعد أدلة المرحلة 0 | TOTAL_COVERAGE |
+| التغطية الإجمالية بعد أدلة المرحلة 0 | `57.2%` |
 | الحد الأدنى المفروض في CI | `54.1%` |
 | السكربت | [`scripts/check_coverage.sh`](../scripts/check_coverage.sh) |
 
@@ -109,6 +109,25 @@ go tool cover -func=coverage.out | tail -n 25
 ```
 
 الحد `54.1%` أقل بقليل من القيمة المقاسة، ويُرفع فقط بعد إضافة تغطية فعلية. لا يُخفَّض لتجاوز فشل.
+
+### 5.1 توزيع التغطية حسب الحزمة
+
+| الحزمة | التغطية | الحزمة | التغطية |
+| --- | ---: | --- | ---: |
+| `accounting_engine` | 58.8% | `internal/posting` | 56.7% |
+| `cmd/agy` | 38.4% | `internal/reporting` | 64.8% |
+| `internal/apperrors` | 92.1% | `internal/reporting/taxonomy` | 71.8% |
+| `internal/consolidation` | 82.6% | `internal/subledgers` | 59.1% |
+| `internal/governance` | 66.5% | `internal/subledgers/bank_parsers` | 81.0% |
+| `internal/ias12` | 69.5% | `internal/types` | 75.0% |
+| `internal/ifrs15` | 65.6% | `internal/valuation` | 71.8% |
+| `internal/ifrs16` | 74.9% | `storage/memory` | 32.8% |
+| `internal/ifrs9` | 68.7% | `storage/postgres` | 50.2% |
+| `internal/ifrsautomation` | 59.0% | `internal/masterdata` | 41.5% |
+| `internal/observability` | 86.5% | `internal/policy` | 47.3% |
+| **الإجمالي** | **57.2%** | | |
+
+الحزم الأقل تغطية (`storage/memory`, `cmd/agy`, `internal/masterdata`) مرشحة لإضافة اختبارات في المراحل التالية، لكنها لا تخفض الإجمالي تحت خط الأساس.
 
 ## 6. اختبارات تكامل PostgreSQL
 
@@ -181,7 +200,7 @@ make migrations
 
 | العنصر | عند `P0-T1` | بعد إنجاز المرحلة 0 |
 | --- | --- | --- |
-| التغطية | `54.1%` | TOTAL_COVERAGE |
+| التغطية | `54.1%` | `57.2%` |
 | اختبارات الفجوات | غير موجودة | 14 اختباراً أحمر + 9 `Skip` مبرر |
 | ADRs | غير موجودة | ADR-0001..0006 معتمدة |
 | CI | غير موجود | 5 مهام على GitHub Actions |
@@ -195,7 +214,7 @@ make migrations
 ### 8.1 إصلاحان صغيران ظهرا أثناء التحقق على قاعدة نظيفة
 
 1. **`storage/postgres/events.go`:** كان إدراج/تحديث `subledger_events` يمرر `PayloadJSON == nil` إلى عمود `payload_bytes NOT NULL`، فيفشل بخرق القيد. أصبح `nil` يُطبَّع إلى `[]byte{}`، وهو نفس معنى الحمولة الفارغة. الاختباران `TestPhase3_EventBridgeIdempotencyPayloadConflictPostgres` و`TestPostgresConcurrentIdempotencyHammering` يمران الآن.
-2. **`storage/postgres/benchmark_test.go` و`stress_test.go`:** تأكيدات الإنتاجية (throughput) تُتخطى عند تفعيل تغطية الكود أو `-race`، لأن العدادات/الأجهزة تخفض القياس دون تغيير السلامة. تبقى تأكيدات النزاهة (تسلسل الأرقام، توازن الأرصدة، عدم تسرب goroutines، ثبات الذاكرة) فعالة في كل الأوضاع.
+2. **`storage/postgres/benchmark_test.go` و`stress_test.go` و`phase6_stress_test.go`:** اختبارات الأداء/الضغط تُتخطى عند تفعيل تغطية الكود لأن عدادات التغطية تخفض القياس وتطيل الزمن دون تغيير السلامة. في الوضع العادي تعمل كاملة، وفي `-race` تعمل مع تخطي تأكيد الإنتاجية فقط. تبقى تأكيدات النزاهة (تسلسل الأرقام، توازن الأرصدة، عدم تسرب goroutines، ثبات الذاكرة) فعالة حيث تعمل الاختبارات.
 
 هذان الإصلاحان لا يغيّران أي قاعدة محاسبية، لكنهما ضروريان ليكون `go test ./...` أخضر على قاعدة PostgreSQL جديدة.
 
@@ -203,6 +222,6 @@ make migrations
 
 1. **حماية الفرع غير مفعّلة تقنياً:** المستودع خاص على خطة GitHub مجانية، وGitHub يرفض `branch protection`/`rulesets` (HTTP 403). الخط يعمل على كل PR، لكن منع الدمج يتطلب ترقية الخطة أو مستودعاً عاماً. التفاصيل في [`ci.md`](./ci.md) §7.
 2. **`internal/reconciliation` بلا اختبارات مباشرة:** يُغطى سلوكه عبر `internal/reporting` واختبارات التكامل. لا يُعد فشلاً، لكنه مرشح لإضافة اختبارات في `P4-T3`.
-3. **زمن `storage/postgres`:** يهيمن على زمن الاختبارات (~138 ثانية عادياً، ~222 ثانية مع `-race`). لا يوجد اختبار معلّق بلا سبب.
+3. **زمن `storage/postgres`:** يهيمن على زمن الاختبارات (~107 ثوانٍ عادياً، ~226 ثانية مع `-race`). لا يوجد اختبار معلّق بلا سبب. اختبارات الأداء/الضغط تُتخطى في وضع التغطية لأن العدادات تشوّه القياس.
 4. **اختبارات `gapred` تفشل عمداً:** هذا دليل الفجوات، وليس انحداراً. لا تعمل في الخط الافتراضي.
-5. **تأكيدات الإنتاجية ليست بوابة في وضع التغطية:** في `go test -coverprofile` و`-race` تُقاس الإنتاجية وتُسجّل لكن لا تُفشل الاختبار، لأن الأجهزة والعدادات تشوّه القياس. البوابة الحقيقية للإنتاجية تُقاس في بيئة مخصصة خارج CI الوظيفي.
+5. **اختبارات الأداء/الضغط ليست بوابة في وضع التغطية:** تُتخطى في `go test -coverprofile`، وتُقاس في الوضع العادي، وتُتخطى فيها تأكيدات الإنتاجية فقط عند `-race`. البوابة الحقيقية للإنتاجية تُقاس في بيئة مخصصة خارج CI الوظيفي.
