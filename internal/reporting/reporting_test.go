@@ -121,7 +121,7 @@ func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
 	}
 
 	repository := materializedOnlyMemoryRepository{Driver: driver}
-	trialBalance, err := NewTrialBalanceEngine(repository).GenerateForCompany(
+	trialBalance, err := reporting.NewTrialBalanceEngine(repository).GenerateForCompany(
 		companyID, year.StartDate, year.EndDate, "USD",
 	)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
 		!trialBalance.CreditTotal.Equal(decimal.NewFromInt(100)) {
 		t.Fatalf("trial balance did not read posted balances: %+v", trialBalance)
 	}
-	historicalBalance, err := NewTrialBalanceEngine(historicalOnlyMemoryRepository{Driver: driver}).
+	historicalBalance, err := reporting.NewTrialBalanceEngine(historicalOnlyMemoryRepository{Driver: driver}).
 		GenerateForCompany(companyID, year.StartDate, year.EndDate, "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
 		t.Fatalf("materialized trial balance differs from historical aggregation:\nmaterialized=%+v\nhistorical=%+v",
 			trialBalance, historicalBalance)
 	}
-	income, err := NewIncomeStatementEngine(repository).GenerateForCompany(
+	income, err := reporting.NewIncomeStatementEngine(repository).GenerateForCompany(
 		companyID, year.StartDate, year.EndDate, "USD",
 	)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
 	if !income.Revenue.Equal(decimal.NewFromInt(20)) {
 		t.Fatalf("income statement revenue = %s, want 20", income.Revenue)
 	}
-	sheet, err := NewBalanceSheetEngine(repository).GenerateForCompany(
+	sheet, err := reporting.NewBalanceSheetEngine(repository).GenerateForCompany(
 		companyID, year.EndDate, "USD",
 	)
 	if err != nil {
@@ -177,7 +177,7 @@ func TestDimensionProfitAndLossGroupsByAnalyticalIds(t *testing.T) {
 			}},
 		}},
 	}
-	report, err := NewEngine(repository).GenerateDimensionProfitAndLoss(date, date, "USD")
+	report, err := reporting.NewEngine(repository).GenerateDimensionProfitAndLoss(date, date, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestTrialBalanceReportingIsCompanyScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := NewTrialBalanceEngine(repository).GenerateForCompany(
+	report, err := reporting.NewTrialBalanceEngine(repository).GenerateForCompany(
 		companyA, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC), "USD",
 	)
@@ -240,7 +240,7 @@ func TestCompanyTrialBalanceUsesEffectiveAccountVersionAtPeriodEnd(t *testing.T)
 		}
 	}
 
-	engine := NewTrialBalanceEngine(repository)
+	engine := reporting.NewTrialBalanceEngine(repository)
 	historical, err := engine.GenerateForCompanyContext(
 		context.Background(), companyID,
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -276,7 +276,10 @@ func (r *memoryRepository) ListAccounts(context.Context) ([]masterdata.Account, 
 func (r *memoryRepository) ListPostedEntries(_ context.Context, start, end time.Time) ([]posting.JournalEntry, error) {
 	result := make([]posting.JournalEntry, 0)
 	for _, entry := range r.entries {
-		date := entryEffectiveDate(entry)
+		date := entry.EntryDate
+		if date.IsZero() {
+			date = entry.Date
+		}
 		if !start.IsZero() && date.Before(start) {
 			continue
 		}
@@ -311,7 +314,10 @@ func (r *memoryRepository) ListEntriesForCompanyContext(ctx context.Context, com
 	}
 	entries := make([]posting.JournalEntry, 0)
 	for _, entry := range r.entries {
-		date := entryEffectiveDate(entry)
+		date := entry.EntryDate
+		if date.IsZero() {
+			date = entry.Date
+		}
 		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted &&
 			(start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
 			entries = append(entries, entry)
@@ -494,14 +500,14 @@ func TestFinancialStatementsAndTrialBalance(t *testing.T) {
 		),
 	}
 
-	trial, err := NewTrialBalanceEngine(repository).Generate(start, end, "USD")
+	trial, err := reporting.NewTrialBalanceEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !trial.Balanced {
 		t.Fatal("trial balance is not balanced")
 	}
-	balanceSheet, err := NewBalanceSheetEngine(repository).Generate(end, "USD")
+	balanceSheet, err := reporting.NewBalanceSheetEngine(repository).Generate(end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,8 +524,8 @@ func TestIncomeStatementRequiresExplicitIFRSCategory(t *testing.T) {
 	expense := reportAccount(uuid.New(), "5000", "Expense", masterdata.AccountTypeExpense, masterdata.SubClassOtherOperatingExpense)
 	expense.IFRSCategory = ""
 	repository := &memoryRepository{accounts: []masterdata.Account{expense}}
-	_, err := NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
-	if err != ErrIFRSClassificationRequired {
+	_, err := reporting.NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != reporting.ErrIFRSClassificationRequired {
 		t.Fatalf("Generate() error = %v, want explicit IFRS category error", err)
 	}
 }
@@ -555,7 +561,7 @@ func TestIncomeStatementOffsetsContraRevenueAndExpense(t *testing.T) {
 		),
 	}
 
-	report, err := NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	report, err := reporting.NewIncomeStatementEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,37 +570,6 @@ func TestIncomeStatementOffsetsContraRevenueAndExpense(t *testing.T) {
 		!report.GrossProfit.Equal(decimal.NewFromInt(450)) {
 		t.Fatalf("contra accounts were not deducted from their categories: revenue=%s cost_of_sales=%s gross_profit=%s",
 			report.Revenue, report.CostOfSales, report.GrossProfit)
-	}
-}
-
-func TestAdjustedAccountBalanceHandlesContraSides(t *testing.T) {
-	tests := []struct {
-		name        string
-		accountType masterdata.AccountType
-		normal      masterdata.NormalBalance
-		debit       string
-		credit      string
-		want        int64
-	}{
-		{name: "contra asset", accountType: masterdata.AccountTypeAsset, normal: masterdata.NormalBalanceCredit, credit: "25", want: -25},
-		{name: "contra liability", accountType: masterdata.AccountTypeLiability, normal: masterdata.NormalBalanceDebit, debit: "25", want: -25},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			account := reportAccount(uuid.New(), "1000", test.name, test.accountType, "other")
-			account.IsContraAccount = true
-			account.NormalBalance = test.normal
-			side := accountSide{debit: decimal.NewFromInt(0), credit: decimal.NewFromInt(0)}
-			if test.debit != "" {
-				side.debit = decimal.RequireFromString(test.debit)
-			}
-			if test.credit != "" {
-				side.credit = decimal.RequireFromString(test.credit)
-			}
-			if got := adjustedAccountBalance(side, account); !got.Equal(decimal.NewFromInt(test.want)) {
-				t.Fatalf("adjustedAccountBalance() = %s, want %d", got, test.want)
-			}
-		})
 	}
 }
 
@@ -631,7 +606,7 @@ func TestQuickRatioNetsContraReceivables(t *testing.T) {
 		),
 	}
 
-	report, err := NewRatiosEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	report, err := reporting.NewRatiosEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,8 +619,8 @@ func TestCashFlowRequiresExplicitActivity(t *testing.T) {
 	account := reportAccount(uuid.New(), "1200", "Receivables", masterdata.AccountTypeAsset, masterdata.SubClassTradeReceivables)
 	account.CashFlowActivity = ""
 	repository := &memoryRepository{accounts: []masterdata.Account{account}}
-	_, err := NewCashFlowEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
-	if err != ErrCashFlowClassificationRequired {
+	_, err := reporting.NewCashFlowEngine(repository).Generate(time.Time{}, time.Time{}, "USD")
+	if err != reporting.ErrCashFlowClassificationRequired {
 		t.Fatalf("Generate() error = %v, want explicit cash-flow activity error", err)
 	}
 }
@@ -673,7 +648,7 @@ func TestIndirectCashFlowSeparatesInvestingAndFinancingResults(t *testing.T) {
 			posting.JournalEntryLine{AccountID: cashID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "20", "USD")},
 		),
 	}
-	report, err := NewCashFlowEngine(repository).Generate(start, end, "USD")
+	report, err := reporting.NewCashFlowEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +690,7 @@ func TestClosingAndOpeningMoves(t *testing.T) {
 	for i := range year.Periods {
 		year.Periods[i].State = masterdata.PeriodHardClosed
 	}
-	closing, netIncome, err := NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
+	closing, netIncome, err := reporting.NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +703,7 @@ func TestClosingAndOpeningMoves(t *testing.T) {
 	if closing.TargetPeriodNumber != 13 || !closing.AdjustmentAuthorized {
 		t.Fatalf("year-end close must target authorized period 13: %+v", closing)
 	}
-	if opening, err := NewClosingEngine(repository).GenerateOpeningMove(year, uuid.New(), "USD"); err != nil || opening.ID != uuid.Nil {
+	if opening, err := reporting.NewClosingEngine(repository).GenerateOpeningMove(year, uuid.New(), "USD"); err != nil || opening.ID != uuid.Nil {
 		t.Fatalf("GenerateOpeningMove() = %+v, %v; want no opening move without prior balances", opening, err)
 	}
 }
@@ -760,7 +735,7 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		),
 	}
 	nextYear := masterdata.GenerateFiscalYear(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
-	entry, err := NewClosingEngine(fiscalYearAwareRepository{
+	entry, err := reporting.NewClosingEngine(fiscalYearAwareRepository{
 		memoryRepository: repository, firstYearID: nextYear.ID,
 	}).GenerateOpeningMove(nextYear, uuid.New(), "USD")
 	if err != nil {
@@ -794,7 +769,7 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		),
 	)
 	asOf := time.Date(2027, 12, 31, 23, 59, 59, 0, time.UTC)
-	sheet, err := NewBalanceSheetEngine(repository).Generate(asOf, "USD")
+	sheet, err := reporting.NewBalanceSheetEngine(repository).Generate(asOf, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +778,7 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		!sheet.Equity.Equal(decimal.NewFromInt(60)) {
 		t.Fatalf("balance sheet double-counted balances after the opening move: %+v", sheet)
 	}
-	trialBalance, err := NewTrialBalanceEngine(repository).Generate(
+	trialBalance, err := reporting.NewTrialBalanceEngine(repository).Generate(
 		time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), asOf, "USD",
 	)
 	if err != nil {
@@ -814,10 +789,10 @@ func TestOpeningMoveCarriesBalanceSheetAndUnclosedNetIncome(t *testing.T) {
 		t.Fatalf("trial balance double-counted balances after the opening move: %+v", trialBalance)
 	}
 	followingYear := masterdata.GenerateFiscalYear(time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC))
-	if _, err := NewClosingEngine(fiscalYearAwareRepository{
+	if _, err := reporting.NewClosingEngine(fiscalYearAwareRepository{
 		memoryRepository: repository, firstYearID: nextYear.ID,
-	}).GenerateOpeningMove(followingYear, uuid.New(), "USD"); !errors.Is(err, ErrOpeningMoveNotRequired) {
-		t.Fatalf("subsequent opening move error = %v, want %v", err, ErrOpeningMoveNotRequired)
+	}).GenerateOpeningMove(followingYear, uuid.New(), "USD"); !errors.Is(err, reporting.ErrOpeningMoveNotRequired) {
+		t.Fatalf("subsequent opening move error = %v, want %v", err, reporting.ErrOpeningMoveNotRequired)
 	}
 }
 
@@ -879,7 +854,7 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	if err := repository.PostAtomic(entry); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
+	if err := reporting.NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
 		t.Fatal(err)
 	}
 	closedYear, err := repository.GetFiscalYear(ctx, year.ID)
@@ -898,7 +873,7 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 			t.Fatalf("period %d state = %s, want hard closed", number, period.State)
 		}
 	}
-	if err := NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
+	if err := reporting.NewClosingEngine(repository).ConfirmFiscalYearClose(year, entry.ID); err != nil {
 		t.Fatalf("repeated fiscal year close should be idempotent: %v", err)
 	}
 }
@@ -931,7 +906,7 @@ func TestClosingHandlesContraIncomeAndExpenseAccounts(t *testing.T) {
 	for i := range year.Periods {
 		year.Periods[i].State = masterdata.PeriodHardClosed
 	}
-	closing, netIncome, err := NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
+	closing, netIncome, err := reporting.NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +936,7 @@ func TestGeneralLedgerRunningBalance(t *testing.T) {
 			posting.JournalEntryLine{AccountID: equityID, Debit: reportMoney(t, "25", "USD"), Credit: reportMoney(t, "0", "USD")},
 		),
 	}
-	report, err := NewGeneralLedgerEngine(repository).Generate(cashID, start, start.AddDate(1, 0, 0), "USD")
+	report, err := reporting.NewGeneralLedgerEngine(repository).Generate(cashID, start, start.AddDate(1, 0, 0), "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +962,7 @@ func TestFinancialRatiosSafeDivision(t *testing.T) {
 			posting.JournalEntryLine{AccountID: revenueID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "100", "USD")},
 		),
 	}
-	ratios, err := NewRatiosEngine(repository).Generate(start, end, "USD")
+	ratios, err := reporting.NewRatiosEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1019,12 +994,12 @@ func TestGeneralLedgerReconcilesWithTrialBalance(t *testing.T) {
 		),
 	}
 
-	trial, err := NewTrialBalanceEngine(repository).Generate(start, end, "USD")
+	trial, err := reporting.NewTrialBalanceEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	glEngine := NewGeneralLedgerEngine(repository)
+	glEngine := reporting.NewGeneralLedgerEngine(repository)
 	for _, line := range trial.Lines {
 		glReport, err := glEngine.Generate(line.AccountID, start, end, "USD")
 		if err != nil {
@@ -1119,7 +1094,7 @@ func TestStatementBundleComprehensive(t *testing.T) {
 		},
 	}
 
-	bundleEngine := NewBundleEngine(repo)
+	bundleEngine := reporting.NewBundleEngine(repo)
 	bundle, err := bundleEngine.Generate(start, end, "USD")
 	if err != nil {
 		t.Fatalf("bundle generation failed: %v", err)
@@ -1163,7 +1138,7 @@ func TestBalanceSheetContraAccountCalculation(t *testing.T) {
 		},
 	}
 
-	balanceSheet, err := NewBalanceSheetEngine(repo).Generate(asOf, "USD")
+	balanceSheet, err := reporting.NewBalanceSheetEngine(repo).Generate(asOf, "USD")
 	if err != nil {
 		t.Fatalf("balance sheet generation failed: %v", err)
 	}

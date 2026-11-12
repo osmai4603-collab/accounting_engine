@@ -1,4 +1,4 @@
-package reporting
+package reporting_test
 
 import (
 	"context"
@@ -8,28 +8,29 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
 func TestComparativeStatementLineVariance(t *testing.T) {
-	line := comparativeLine("TOTAL_ASSETS", "Total assets", decimal.NewFromInt(125), decimal.NewFromInt(100))
+	line := reporting.ComparativeLine("TOTAL_ASSETS", "Total assets", decimal.NewFromInt(125), decimal.NewFromInt(100))
 	if !line.Variance.Equal(decimal.NewFromInt(25)) ||
 		!line.VariancePct.Equal(decimal.NewFromInt(25)) ||
 		!line.VariancePctAvailable {
 		t.Fatalf("comparative line = %+v, want 25 variance and 25 percent", line)
 	}
 
-	line = comparativeLine("REVENUE", "Revenue", decimal.NewFromInt(7), decimal.Zero)
+	line = reporting.ComparativeLine("REVENUE", "Revenue", decimal.NewFromInt(7), decimal.Zero)
 	if !line.Variance.Equal(decimal.NewFromInt(7)) || line.VariancePctAvailable || !line.VariancePct.IsZero() {
 		t.Fatalf("zero-base comparative line = %+v, want unavailable percentage", line)
 	}
 
 	segmentID := uuid.New()
-	segments := compareSegmentDisclosures(
-		[]SegmentDisclosure{{SegmentID: segmentID, Revenue: decimal.NewFromInt(120), Profit: decimal.NewFromInt(30)}},
-		[]SegmentDisclosure{{SegmentID: segmentID, Revenue: decimal.NewFromInt(100), Profit: decimal.NewFromInt(20)}},
+	segments := reporting.CompareSegmentDisclosures(
+		[]reporting.SegmentDisclosure{{SegmentID: segmentID, Revenue: decimal.NewFromInt(120), Profit: decimal.NewFromInt(30)}},
+		[]reporting.SegmentDisclosure{{SegmentID: segmentID, Revenue: decimal.NewFromInt(100), Profit: decimal.NewFromInt(20)}},
 	)
 	if len(segments) != 1 || !segments[0].Revenue.Variance.Equal(decimal.NewFromInt(20)) ||
 		!segments[0].Profit.Variance.Equal(decimal.NewFromInt(10)) {
@@ -38,18 +39,18 @@ func TestComparativeStatementLineVariance(t *testing.T) {
 }
 
 func TestComparativeCashFlowIncludesReconciledClosingCash(t *testing.T) {
-	current := CashFlow{
+	current := reporting.CashFlow{
 		OperatingCashFlow: decimal.NewFromInt(40), InvestingCashFlow: decimal.NewFromInt(-10),
 		FinancingCashFlow: decimal.NewFromInt(5), NetChangeInCash: decimal.NewFromInt(35),
 		OpeningCash: decimal.NewFromInt(15), ClosingCash: decimal.NewFromInt(50), Reconciled: true,
 	}
-	prior := CashFlow{
+	prior := reporting.CashFlow{
 		OperatingCashFlow: decimal.NewFromInt(20), InvestingCashFlow: decimal.NewFromInt(-4),
 		FinancingCashFlow: decimal.NewFromInt(2), NetChangeInCash: decimal.NewFromInt(18),
 		OpeningCash: decimal.NewFromInt(12), ClosingCash: decimal.NewFromInt(30), Reconciled: true,
 	}
-	lines := comparativeCashFlowLines(current, prior)
-	byCode := make(map[string]ComparativeStatementLine, len(lines))
+	lines := reporting.ComparativeCashFlowLines(current, prior)
+	byCode := make(map[string]reporting.ComparativeStatementLine, len(lines))
 	for _, line := range lines {
 		byCode[line.LineCode] = line
 	}
@@ -65,10 +66,10 @@ func TestComparativeCashFlowIncludesReconciledClosingCash(t *testing.T) {
 
 func TestComparativePeriodValidation(t *testing.T) {
 	now := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
-	if err := validateComparativePeriods(now, now, now.AddDate(-1, 0, 0), now); err != nil {
+	if err := reporting.ValidateComparativePeriods(now, now, now.AddDate(-1, 0, 0), now); err != nil {
 		t.Fatalf("valid periods rejected: %v", err)
 	}
-	if err := validateComparativePeriods(now, time.Time{}, now, now); !errors.Is(err, ErrInvalidComparativePeriods) {
+	if err := reporting.ValidateComparativePeriods(now, time.Time{}, now, now); !errors.Is(err, reporting.ErrInvalidComparativePeriods) {
 		t.Fatalf("invalid periods error = %v", err)
 	}
 }
@@ -100,14 +101,14 @@ func TestGenerateComparativeStatementsFor2025And2024(t *testing.T) {
 	currentEnd := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
 	priorStart := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	priorEnd := time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)
-	bundle, err := NewBundleEngine(repository).GenerateComparative(
+	bundle, err := reporting.NewBundleEngine(repository).GenerateComparative(
 		currentStart, currentEnd, priorStart, priorEnd, "USD",
-		[]NoteDisclosure{{Code: "N1", Title: "Cash", Amount: decimal.NewFromInt(1500)}},
+		[]reporting.NoteDisclosure{{Code: "N1", Title: "Cash", Amount: decimal.NewFromInt(1500)}},
 	)
 	if err != nil {
 		t.Fatalf("GenerateComparative() error = %v", err)
 	}
-	balanceLines := make(map[string]ComparativeStatementLine, len(bundle.BalanceSheet.Lines))
+	balanceLines := make(map[string]reporting.ComparativeStatementLine, len(bundle.BalanceSheet.Lines))
 	for _, line := range bundle.BalanceSheet.Lines {
 		balanceLines[line.LineCode] = line
 	}
@@ -134,7 +135,7 @@ func TestGenerateComparativeStatementsFor2025And2024(t *testing.T) {
 }
 
 type traceRepositoryStub struct {
-	result TraceResult
+	result reporting.TraceResult
 	err    error
 }
 
@@ -144,13 +145,13 @@ func (r traceRepositoryStub) TraceFinancialStatementItem(
 	reportID, lineItem string,
 	start, end time.Time,
 	currency string,
-) (TraceResult, error) {
+) (reporting.TraceResult, error) {
 	if err := ctx.Err(); err != nil {
-		return TraceResult{}, err
+		return reporting.TraceResult{}, err
 	}
 	if companyID == uuid.Nil || reportID != "BALANCE_SHEET" || lineItem != "TOTAL_ASSETS" ||
 		currency != "USD" || !start.IsZero() || end.IsZero() {
-		return TraceResult{}, errors.New("unexpected trace scope")
+		return reporting.TraceResult{}, errors.New("unexpected trace scope")
 	}
 	return r.result, r.err
 }
@@ -158,12 +159,12 @@ func (r traceRepositoryStub) TraceFinancialStatementItem(
 func (r traceRepositoryStub) TraceEconomicEvent(
 	ctx context.Context,
 	companyID, eventID uuid.UUID,
-) (TraceResult, error) {
+) (reporting.TraceResult, error) {
 	if err := ctx.Err(); err != nil {
-		return TraceResult{}, err
+		return reporting.TraceResult{}, err
 	}
 	if companyID == uuid.Nil || eventID == uuid.Nil {
-		return TraceResult{}, errors.New("invalid reverse trace scope")
+		return reporting.TraceResult{}, errors.New("invalid reverse trace scope")
 	}
 	return r.result, r.err
 }
@@ -171,12 +172,12 @@ func (r traceRepositoryStub) TraceEconomicEvent(
 func TestFinancialTraceabilityUsesCompanyScopedRequestAndContext(t *testing.T) {
 	companyID := uuid.New()
 	end := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
-	expected := TraceResult{
+	expected := reporting.TraceResult{
 		StatementItem: "TOTAL_ASSETS", AccountIDs: []uuid.UUID{uuid.New()},
 		Reconciled: true, LedgerAmount: decimal.NewFromInt(125),
 		StatementAmount: decimal.NewFromInt(125),
 	}
-	unit := NewFinancialTraceabilityUnit(traceRepositoryStub{result: expected}, companyID, time.Time{}, end, "USD")
+	unit := reporting.NewFinancialTraceabilityUnit(traceRepositoryStub{result: expected}, companyID, time.Time{}, end, "USD")
 	result, err := unit.TraceStatementItem(context.Background(), "BALANCE_SHEET", "TOTAL_ASSETS")
 	if err != nil {
 		t.Fatalf("TraceStatementItem() error = %v", err)
@@ -198,7 +199,7 @@ func TestFinancialTraceabilityUsesCompanyScopedRequestAndContext(t *testing.T) {
 
 func TestEconomicEventPayloadDecodeKeepsOriginalBytesAvailable(t *testing.T) {
 	payload := []byte("{ \"Reference\" : \"INV-1\" }")
-	event := TracedEconomicEvent{EventID: uuid.New(), Payload: payload}
+	event := reporting.TracedEconomicEvent{EventID: uuid.New(), Payload: payload}
 	var decoded struct {
 		Reference string
 	}

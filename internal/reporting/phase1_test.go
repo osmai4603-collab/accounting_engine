@@ -8,6 +8,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 	"accounting_engine/internal/valuation"
 
 	"github.com/google/uuid"
@@ -48,11 +49,11 @@ func TestCurrencyTranslatorUsesIAS21RatesAndReportsReserve(t *testing.T) {
 	addReportingRate(t, rates, "SAR", "USD", "0.25", date, valuation.ClosingRate)
 	addReportingRate(t, rates, "SAR", "USD", "0.20", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), valuation.SpotRate)
 	addReportingRate(t, rates, "SAR", "USD", "0.30", date, valuation.AverageRate)
-	translator := NewCurrencyTranslator(rates)
-	items, difference, err := translator.TranslateBalanceSheet([]BalanceSheetItem{
-		{Amount: decimal.NewFromInt(100), Classification: TranslationAsset},
-		{Amount: decimal.NewFromInt(20), Classification: TranslationLiability},
-		{Amount: decimal.NewFromInt(60), Classification: TranslationEquity, HistoricalDate: date},
+	translator := reporting.NewCurrencyTranslator(rates)
+	items, difference, err := translator.TranslateBalanceSheet([]reporting.BalanceSheetItem{
+		{Amount: decimal.NewFromInt(100), Classification: reporting.TranslationAsset},
+		{Amount: decimal.NewFromInt(20), Classification: reporting.TranslationLiability},
+		{Amount: decimal.NewFromInt(60), Classification: reporting.TranslationEquity, HistoricalDate: date},
 	}, "SAR", "USD", date)
 	if err != nil {
 		t.Fatal(err)
@@ -84,14 +85,14 @@ func TestCurrencyTranslatorUsesIAS21RatesAndReportsReserve(t *testing.T) {
 			posting.JournalEntryLine{AccountID: revenueID, Credit: reportMoney(t, "100", "SAR")},
 		),
 	}
-	income, err := NewIncomeStatementEngine(repository).Generate(start, date, "USD")
+	income, err := reporting.NewIncomeStatementEngine(repository).Generate(start, date, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !income.Revenue.Equal(decimal.NewFromInt(30)) {
 		t.Fatalf("translated revenue = %s, want 30 at average rate", income.Revenue)
 	}
-	sheet, err := NewBalanceSheetEngine(repository).Generate(date, "USD")
+	sheet, err := reporting.NewBalanceSheetEngine(repository).Generate(date, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestCurrencyTranslatorUsesIAS21RatesAndReportsReserve(t *testing.T) {
 		!sheet.Equity.Equal(decimal.NewFromInt(50)) {
 		t.Fatalf("translated balance sheet did not balance: %+v", sheet)
 	}
-	trial, err := NewTrialBalanceEngine(repository).Generate(start, date, "USD")
+	trial, err := reporting.NewTrialBalanceEngine(repository).Generate(start, date, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +110,12 @@ func TestCurrencyTranslatorUsesIAS21RatesAndReportsReserve(t *testing.T) {
 }
 
 func TestCurrencyTranslatorRejectsMissingRates(t *testing.T) {
-	translator := NewCurrencyTranslator(nil)
+	translator := reporting.NewCurrencyTranslator(nil)
 	_, err := translator.TranslateAmount(
 		context.Background(), reportMoney(t, "1", "SAR"), "USD", time.Now(), valuation.SpotRate,
 	)
-	if !errors.Is(err, ErrCurrencyTranslatorRequired) {
-		t.Fatalf("missing rate provider error = %v, want %v", err, ErrCurrencyTranslatorRequired)
+	if !errors.Is(err, reporting.ErrCurrencyTranslatorRequired) {
+		t.Fatalf("missing rate provider error = %v, want %v", err, reporting.ErrCurrencyTranslatorRequired)
 	}
 }
 
@@ -139,7 +140,7 @@ func TestPresentationCurrencyDifferenceIsReportedInOCI(t *testing.T) {
 		),
 	}
 
-	income, err := NewIncomeStatementEngine(repository).Generate(start, end, "USD")
+	income, err := reporting.NewIncomeStatementEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestPresentationCurrencyDifferenceIsReportedInOCI(t *testing.T) {
 		!income.TotalComprehensiveIncome.Equal(decimal.NewFromInt(5)) {
 		t.Fatalf("translation difference not included in OCI: %+v", income)
 	}
-	sheet, err := NewBalanceSheetEngine(repository).Generate(end, "USD")
+	sheet, err := reporting.NewBalanceSheetEngine(repository).Generate(end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestCashFlowReportsExchangeEffectOnTranslatedCash(t *testing.T) {
 			posting.JournalEntryLine{AccountID: capitalID, Credit: reportMoney(t, "100", "SAR")},
 		),
 	}
-	report, err := NewCashFlowEngine(repository).Generate(start, end, "USD")
+	report, err := reporting.NewCashFlowEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,11 +210,11 @@ func TestAdjustedTrialBalanceFiltersAdjustingEntries(t *testing.T) {
 	adjusting.Classification = posting.EntryClassAdjusting
 	repository.entries = []posting.JournalEntry{regular, adjusting}
 
-	unadjusted, err := NewTrialBalanceEngine(repository).GenerateAdjusted(start, end, "USD", false)
+	unadjusted, err := reporting.NewTrialBalanceEngine(repository).GenerateAdjusted(start, end, "USD", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adjusted, err := NewTrialBalanceEngine(repository).GenerateAdjusted(start, end, "USD", true)
+	adjusted, err := reporting.NewTrialBalanceEngine(repository).GenerateAdjusted(start, end, "USD", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +276,7 @@ func TestMultiCurrencyTrialBalanceShowsTransactionAndFunctionalAmounts(t *testin
 	foreign.Status = posting.EntryPosted
 	repository.entries = []posting.JournalEntry{foreign}
 
-	report, err := NewTrialBalanceEngine(repository).GenerateMultiCurrency(date, date, "SAR")
+	report, err := reporting.NewTrialBalanceEngine(repository).GenerateMultiCurrency(date, date, "SAR")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,7 @@ func TestEquityStatementReportsReserveTransfersAndDistributions(t *testing.T) {
 			posting.JournalEntryLine{AccountID: payableID, Credit: reportMoney(t, "20", "USD")},
 		),
 	}
-	report, err := NewEquityStatementEngine(repository).Generate(start, end, "USD")
+	report, err := reporting.NewEquityStatementEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +375,7 @@ func TestRatiosUseAverageBalances(t *testing.T) {
 			posting.JournalEntryLine{AccountID: inventoryID, Credit: reportMoney(t, "400", "USD")},
 		),
 	}
-	ratios, err := NewRatiosEngine(repository).Generate(start, end, "USD")
+	ratios, err := reporting.NewRatiosEngine(repository).Generate(start, end, "USD")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,9 +32,9 @@ func TestGenerateConsolidatedBuildsScopedTrialBalances(t *testing.T) {
 	start := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2025, time.March, 31, 0, 0, 0, 0, time.UTC)
 	accounts := []masterdata.Account{
-		reportAccount(parentCashID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
-		reportAccount(parentInvestmentID, "1500", "Investment", masterdata.AccountTypeAsset, masterdata.SubClassFinancialInvestments),
-		reportAccount(subsidiaryEquityID, "3000", "Share capital", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital),
+		consolidatedReportAccount(parentCashID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
+		consolidatedReportAccount(parentInvestmentID, "1500", "Investment", masterdata.AccountTypeAsset, masterdata.SubClassFinancialInvestments),
+		consolidatedReportAccount(subsidiaryEquityID, "3000", "Share capital", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital),
 	}
 	accounts[0].CompanyID, accounts[1].CompanyID = parentID, parentID
 	accounts[2].CompanyID = subsidiaryID
@@ -106,8 +106,7 @@ func TestGenerateConsolidatedFailsClosedWithoutAuthorization(t *testing.T) {
 	}
 }
 
-
-func reportAccount(id uuid.UUID, code, name string, accountType masterdata.AccountType, classification string) masterdata.Account {
+func consolidatedReportAccount(id uuid.UUID, code, name string, accountType masterdata.AccountType, classification string) masterdata.Account {
 	account := masterdata.Account{
 		ID: id, Code: code, Name: name, AccountType: accountType,
 		NormalBalance: masterdata.DefaultNormalBalance(accountType), SubClassification: classification,

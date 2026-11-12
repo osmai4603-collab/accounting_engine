@@ -152,7 +152,7 @@ type ComparativeStatementBundle struct {
 	Segments        []ComparativeSegmentDisclosure
 }
 
-func comparativeLine(code, description string, current, prior decimal.Decimal) ComparativeStatementLine {
+func ComparativeLine(code, description string, current, prior decimal.Decimal) ComparativeStatementLine {
 	variance := current.Sub(prior)
 	line := ComparativeStatementLine{
 		LineCode: code, Description: description, CurrentAmount: current,
@@ -182,7 +182,7 @@ func comparativeBalanceSheetLines(current, prior BalanceSheet) []ComparativeStat
 	}
 	lines := make([]ComparativeStatementLine, 0, len(values))
 	for _, value := range values {
-		lines = append(lines, comparativeLine(value.code, value.description, value.current, value.prior))
+		lines = append(lines, ComparativeLine(value.code, value.description, value.current, value.prior))
 	}
 	return lines
 }
@@ -210,12 +210,12 @@ func comparativeIncomeStatementLines(current, prior IncomeStatement) []Comparati
 	}
 	lines := make([]ComparativeStatementLine, 0, len(values))
 	for _, value := range values {
-		lines = append(lines, comparativeLine(value.code, value.description, value.current, value.prior))
+		lines = append(lines, ComparativeLine(value.code, value.description, value.current, value.prior))
 	}
 	return lines
 }
 
-func comparativeCashFlowLines(current, prior CashFlow) []ComparativeStatementLine {
+func ComparativeCashFlowLines(current, prior CashFlow) []ComparativeStatementLine {
 	values := []struct {
 		code, description string
 		current, prior    decimal.Decimal
@@ -230,12 +230,12 @@ func comparativeCashFlowLines(current, prior CashFlow) []ComparativeStatementLin
 	}
 	lines := make([]ComparativeStatementLine, 0, len(values))
 	for _, value := range values {
-		lines = append(lines, comparativeLine(value.code, value.description, value.current, value.prior))
+		lines = append(lines, ComparativeLine(value.code, value.description, value.current, value.prior))
 	}
 	return lines
 }
 
-func validateComparativePeriods(currentStart, currentEnd, priorStart, priorEnd time.Time) error {
+func ValidateComparativePeriods(currentStart, currentEnd, priorStart, priorEnd time.Time) error {
 	if currentStart.IsZero() || currentEnd.IsZero() || priorStart.IsZero() || priorEnd.IsZero() ||
 		currentEnd.Before(currentStart) || priorEnd.Before(priorStart) {
 		return ErrInvalidComparativePeriods
@@ -257,7 +257,7 @@ func generateComparativeBundle(
 	currency string,
 	notes []NoteDisclosure,
 ) (ComparativeStatementBundle, error) {
-	if err := validateComparativePeriods(currentStart, currentEnd, priorStart, priorEnd); err != nil {
+	if err := ValidateComparativePeriods(currentStart, currentEnd, priorStart, priorEnd); err != nil {
 		return ComparativeStatementBundle{}, err
 	}
 	currentSheet, err := NewBalanceSheetEngine(currentRepository).Generate(currentEnd, currency)
@@ -322,10 +322,10 @@ func generateComparativeBundle(
 		},
 		CashFlow: ComparativeCashFlow{
 			Current: currentCash, Prior: priorCash,
-			Lines: comparativeCashFlowLines(currentCash, priorCash),
+			Lines: ComparativeCashFlowLines(currentCash, priorCash),
 		},
 		EquityStatement: comparativeEquity,
-		Notes:           validatedNotes, Segments: compareSegmentDisclosures(currentSegments, priorSegments),
+		Notes:           validatedNotes, Segments: CompareSegmentDisclosures(currentSegments, priorSegments),
 	}, nil
 }
 
@@ -369,21 +369,21 @@ func compareEquityStatements(current, prior EquityStatement) ComparativeEquitySt
 		}
 		result.Movements = append(result.Movements, ComparativeEquityMovement{
 			AccountID: id, AccountCode: prefix, AccountName: currentMovement.AccountName,
-			Opening:   comparativeLine(prefix+"_OPENING", "Opening equity", currentMovement.Opening, priorMovement.Opening),
-			NetIncome: comparativeLine(prefix+"_NET_INCOME", "Net income", currentMovement.NetIncome, priorMovement.NetIncome),
-			OtherComprehensiveIncome: comparativeLine(prefix+"_OCI", "Other comprehensive income",
+			Opening:   ComparativeLine(prefix+"_OPENING", "Opening equity", currentMovement.Opening, priorMovement.Opening),
+			NetIncome: ComparativeLine(prefix+"_NET_INCOME", "Net income", currentMovement.NetIncome, priorMovement.NetIncome),
+			OtherComprehensiveIncome: ComparativeLine(prefix+"_OCI", "Other comprehensive income",
 				currentMovement.OtherComprehensiveIncome, priorMovement.OtherComprehensiveIncome),
-			Distributions: comparativeLine(prefix+"_DISTRIBUTIONS", "Distributions",
+			Distributions: ComparativeLine(prefix+"_DISTRIBUTIONS", "Distributions",
 				currentMovement.Distributions, priorMovement.Distributions),
-			TransfersToReserve: comparativeLine(prefix+"_TRANSFERS_TO_RESERVE", "Transfers to reserve",
+			TransfersToReserve: ComparativeLine(prefix+"_TRANSFERS_TO_RESERVE", "Transfers to reserve",
 				currentMovement.TransfersToReserve, priorMovement.TransfersToReserve),
-			Closing: comparativeLine(prefix+"_CLOSING", "Closing equity", currentMovement.Closing, priorMovement.Closing),
+			Closing: ComparativeLine(prefix+"_CLOSING", "Closing equity", currentMovement.Closing, priorMovement.Closing),
 		})
 	}
 	return result
 }
 
-func compareSegmentDisclosures(current, prior []SegmentDisclosure) []ComparativeSegmentDisclosure {
+func CompareSegmentDisclosures(current, prior []SegmentDisclosure) []ComparativeSegmentDisclosure {
 	currentByID := make(map[uuid.UUID]SegmentDisclosure, len(current))
 	priorByID := make(map[uuid.UUID]SegmentDisclosure, len(prior))
 	ids := make([]uuid.UUID, 0, len(current)+len(prior))
@@ -406,11 +406,11 @@ func compareSegmentDisclosures(current, prior []SegmentDisclosure) []Comparative
 		priorSegment := priorByID[id]
 		result = append(result, ComparativeSegmentDisclosure{
 			SegmentID: id,
-			Revenue: comparativeLine("SEGMENT_REVENUE", "Segment revenue",
+			Revenue: ComparativeLine("SEGMENT_REVENUE", "Segment revenue",
 				currentSegment.Revenue, priorSegment.Revenue),
-			Expenses: comparativeLine("SEGMENT_EXPENSES", "Segment expenses",
+			Expenses: ComparativeLine("SEGMENT_EXPENSES", "Segment expenses",
 				currentSegment.Expenses, priorSegment.Expenses),
-			Profit: comparativeLine("SEGMENT_PROFIT", "Segment profit",
+			Profit: ComparativeLine("SEGMENT_PROFIT", "Segment profit",
 				currentSegment.Profit, priorSegment.Profit),
 		})
 	}
