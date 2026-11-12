@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	internalEvents "accounting_engine/internal/events"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
@@ -64,12 +65,14 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	if b.coreStore == nil {
 		errs = append(errs, errors.New("core ledger store is required but missing"))
 	}
+	router := internalEvents.NewRouter()
 	for _, mod := range b.standards {
 		if b.coreStore != nil {
 			if err := mod.ValidateDependencies(b.coreStore); err != nil {
 				errs = append(errs, fmt.Errorf("standard module %s dependency validation failed: %w", mod.Name(), err))
 			}
 		}
+		_ = mod.RegisterRules(router)
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
@@ -80,6 +83,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		reportingStore:  b.reportingStore,
 		governanceStore: b.governanceStore,
 		standards:       b.standards,
+		eventRouter:     router,
 	}, nil
 }
 
@@ -88,6 +92,7 @@ type engineInstance struct {
 	reportingStore  storage.ReportingStore
 	governanceStore storage.GovernanceStore
 	standards       []standards.StandardModule
+	eventRouter     *internalEvents.Router
 }
 
 func (e *engineInstance) Ledger() LedgerService {
@@ -103,7 +108,7 @@ func (e *engineInstance) Governance() GovernanceService {
 }
 
 func (e *engineInstance) Events() EventIngestionService {
-	return &defaultEventService{store: e.coreStore}
+	return &defaultEventService{store: e.coreStore, router: e.eventRouter}
 }
 
 func (e *engineInstance) Close() error {
@@ -198,20 +203,14 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 }
 
 type defaultEventService struct {
-	store storage.CoreLedgerStore
+	store  storage.CoreLedgerStore
+	router *internalEvents.Router
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
 	if s.store == nil {
 		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
 	}
-	entry := ledger.JournalEntry{
-		ID:            types.NewJournalEntryID(),
-		CompanyID:     event.CompanyID,
-		Status:        ledger.EntryPosted,
-		EffectiveDate: event.EffectiveDate,
-		Description:   "Processed event: " + event.EventType,
-		SourceModule:  event.EventType,
-	}
-	return entry, s.store.PostEntry(ctx, entry)
+	svc := internalEvents.NewEventService(s.store, s.router)
+	return svc.ProcessEvent(ctx, event)
 }

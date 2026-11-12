@@ -1,4 +1,5 @@
 package user
+
 //go:cgo_import_dynamic __libc_start_main __libc_start_main#GLIBC_2.34 "libc.so.6"
 //go:cgo_import_dynamic _ITM_deregisterTMCloneTable _ITM_deregisterTMCloneTable ""
 //go:cgo_import_dynamic getpwuid_r getpwuid_r#GLIBC_2.2.5 "libc.so.6"

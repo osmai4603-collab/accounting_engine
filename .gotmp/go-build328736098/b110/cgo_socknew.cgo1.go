@@ -22,14 +22,14 @@ import (
 	"unsafe"
 )
 
-func cgoSockaddrInet4(ip IP) * /*line :22:31*/_Ctype_struct_sockaddr /*line :22:48*/ {
+func cgoSockaddrInet4(ip IP) * /*line :22:31*/ _Ctype_struct_sockaddr /*line :22:48*/ {
 	sa := syscall.RawSockaddrInet4{Family: syscall.AF_INET}
 	copy(sa.Addr[:], ip)
-	return (* /*line :25:11*/_Ctype_struct_sockaddr /*line :25:28*/)(unsafe.Pointer(&sa))
+	return (* /*line :25:11*/ _Ctype_struct_sockaddr /*line :25:28*/)(unsafe.Pointer(&sa))
 }
 
-func cgoSockaddrInet6(ip IP, zone int) * /*line :28:41*/_Ctype_struct_sockaddr /*line :28:58*/ {
+func cgoSockaddrInet6(ip IP, zone int) * /*line :28:41*/ _Ctype_struct_sockaddr /*line :28:58*/ {
 	sa := syscall.RawSockaddrInet6{Family: syscall.AF_INET6, Scope_id: uint32(zone)}
 	copy(sa.Addr[:], ip)
-	return (* /*line :31:11*/_Ctype_struct_sockaddr /*line :31:28*/)(unsafe.Pointer(&sa))
+	return (* /*line :31:11*/ _Ctype_struct_sockaddr /*line :31:28*/)(unsafe.Pointer(&sa))
 }

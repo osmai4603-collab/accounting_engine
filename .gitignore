@@ -1,3 +1,5 @@
 storage/worm_vault/
 coverage.out
 coverage.html
+.gotmp/
+

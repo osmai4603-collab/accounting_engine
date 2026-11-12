@@ -21,5 +21,5 @@ static int mygetgrouplist(const char* user, gid_t group, gid_t* groups, int* ngr
 import _ "unsafe"
 
 func getGroupList(name *_C_char, userGID _C_gid_t, gids *_C_gid_t, n *_C_int) _C_int {
-	return ( /*line :21:9*/_Cfunc_mygetgrouplist /*line :21:24*/)(name, userGID, gids, n)
+	return ( /*line :21:9*/ _Cfunc_mygetgrouplist /*line :21:24*/)(name, userGID, gids, n)
 }

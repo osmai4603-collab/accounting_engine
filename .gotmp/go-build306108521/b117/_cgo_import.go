@@ -1,4 +1,5 @@
 package cgo
+
 //go:cgo_dynamic_linker "/lib64/ld-linux-x86-64.so.2"
 //go:cgo_import_dynamic free free#GLIBC_2.2.5 "libc.so.6"
 //go:cgo_import_dynamic __vfprintf_chk __vfprintf_chk#GLIBC_2.3.4 "libc.so.6"

@@ -19,7 +19,7 @@ import _ "unsafe"
 
 import "unsafe"
 
-func cgoNameinfoPTR(b []byte, sa * /*line :19:35*/_Ctype_struct_sockaddr /*line :19:52*/, salen  /*line :19:60*/_Ctype_socklen_t /*line :19:71*/) (int, error) {
-	gerrno, err := ( /*line :20:17*/_C2func_getnameinfo /*line :20:29*/)(sa, salen, (* /*line :20:44*/_Ctype_char /*line :20:50*/)(unsafe.Pointer(&b[0])),  /*line :20:76*/_Ctype_socklen_t /*line :20:87*/(len(b)), nil, 0, ( /*line :20:105*/_Ciconst_NI_NAMEREQD /*line :20:117*/))
+func cgoNameinfoPTR(b []byte, sa * /*line :19:35*/ _Ctype_struct_sockaddr /*line :19:52*/, salen /*line :19:60*/ _Ctype_socklen_t /*line :19:71*/) (int, error) {
+	gerrno, err := ( /*line :20:17*/ _C2func_getnameinfo /*line :20:29*/)(sa, salen, (* /*line :20:44*/ _Ctype_char /*line :20:50*/)(unsafe.Pointer(&b[0])) /*line :20:76*/, _Ctype_socklen_t /*line :20:87*/ (len(b)), nil, 0, ( /*line :20:105*/ _Ciconst_NI_NAMEREQD /*line :20:117*/))
 	return int(gerrno), err
 }

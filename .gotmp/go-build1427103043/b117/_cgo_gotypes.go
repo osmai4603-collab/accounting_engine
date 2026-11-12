@@ -11,13 +11,17 @@ func _Cgo_ptr(ptr unsafe.Pointer) unsafe.Pointer { return ptr }
 
 //go:linkname _Cgo_always_false runtime.cgoAlwaysFalse
 var _Cgo_always_false bool
+
 //go:linkname _Cgo_use runtime.cgoUse
 func _Cgo_use(interface{})
+
 //go:linkname _Cgo_keepalive runtime.cgoKeepAlive
 //go:noescape
 func _Cgo_keepalive(interface{})
+
 //go:linkname _Cgo_no_callback runtime.cgoNoCallback
 func _Cgo_no_callback(bool)
+
 type _Ctype_void [0]byte
 
 //go:linkname _cgo_runtime_cgocall runtime.cgocall
@@ -30,4 +34,3 @@ func _cgoCheckPointer(interface{}, interface{})
 //go:linkname _cgoCheckResult runtime.cgoCheckResult
 //go:noescape
 func _cgoCheckResult(interface{})
-

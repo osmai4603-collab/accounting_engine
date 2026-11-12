@@ -1,4 +1,5 @@
 package net
+
 //go:cgo_import_dynamic res_search res_search#GLIBC_2.34 "libc.so.6"
 //go:cgo_import_dynamic free free#GLIBC_2.2.5 "libc.so.6"
 //go:cgo_import_dynamic __libc_start_main __libc_start_main#GLIBC_2.34 "libc.so.6"

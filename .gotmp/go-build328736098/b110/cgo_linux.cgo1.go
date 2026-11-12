@@ -20,4 +20,4 @@ import _ "unsafe"
 // and similarly for IPv6), but in practice setting it causes
 // getaddrinfo to return the wrong canonical name on Linux.
 // So definitely leave it out.
-const cgoAddrInfoFlags = ( /*line :20:26*/_Ciconst_AI_CANONNAME /*line :20:39*/) | ( /*line :20:43*/_Ciconst_AI_V4MAPPED /*line :20:55*/) | ( /*line :20:59*/_Ciconst_AI_ALL /*line :20:66*/)
+const cgoAddrInfoFlags = ( /*line :20:26*/ _Ciconst_AI_CANONNAME /*line :20:39*/) | ( /*line :20:43*/ _Ciconst_AI_V4MAPPED /*line :20:55*/) | ( /*line :20:59*/ _Ciconst_AI_ALL /*line :20:66*/)

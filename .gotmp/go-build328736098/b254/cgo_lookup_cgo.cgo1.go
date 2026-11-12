@@ -61,14 +61,14 @@ static struct group mygetgrnam_r(const char *name, char *buf, size_t buflen, int
 */
 import _ "unsafe"
 
-type _C_char =  /*line :61:16*/_Ctype_char /*line :61:22*/
-type _C_int =  /*line :62:15*/_Ctype_int /*line :62:20*/
-type _C_gid_t =  /*line :63:17*/_Ctype_gid_t /*line :63:24*/
-type _C_uid_t =  /*line :64:17*/_Ctype_uid_t /*line :64:24*/
-type _C_size_t =  /*line :65:18*/_Ctype_size_t /*line :65:26*/
-type _C_struct_group =  /*line :66:24*/_Ctype_struct_group /*line :66:38*/
-type _C_struct_passwd =  /*line :67:25*/_Ctype_struct_passwd /*line :67:40*/
-type _C_long =  /*line :68:16*/_Ctype_long /*line :68:22*/
+type _C_char = /*line :61:16*/ _Ctype_char                   /*line :61:22*/
+type _C_int = /*line :62:15*/ _Ctype_int                     /*line :62:20*/
+type _C_gid_t = /*line :63:17*/ _Ctype_gid_t                 /*line :63:24*/
+type _C_uid_t = /*line :64:17*/ _Ctype_uid_t                 /*line :64:24*/
+type _C_size_t = /*line :65:18*/ _Ctype_size_t               /*line :65:26*/
+type _C_struct_group = /*line :66:24*/ _Ctype_struct_group   /*line :66:38*/
+type _C_struct_passwd = /*line :67:25*/ _Ctype_struct_passwd /*line :67:40*/
+type _C_long = /*line :68:16*/ _Ctype_long                   /*line :68:22*/
 
 func _C_pw_uid(p *_C_struct_passwd) _C_uid_t   { return p.pw_uid }
 func _C_pw_uidp(p *_C_struct_passwd) *_C_uid_t { return &p.pw_uid }
@@ -81,35 +81,35 @@ func _C_pw_dir(p *_C_struct_passwd) *_C_char   { return p.pw_dir }
 func _C_gr_gid(g *_C_struct_group) _C_gid_t  { return g.gr_gid }
 func _C_gr_name(g *_C_struct_group) *_C_char { return g.gr_name }
 
-func _C_GoString(p *_C_char) string { return ( /*line :81:46*/_Cfunc_GoString /*line :81:55*/)(p) }
+func _C_GoString(p *_C_char) string { return ( /*line :81:46*/ _Cfunc_GoString /*line :81:55*/)(p) }
 
 func _C_getpwnam_r(name *_C_char, buf *_C_char, size _C_size_t) (pwd _C_struct_passwd, found bool, errno syscall.Errno) {
 	var f, e _C_int
-	pwd = ( /*line :85:8*/_Cfunc_mygetpwnam_r /*line :85:21*/)(name, buf, size, &f, &e)
+	pwd = ( /*line :85:8*/ _Cfunc_mygetpwnam_r /*line :85:21*/)(name, buf, size, &f, &e)
 	return pwd, f != 0, syscall.Errno(e)
 }
 
 func _C_getpwuid_r(uid _C_uid_t, buf *_C_char, size _C_size_t) (pwd _C_struct_passwd, found bool, errno syscall.Errno) {
 	var f, e _C_int
-	pwd = ( /*line :91:8*/_Cfunc_mygetpwuid_r /*line :91:21*/)(_C_int(uid), buf, size, &f, &e)
+	pwd = ( /*line :91:8*/ _Cfunc_mygetpwuid_r /*line :91:21*/)(_C_int(uid), buf, size, &f, &e)
 	return pwd, f != 0, syscall.Errno(e)
 }
 
 func _C_getgrnam_r(name *_C_char, buf *_C_char, size _C_size_t) (grp _C_struct_group, found bool, errno syscall.Errno) {
 	var f, e _C_int
-	grp = ( /*line :97:8*/_Cfunc_mygetgrnam_r /*line :97:21*/)(name, buf, size, &f, &e)
+	grp = ( /*line :97:8*/ _Cfunc_mygetgrnam_r /*line :97:21*/)(name, buf, size, &f, &e)
 	return grp, f != 0, syscall.Errno(e)
 }
 
 func _C_getgrgid_r(gid _C_gid_t, buf *_C_char, size _C_size_t) (grp _C_struct_group, found bool, errno syscall.Errno) {
 	var f, e _C_int
-	grp = ( /*line :103:8*/_Cfunc_mygetgrgid_r /*line :103:21*/)(_C_int(gid), buf, size, &f, &e)
+	grp = ( /*line :103:8*/ _Cfunc_mygetgrgid_r /*line :103:21*/)(_C_int(gid), buf, size, &f, &e)
 	return grp, f != 0, syscall.Errno(e)
 }
 
 const (
-	_C__SC_GETPW_R_SIZE_MAX = ( /*line :108:28*/_Ciconst__SC_GETPW_R_SIZE_MAX /*line :108:49*/)
-	_C__SC_GETGR_R_SIZE_MAX = ( /*line :109:28*/_Ciconst__SC_GETGR_R_SIZE_MAX /*line :109:49*/)
+	_C__SC_GETPW_R_SIZE_MAX = ( /*line :108:28*/ _Ciconst__SC_GETPW_R_SIZE_MAX /*line :108:49*/)
+	_C__SC_GETGR_R_SIZE_MAX = ( /*line :109:28*/ _Ciconst__SC_GETGR_R_SIZE_MAX /*line :109:49*/)
 )
 
-func _C_sysconf(key _C_int) _C_long { return ( /*line :112:46*/_Cfunc_sysconf /*line :112:54*/)(key) }
+func _C_sysconf(key _C_int) _C_long { return ( /*line :112:46*/ _Cfunc_sysconf /*line :112:54*/)(key) }

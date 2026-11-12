@@ -12,18 +12,24 @@ import "syscall"
 import _cgopackage "runtime/cgo"
 
 type _ _cgopackage.Incomplete
+
 var _ syscall.Errno
+
 func _Cgo_ptr(ptr unsafe.Pointer) unsafe.Pointer { return ptr }
 
 //go:linkname _Cgo_always_false runtime.cgoAlwaysFalse
 var _Cgo_always_false bool
+
 //go:linkname _Cgo_use runtime.cgoUse
 func _Cgo_use(interface{})
+
 //go:linkname _Cgo_keepalive runtime.cgoKeepAlive
 //go:noescape
 func _Cgo_keepalive(interface{})
+
 //go:linkname _Cgo_no_callback runtime.cgoNoCallback
 func _Cgo_no_callback(bool)
+
 type _Ctype__GoString_ string
 
 type _Ctype___socklen_t = _Ctype_uint
@@ -45,19 +51,19 @@ type _Ctype_size_t = _Ctype_ulong
 type _Ctype_socklen_t = _Ctype___socklen_t
 
 type _Ctype_struct_addrinfo struct {
-	ai_flags	_Ctype_int
-	ai_family	_Ctype_int
-	ai_socktype	_Ctype_int
-	ai_protocol	_Ctype_int
-	ai_addrlen	_Ctype_socklen_t
-	ai_addr		*_Ctype_struct_sockaddr
-	ai_canonname	*_Ctype_char
-	ai_next		*_Ctype_struct_addrinfo
+	ai_flags     _Ctype_int
+	ai_family    _Ctype_int
+	ai_socktype  _Ctype_int
+	ai_protocol  _Ctype_int
+	ai_addrlen   _Ctype_socklen_t
+	ai_addr      *_Ctype_struct_sockaddr
+	ai_canonname *_Ctype_char
+	ai_next      *_Ctype_struct_addrinfo
 }
 
 type _Ctype_struct_sockaddr struct {
-	sa_family	_Ctype_sa_family_t
-	sa_data		[14]_Ctype_char
+	sa_family _Ctype_sa_family_t
+	sa_data   [14]_Ctype_char
 }
 
 type _Ctype_uchar uint8
@@ -80,6 +86,7 @@ func _cgoCheckPointer(interface{}, interface{})
 //go:linkname _cgoCheckResult runtime.cgoCheckResult
 //go:noescape
 func _cgoCheckResult(interface{})
+
 const _Ciconst_AF_INET = 0x2
 const _Ciconst_AF_INET6 = 0xa
 const _Ciconst_AF_UNSPEC = 0x0
@@ -107,7 +114,9 @@ var _cgo_77133bf98b3a_C2func_getaddrinfo = unsafe.Pointer(&__cgofn__cgo_77133bf9
 //go:cgo_unsafe_args
 func _C2func_getaddrinfo(p0 *_Ctype_char, p1 *_Ctype_char, p2 *_Ctype_struct_addrinfo, p3 **_Ctype_struct_addrinfo) (r1 _Ctype_int, r2 error) {
 	errno := _cgo_runtime_cgocall(_cgo_77133bf98b3a_C2func_getaddrinfo, uintptr(unsafe.Pointer(&p0)))
-	if errno != 0 { r2 = syscall.Errno(errno) }
+	if errno != 0 {
+		r2 = syscall.Errno(errno)
+	}
 	if _Cgo_always_false {
 		_Cgo_use(p0)
 		_Cgo_use(p1)
@@ -116,6 +125,7 @@ func _C2func_getaddrinfo(p0 *_Ctype_char, p1 *_Ctype_char, p2 *_Ctype_struct_add
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_C2func_getnameinfo
 //go:linkname __cgofn__cgo_77133bf98b3a_C2func_getnameinfo _cgo_77133bf98b3a_C2func_getnameinfo
 var __cgofn__cgo_77133bf98b3a_C2func_getnameinfo byte
@@ -124,7 +134,9 @@ var _cgo_77133bf98b3a_C2func_getnameinfo = unsafe.Pointer(&__cgofn__cgo_77133bf9
 //go:cgo_unsafe_args
 func _C2func_getnameinfo(p0 *_Ctype_struct_sockaddr, p1 _Ctype_socklen_t, p2 *_Ctype_char, p3 _Ctype_socklen_t, p4 *_Ctype_char, p5 _Ctype_socklen_t, p6 _Ctype_int) (r1 _Ctype_int, r2 error) {
 	errno := _cgo_runtime_cgocall(_cgo_77133bf98b3a_C2func_getnameinfo, uintptr(unsafe.Pointer(&p0)))
-	if errno != 0 { r2 = syscall.Errno(errno) }
+	if errno != 0 {
+		r2 = syscall.Errno(errno)
+	}
 	if _Cgo_always_false {
 		_Cgo_use(p0)
 		_Cgo_use(p1)
@@ -148,6 +160,7 @@ func _Cfunc_GoString(p *_Ctype_char) string {
 func _Cfunc__CMalloc(n _Ctype_size_t) unsafe.Pointer {
 	return _cgo_cmalloc(uint64(n))
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_free
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_free _cgo_77133bf98b3a_Cfunc_free
 var __cgofn__cgo_77133bf98b3a_Cfunc_free byte
@@ -161,6 +174,7 @@ func _Cfunc_free(p0 unsafe.Pointer) (r1 _Ctype_void) {
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_freeaddrinfo
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_freeaddrinfo _cgo_77133bf98b3a_Cfunc_freeaddrinfo
 var __cgofn__cgo_77133bf98b3a_Cfunc_freeaddrinfo byte
@@ -174,6 +188,7 @@ func _Cfunc_freeaddrinfo(p0 *_Ctype_struct_addrinfo) (r1 _Ctype_void) {
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_gai_strerror
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_gai_strerror _cgo_77133bf98b3a_Cfunc_gai_strerror
 var __cgofn__cgo_77133bf98b3a_Cfunc_gai_strerror byte
@@ -187,6 +202,7 @@ func _Cfunc_gai_strerror(p0 _Ctype_int) (r1 *_Ctype_char) {
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_getaddrinfo
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_getaddrinfo _cgo_77133bf98b3a_Cfunc_getaddrinfo
 var __cgofn__cgo_77133bf98b3a_Cfunc_getaddrinfo byte
@@ -203,6 +219,7 @@ func _Cfunc_getaddrinfo(p0 *_Ctype_char, p1 *_Ctype_char, p2 *_Ctype_struct_addr
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_getnameinfo
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_getnameinfo _cgo_77133bf98b3a_Cfunc_getnameinfo
 var __cgofn__cgo_77133bf98b3a_Cfunc_getnameinfo byte
@@ -222,6 +239,7 @@ func _Cfunc_getnameinfo(p0 *_Ctype_struct_sockaddr, p1 _Ctype_socklen_t, p2 *_Ct
 	}
 	return
 }
+
 //go:cgo_import_static _cgo_77133bf98b3a_Cfunc_res_search
 //go:linkname __cgofn__cgo_77133bf98b3a_Cfunc_res_search _cgo_77133bf98b3a_Cfunc_res_search
 var __cgofn__cgo_77133bf98b3a_Cfunc_res_search byte

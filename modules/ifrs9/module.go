@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"accounting_engine/internal/events"
 	"accounting_engine/pkg/spi/standards"
 	"accounting_engine/pkg/spi/storage"
 )
@@ -24,6 +25,15 @@ func (m *Module) ValidateDependencies(ports storage.CoreLedgerStore) error {
 }
 
 func (m *Module) RegisterRules(router interface{}) error {
+	if r, ok := router.(*events.Router); ok {
+		r.RegisterRule(events.PostingRule{
+			RuleID:              "ifrs9-ecl",
+			EventType:           "IFRS9_ECL_PROVISION",
+			DebitAccountCode:    "5300",
+			CreditAccountCode:   "1290",
+			DescriptionTemplate: "IFRS 9 Expected Credit Loss Provision",
+		})
+	}
 	return nil
 }
 
