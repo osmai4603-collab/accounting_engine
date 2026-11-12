@@ -5,13 +5,13 @@ import (
 	"errors"
 	"time"
 
-	"accounting_engine/internal/governance"
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
 	"accounting_engine/pkg/api/v1/types"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
@@ -67,63 +67,28 @@ func (d *Driver) PostEntry(ctx context.Context, entry ledger.JournalEntry) error
 
 	pEntry := mapLedgerToPosting(entry)
 
-	// Ensure company, period, and accounts exist in driver memory
-	d.mu.Lock()
-	companyUUID := pEntry.CompanyID
-	if _, ok := d.companies[companyUUID]; !ok && companyUUID != uuid.Nil {
-		cur := "USD"
-		if len(entry.Lines) > 0 {
-			cur = entry.Lines[0].FunctionalDebit.Currency()
-			if cur == "" {
-				cur = entry.Lines[0].FunctionalCredit.Currency()
-			}
-			if cur == "" {
-				cur = entry.Lines[0].TransactionCurrency
-			}
-		}
-		if cur == "" {
-			cur = "USD"
-		}
-		d.companies[companyUUID] = masterdata.Company{
-			ID:                   companyUUID,
-			Code:                 "CMP-" + companyUUID.String()[:8],
-			LegalName:            "Company " + companyUUID.String()[:8],
-			FunctionalCurrency:   cur,
-			PresentationCurrency: cur,
-			Active:               true,
-		}
-	}
-
-	periodUUID := pEntry.PeriodID
-	if _, ok := d.periods[periodUUID]; !ok && periodUUID != uuid.Nil {
-		d.periods[periodUUID] = masterdata.FiscalPeriod{
-			ID:           periodUUID,
-			CompanyID:    companyUUID,
-			FiscalYearID: uuid.New(),
-			Number:       1,
-			Name:         "Default Period",
-			StartDate:    pEntry.EntryDate.AddDate(-1, 0, 0),
-			EndDate:      pEntry.EntryDate.AddDate(1, 0, 0),
-			State:        masterdata.PeriodOpen,
-			Type:         masterdata.FiscalPeriodTypeNormal,
-		}
-	}
-
+	// P0-1/P0-5: do not fabricate master data. Require referenced entities to exist.
+	d.mu.RLock()
+	_, companyOK := d.companies[pEntry.CompanyID]
+	_, periodOK := d.periods[pEntry.PeriodID]
+	accountsOK := true
 	for _, l := range pEntry.Lines {
-		if _, ok := d.accounts[l.AccountID]; !ok && l.AccountID != uuid.Nil {
-			d.accounts[l.AccountID] = masterdata.Account{
-				ID:            l.AccountID,
-				CompanyID:     companyUUID,
-				Code:          "ACC-" + l.AccountID.String()[:8],
-				Name:          "Account " + l.AccountID.String()[:8],
-				AccountType:   masterdata.AccountTypeAsset,
-				NormalBalance: masterdata.NormalBalanceDebit,
-				CurrencyID:    l.FunctionalDebit.Currency(),
-				IsActive:      true,
-			}
+		acc, ok := d.accounts[l.AccountID]
+		if !ok || (pEntry.CompanyID != uuid.Nil && acc.CompanyID != pEntry.CompanyID) {
+			accountsOK = false
+			break
 		}
 	}
-	d.mu.Unlock()
+	d.mu.RUnlock()
+	if pEntry.CompanyID != uuid.Nil && !companyOK {
+		return errors.New("company not found")
+	}
+	if pEntry.PeriodID != uuid.Nil && !periodOK {
+		return types.ErrFiscalPeriodNotFound
+	}
+	if !accountsOK {
+		return types.ErrAccountNotFound
+	}
 
 	draft := pEntry
 	draft.Status = posting.EntryDraft
@@ -155,7 +120,7 @@ func (d *Driver) GetAccount(ctx context.Context, companyID types.CompanyID, acco
 		NormalBalance:  ledger.NormalBalance(acc.NormalBalance),
 		ParentID:       parentID,
 		IsReconcilable: acc.IsReconcilable,
-		IsActive:       true,
+		IsActive:       acc.IsActive,
 		Currency:       acc.CurrencyID,
 	}, nil
 }
@@ -165,15 +130,18 @@ func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID,
 	defer d.mu.RUnlock()
 	p, ok := d.periods[uuid.UUID(periodID)]
 	if !ok || p.CompanyID != uuid.UUID(companyID) {
-		return ledger.FiscalPeriod{}, errors.New("fiscal period not found")
+		return ledger.FiscalPeriod{}, types.ErrFiscalPeriodNotFound
 	}
 	return ledger.FiscalPeriod{
-		ID:        types.FiscalPeriodID(p.ID),
-		CompanyID: types.CompanyID(p.CompanyID),
-		StartDate: p.StartDate,
-		EndDate:   p.EndDate,
-		State:     ledger.PeriodOpen,
-		Type:      ledger.FiscalPeriodTypeNormal,
+		ID:           types.FiscalPeriodID(p.ID),
+		CompanyID:    types.CompanyID(p.CompanyID),
+		FiscalYearID: types.CompanyID(p.FiscalYearID),
+		Number:       p.Number,
+		Name:         p.Name,
+		StartDate:    p.StartDate,
+		EndDate:      p.EndDate,
+		State:        ledger.PeriodState(p.State),
+		Type:         ledger.FiscalPeriodType(p.Type),
 	}, nil
 }
 
@@ -217,66 +185,23 @@ func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID,
 }
 
 func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	zeroMoney, _ := types.NewMoney(decimal.Zero, "USD")
-	return reporting.GeneralLedgerReport{
-		CompanyID:      companyID,
-		AccountID:      accountID,
-		StartDate:      start,
-		EndDate:        end,
-		OpeningBalance: zeroMoney,
-		Entries:        []reporting.GeneralLedgerEntry{},
-		EndingBalance:  zeroMoney,
-	}, nil
+	return reporting.GeneralLedgerReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
-	return reporting.BalanceSheetReport{
-		CompanyID:       companyID,
-		AsOfDate:        asOf,
-		Currency:        currency,
-		Assets:          reporting.BalanceSheetSection{Title: "Assets", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		Liabilities:     reporting.BalanceSheetSection{Title: "Liabilities", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		Equity:          reporting.BalanceSheetSection{Title: "Equity", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		TotalAssets:     zeroMoney,
-		TotalLiabEquity: zeroMoney,
-		IsBalanced:      true,
-	}, nil
+	return reporting.BalanceSheetReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
-	return reporting.IncomeStatementReport{
-		CompanyID: companyID,
-		StartDate: start,
-		EndDate:   end,
-		Currency:  currency,
-		Revenues:  reporting.IncomeStatementSection{Title: "Revenues", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
-		Expenses:  reporting.IncomeStatementSection{Title: "Expenses", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
-		NetIncome: zeroMoney,
-	}, nil
+	return reporting.IncomeStatementReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.audit = append(d.audit, &governance.FinancialAuditLog{
-		EntityID:   uuid.New(),
-		EntityType: "EVENT",
-		Action:     "AUDIT",
-		Timestamp:  time.Now().UTC(),
-	})
-	return nil
+	return types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
-	return "fingerprint-" + entryID.String(), nil
+	return "", types.ErrCapabilityNotImplemented
 }
 
 func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {

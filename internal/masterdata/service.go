@@ -242,6 +242,24 @@ func (s *Service) GetAccountByIDForCompanyContext(ctx context.Context, companyID
 	return s.getAccountForCompany(ctx, companyID, accountID)
 }
 
+func (s *Service) GetAccountByCodeForCompanyContext(ctx context.Context, companyID uuid.UUID, code string) (Account, error) {
+	if ctx == nil {
+		return Account{}, errors.New("account context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return Account{}, err
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if companyID == uuid.Nil {
+		return s.getAccountByCode(ctx, code)
+	}
+	repository, ok := s.repo.(CompanyScopedRepository)
+	if !ok {
+		return Account{}, ErrCompanyScopeRequired
+	}
+	return s.getAccountByCodeForCompany(ctx, repository, companyID, code)
+}
+
 func (s *Service) createAccountContext(ctx context.Context, account Account) error {
 	if repository, ok := s.repo.(interface {
 		CreateAccountContext(context.Context, Account) error

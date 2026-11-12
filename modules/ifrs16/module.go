@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"accounting_engine/internal/events"
+	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/spi/standards"
 	"accounting_engine/pkg/spi/storage"
 )
@@ -24,16 +24,17 @@ func (m *Module) ValidateDependencies(ports storage.CoreLedgerStore) error {
 	return nil
 }
 
-func (m *Module) RegisterRules(router interface{}) error {
-	if r, ok := router.(*events.Router); ok {
-		r.RegisterRule(events.PostingRule{
-			RuleID:              "ifrs16-lease",
-			EventType:           "IFRS16_LEASE_PAYMENT",
-			DebitAccountCode:    "2300", // Lease Liability
-			CreditAccountCode:   "1010", // Cash
-			DescriptionTemplate: "IFRS 16 Lease Payment & Depreciation",
-		})
+func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
+	if registrar == nil {
+		return errors.New("rule registrar is required")
 	}
+	registrar.RegisterRule(events.PostingRule{
+		RuleID:              "ifrs16-lease",
+		EventType:           "IFRS16_LEASE_PAYMENT",
+		DebitAccountCode:    "2300", // Lease Liability
+		CreditAccountCode:   "1010", // Cash
+		DescriptionTemplate: "IFRS 16 Lease Payment & Depreciation",
+	})
 	return nil
 }
 

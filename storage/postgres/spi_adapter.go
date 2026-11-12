@@ -2,9 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	"accounting_engine/internal/governance"
 	"accounting_engine/internal/posting"
 	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/pkg/api/v1/ledger"
@@ -12,6 +12,7 @@ import (
 	"accounting_engine/pkg/api/v1/types"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 )
 
@@ -93,88 +94,68 @@ func (d *Driver) GetAccount(ctx context.Context, companyID types.CompanyID, acco
 		NormalBalance:  ledger.NormalBalance(acc.NormalBalance),
 		ParentID:       parentID,
 		IsReconcilable: acc.IsReconcilable,
-		IsActive:       true,
+		IsActive:       acc.IsActive,
 		Currency:       acc.CurrencyID,
 	}, nil
 }
 
 func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID, periodID types.FiscalPeriodID) (ledger.FiscalPeriod, error) {
-	return ledger.FiscalPeriod{
-		ID:        periodID,
-		CompanyID: companyID,
-		StartDate: time.Now().AddDate(-1, 0, 0),
-		EndDate:   time.Now().AddDate(1, 0, 0),
-		State:     ledger.PeriodOpen,
-		Type:      ledger.FiscalPeriodTypeNormal,
-	}, nil
+	var period ledger.FiscalPeriod
+	err := d.WithCompanyTx(ctx, uuid.UUID(companyID), func(tx pgx.Tx) error {
+		var pID, cID, yID uuid.UUID
+		var number int
+		var name, state, ptype string
+		var start, end time.Time
+		scanErr := tx.QueryRow(ctx, `SELECT id, company_id, year_id, COALESCE(period_number,0), COALESCE(name,''), start_date, end_date, state, period_type
+			FROM fiscal_periods WHERE company_id=$1 AND id=$2`, uuid.UUID(companyID), uuid.UUID(periodID)).
+			Scan(&pID, &cID, &yID, &number, &name, &start, &end, &state, &ptype)
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			return types.ErrFiscalPeriodNotFound
+		}
+		if scanErr != nil {
+			return scanErr
+		}
+		period = ledger.FiscalPeriod{
+			ID:           types.FiscalPeriodID(pID),
+			CompanyID:    types.CompanyID(cID),
+			FiscalYearID: types.CompanyID(yID),
+			Number:       number,
+			Name:         name,
+			StartDate:    start,
+			EndDate:      end,
+			State:        ledger.PeriodState(state),
+			Type:         ledger.FiscalPeriodType(ptype),
+		}
+		return nil
+	})
+	return period, err
 }
 
 func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
-	return reporting.TrialBalance{
-		CompanyID:   companyID,
-		AsOfDate:    asOf,
-		Currency:    currency,
-		IsBalanced:  true,
-		Lines:       []reporting.TrialBalanceLine{},
-		TotalDebit:  zeroMoney,
-		TotalCredit: zeroMoney,
-	}, nil
+	return reporting.TrialBalance{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
-	zeroMoney, _ := types.NewMoney(decimal.Zero, "USD")
-	return reporting.GeneralLedgerReport{
-		CompanyID:      companyID,
-		AccountID:      accountID,
-		StartDate:      start,
-		EndDate:        end,
-		OpeningBalance: zeroMoney,
-		Entries:        []reporting.GeneralLedgerEntry{},
-		EndingBalance:  zeroMoney,
-	}, nil
+	return reporting.GeneralLedgerReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
-	return reporting.BalanceSheetReport{
-		CompanyID:       companyID,
-		AsOfDate:        asOf,
-		Currency:        currency,
-		Assets:          reporting.BalanceSheetSection{Title: "Assets", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		Liabilities:     reporting.BalanceSheetSection{Title: "Liabilities", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		Equity:          reporting.BalanceSheetSection{Title: "Equity", Lines: []reporting.BalanceSheetLine{}, TotalAmount: zeroMoney},
-		TotalAssets:     zeroMoney,
-		TotalLiabEquity: zeroMoney,
-		IsBalanced:      true,
-	}, nil
+	return reporting.BalanceSheetReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
-	zeroMoney, _ := types.NewMoney(decimal.Zero, currency)
-	return reporting.IncomeStatementReport{
-		CompanyID: companyID,
-		StartDate: start,
-		EndDate:   end,
-		Currency:  currency,
-		Revenues:  reporting.IncomeStatementSection{Title: "Revenues", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
-		Expenses:  reporting.IncomeStatementSection{Title: "Expenses", Lines: []reporting.IncomeStatementLine{}, TotalAmount: zeroMoney},
-		NetIncome: zeroMoney,
-	}, nil
+	return reporting.IncomeStatementReport{}, types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
-	audit := governance.FinancialAuditLog{
-		EntityID:   uuid.New(),
-		EntityType: "EVENT",
-		Action:     "AUDIT",
-		Timestamp:  time.Now().UTC(),
-	}
-	return d.AppendAuditLog(ctx, audit)
+	_ = eventID
+	_ = details
+	return types.ErrCapabilityNotImplemented
 }
 
 func (d *Driver) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
-	return "fingerprint-" + entryID.String(), nil
+	_ = entryID
+	return "", types.ErrCapabilityNotImplemented
 }
 
 func mapLedgerToPosting(e ledger.JournalEntry) posting.JournalEntry {

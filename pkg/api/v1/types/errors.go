@@ -20,4 +20,5 @@ var (
 	ErrMoveAlreadyPosted         = errors.New("accounting move already posted")
 	ErrCannotModifyPostedMove    = errors.New("cannot modify posted move")
 	ErrMakerCheckerViolation     = errors.New("maker-checker violation")
+	ErrCapabilityNotImplemented  = errors.New("capability not implemented")
 )

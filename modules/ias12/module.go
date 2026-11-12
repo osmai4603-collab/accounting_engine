@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"accounting_engine/internal/events"
+	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/spi/standards"
 	"accounting_engine/pkg/spi/storage"
 )
@@ -24,16 +24,17 @@ func (m *Module) ValidateDependencies(ports storage.CoreLedgerStore) error {
 	return nil
 }
 
-func (m *Module) RegisterRules(router interface{}) error {
-	if r, ok := router.(*events.Router); ok {
-		r.RegisterRule(events.PostingRule{
-			RuleID:              "ias12-tax",
-			EventType:           "IAS12_DEFERRED_TAX",
-			DebitAccountCode:    "5400", // Income Tax Expense
-			CreditAccountCode:   "2400", // Deferred Tax Liability
-			DescriptionTemplate: "IAS 12 Deferred Tax Accounting",
-		})
+func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
+	if registrar == nil {
+		return errors.New("rule registrar is required")
 	}
+	registrar.RegisterRule(events.PostingRule{
+		RuleID:              "ias12-tax",
+		EventType:           "IAS12_DEFERRED_TAX",
+		DebitAccountCode:    "5400", // Income Tax Expense
+		CreditAccountCode:   "2400", // Deferred Tax Liability
+		DescriptionTemplate: "IAS 12 Deferred Tax Accounting",
+	})
 	return nil
 }
 

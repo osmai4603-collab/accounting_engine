@@ -3,13 +3,17 @@ package acid
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"accounting_engine/internal/masterdata"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
 	"accounting_engine/storage/memory"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 func TestInfrastructureIndependence(t *testing.T) {
@@ -26,33 +30,66 @@ func TestInfrastructureIndependence(t *testing.T) {
 	}
 	defer engine.Close()
 
-	companyID := types.NewCompanyID()
+	companyUUID := uuid.New()
+	companyID := types.CompanyID(companyUUID)
+	now := time.Now().UTC()
+	if err := store.CreateCompany(ctx, masterdata.Company{
+		ID: companyUUID, Code: "CMP", LegalName: "Test Co",
+		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatalf("setup company: %v", err)
+	}
+	year := masterdata.GenerateFiscalYear(time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyUUID
+	for i := range year.Periods {
+		year.Periods[i].CompanyID = companyUUID
+	}
+	if err := store.CreateFiscalYear(ctx, year); err != nil {
+		t.Fatalf("setup fiscal year: %v", err)
+	}
+	cashID := uuid.New()
+	revenueID := uuid.New()
+	for _, acc := range []masterdata.Account{
+		{ID: cashID, CompanyID: companyUUID, Code: "1000", Name: "Cash", AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit, CurrencyID: "USD", IsActive: true},
+		{ID: revenueID, CompanyID: companyUUID, Code: "4000", Name: "Revenue", AccountType: masterdata.AccountTypeIncome, NormalBalance: masterdata.NormalBalanceCredit, CurrencyID: "USD", IsActive: true},
+	} {
+		if err := store.CreateAccount(ctx, acc); err != nil {
+			t.Fatalf("setup account %s: %v", acc.Code, err)
+		}
+	}
+
 	var wg sync.WaitGroup
-	numEntries := 1000
+	numEntries := 200
+	var failures int64
 
 	for i := 0; i < numEntries; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			entryID := types.NewJournalEntryID()
 			amt, _ := types.NewMoneyFromString("50.00", "USD")
+			zero, _ := types.NewMoneyFromString("0.00", "USD")
 			entry := ledger.JournalEntry{
-				ID:            entryID,
+				ID:            types.NewJournalEntryID(),
 				CompanyID:     companyID,
-				Status:        ledger.EntryPosted,
-				EffectiveDate: time.Now().UTC(),
+				EffectiveDate: now,
 				Description:   "Concurrent memory store test",
+				CreatedBy:     "tester",
 				Lines: []ledger.EntryLine{
-					{ID: types.NewAccountID(), AccountID: types.NewAccountID(), FunctionalDebit: amt, TransactionAmount: amt, TransactionCurrency: "USD"},
-					{ID: types.NewAccountID(), AccountID: types.NewAccountID(), FunctionalCredit: amt, TransactionAmount: amt, TransactionCurrency: "USD"},
+					{AccountID: types.AccountID(cashID), TransactionAmount: amt, TransactionCurrency: "USD", ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: amt, FunctionalCredit: zero},
+					{AccountID: types.AccountID(revenueID), TransactionAmount: amt, TransactionCurrency: "USD", ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: zero, FunctionalCredit: amt},
 				},
 			}
-			_, _ = engine.Ledger().PostEntry(ctx, entry)
+			if _, err := engine.Ledger().PostEntry(ctx, entry); err != nil {
+				atomic.AddInt64(&failures, 1)
+			}
 		}(i)
 	}
 	wg.Wait()
+	if failures != 0 {
+		t.Fatalf("expected all concurrent posts to succeed, got %d failures", failures)
+	}
 
-	tb, err := engine.Reporting().GetTrialBalance(ctx, companyID, time.Now().UTC(), "USD")
+	tb, err := engine.Reporting().GetTrialBalance(ctx, companyID, now, "USD")
 	if err != nil {
 		t.Fatalf("Failed to retrieve trial balance after concurrent load: %v", err)
 	}

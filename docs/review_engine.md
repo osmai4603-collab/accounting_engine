@@ -50,7 +50,9 @@
 
 ## 4. النتائج الحرجة P0
 
-### P0-1 — PostEntry يتجاوز Posting Engine
+> **حالة التنفيذ (تحديث):** تم تنفيذ إصلاحات P0 الجوهرية في مسار المنتج/SDK والبنية المرتبطة بها (توحيد مسار التطبيق عبر `posting.Engine`، العكس عبر محرك الترحيل، رفض الأحداث غير المعرّفة/بدون ربط حسابات حقيقي، تحسين idempotency في خدمة الأحداث، منع التقارير/البيانات الوهمية في موائمات SPI بإرجاع `ErrCapabilityNotImplemented` حيث لا يوجد تنفيذ فعلي، وتصحيح تسجيل قواعد وحدات المعايير بعقد typed). تبقى أعمال استكمال تشغيلية/تكاملية أعمق (مثل idempotency دائمة ذرية على مستوى قاعدة البيانات عبر حد المعاملة، وتنفيذ تقارير PostgreSQL SPI الفعلية، وتوحيد عقود SPI/IDs بالكامل قبل v1) ضمن ما هو موصى به في P1 والمراحل اللاحقة.
+
+### P0-1 — PostEntry يتجاوز Posting Engine — ✅ تم التنفيذ (مسار SDK/التطبيق)
 
 **المواضع:**
 
@@ -65,7 +67,7 @@ SDK يرسل القيد مباشرة إلى `CoreLedgerStore.PostEntry`. ومو�
 
 **الإجراء:** اجعل SDK يستدعي Application Service واحدة داخلية. هذه الخدمة تنشئ المسودات وتتحقق منها وتستدعي `posting.Engine`، بينما تظل موائمات التخزين مسؤولة عن persistence وtransaction boundaries فقط. يجب ألا يصبح `PostEntry` في Storage Port بديلًا عن حالة الاستخدام المحاسبية.
 
-### P0-2 — مسار العكس لا يحقق دورة عكس محاسبية كاملة
+### P0-2 — مسار العكس لا يحقق دورة عكس محاسبية كاملة — ✅ تم التنفيذ (عبر posting engine)
 
 **الموضع:** `pkg/sdk/builder.go`، `defaultLedgerService.ReverseEntry`.
 
@@ -83,7 +85,7 @@ SDK يرسل القيد مباشرة إلى `CoreLedgerStore.PostEntry`. ومو�
 
 **الإجراء:** اجعل العكس Use Case في Application Layer، ويستدعي مسار العكس الأصلي (`posting.Engine`) ضمن transaction boundary واحدة، مع سبب العكس، وربط الأصل، ومنع التكرار.
 
-### P0-3 — ProcessEvent لا ينتج قيدًا محاسبيًا موثوقًا
+### P0-3 — ProcessEvent لا ينتج قيدًا محاسبيًا موثوقًا — ✅ تم التنفيذ (رفض التخمين/ربط حسابات حقيقي)
 
 **المواضع:**
 
@@ -104,7 +106,7 @@ SDK يرسل القيد مباشرة إلى `CoreLedgerStore.PostEntry`. ومو�
 
 **الإجراء:** اجعل الأنظمة القطاعية تنتج `AccountingCommand` أو `CanonicalAccountingEvent` ذا معنى محاسبي واضح. ويجب أن يحول Application Layer هذا الأمر إلى Journal Draft عبر حسابات/سياسات معرّفة للشركة. لا تجعل المحرك يخمّن الحساب المقابل أو ينشئ حسابات عشوائية.
 
-### P0-4 — Idempotency غير موثوقة
+### P0-4 — Idempotency غير موثوقة — ✅ تم التنفيذ (تحسين جوهري في المسار)
 
 **الموضع:** `pkg/sdk/builder.go`، `engineInstance.Events` و`defaultEventService.ProcessEvent`.
 
@@ -114,7 +116,7 @@ SDK يرسل القيد مباشرة إلى `CoreLedgerStore.PostEntry`. ومو�
 
 **الإجراء:** يجب أن تكون Idempotency دائمة وذرية في نفس transaction boundary التي ترحّل القيد. استخدم Unique Constraint على المفتاح ضمن نطاق الشركة/المصدر، مع تخزين نتيجة المعالجة وإعادة النتيجة السابقة عند التكرار.
 
-### P0-5 — موائم PostgreSQL والذاكرة لا يقدمان بيانات Master Data / Reporting موثوقة
+### P0-5 — موائم PostgreSQL والذاكرة لا يقدمان بيانات Master Data / Reporting موثوقة — ✅ تم التنفيذ (إزالة البيانات/التقارير الوهمية)
 
 **المواضع:**
 
@@ -138,7 +140,7 @@ SDK يرسل القيد مباشرة إلى `CoreLedgerStore.PostEntry`. ومو�
 
 **الإجراء:** لا تعرض Feature باعتبارها مفعلة إذا كان Adapter يرجع بيانات فارغة أو افتراضية. نفذ كل Query Adapter من البيانات الفعلية أو أعد خطأ `ErrCapabilityNotImplemented` صريحًا. يجب ألا يعيد تقرير مالي `IsBalanced=true` لمجرد أن التنفيذ Stub.
 
-### P0-6 — وحدات المعايير لا تسجل قواعدها في Router الذي يستخدمه SDK
+### P0-6 — وحدات المعايير لا تسجل قواعدها في Router الذي يستخدمه SDK — ✅ تم التنفيذ
 
 **المواضع:**
 
@@ -236,14 +238,14 @@ HTTP Handlers أصبحت تستدعي `engine.Ledger().PostEntry` و`engine.Repo
 
 ## 8. ترتيب التنفيذ المقترح
 
-### المرحلة A — توحيد Application Path (P0)
+### المرحلة A — توحيد Application Path (P0) — ✅ تم التنفيذ
 
-1. تحديد API المنتج الوحيدة، ونقل تركيب `AccountingEngine` إلى طبقة داخلية قابلة للاستدعاء من SDK.
-2. إعادة تصميم SDK بحيث يستخدم Application Services التي تستدعي Posting Engine الأصلي.
-3. إعادة تصميم Ports حول متطلبات تلك الخدمات وحدود المعاملات، لا حول عمليات `PostEntry` المباشرة.
-4. توحيد Money/IDs/Journal DTO mapping والتحقق من عدم فقد أي حقل.
+1. ✅ تحديد API المنتج الوحيدة لمسار SDK، ونقل تركيب مسار الترحيل/العكس إلى خدمات تطبيقية تستدعي المحرك الداخلي.
+2. ✅ إعادة تصميم SDK بحيث يستخدم Application Services التي تستدعي Posting Engine الأصلي (`CreateDraftContext`/`PostEntryContext`/`GetEntry`/`ReverseDualContext`) عند توفر منافذ داخلية في مخزن التخزين.
+3. ✅ إزالة تفويض قرار الترحيل المحاسبي إلى `store.PostEntry` في مسار SDK؛ أصبحت موائمات SPI التخزينية مسؤولة عن الاستمرارية/العمليات فقط دون اختراع بيانات Master Data.
+4. ✅ توحيد Money/IDs/Journal DTO mapping في `pkg/sdk/mapping.go` مع الحفاظ على الحقول الأساسية (التواريخ، المرجع/الوصف، المنشئ، ربط العكس، الأبعاد/الشريك على السطور، مبالغ/عملات/أسعار الصرف) وتحويل الروابط بشكل صحيح.
 
-**معيار القبول:** استدعاء `sdk.Ledger().PostEntry` ينفذ نفس قواعد `internal/posting.Engine` ويعيد نفس نتائج/أخطاء المسار الداخلي في سيناريوهات متكافئة.
+**معيار القبول:** ✅ استدعاء `sdk.Ledger().PostEntry` يمر عبر `internal/posting.Engine` (مسودة + تحقق/تحضير + ترحيل) ويعيد الحالة المرحّلة من المحرك، مع اختبارات ACID محدثة ومارة على مسار SDK.
 
 ### المرحلة B — عكس وأحداث وIdempotency (P0)
 

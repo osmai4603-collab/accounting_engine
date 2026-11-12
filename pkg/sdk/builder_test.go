@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/spi/standards"
@@ -36,7 +37,7 @@ func (m *mockStandard) ValidateDependencies(ports storage.CoreLedgerStore) error
 	return m.err
 }
 
-func (m *mockStandard) RegisterRules(router interface{}) error {
+func (m *mockStandard) RegisterRules(registrar events.RuleRegistrar) error {
 	return nil
 }
 
