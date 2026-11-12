@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "accounting_engine/proto/accounting/v1;accountingv1";
+
+service AccountingService {
+  rpc PostEntry (PostEntryRequest) returns (PostEntryResponse);
+  rpc GetEntry (GetEntryRequest) returns (GetEntryResponse);
+  rpc GetTrialBalance (GetTrialBalanceRequest) returns (GetTrialBalanceResponse);
+}
+
+message PostEntryRequest {
+  string company_id = 1;
+  string description = 2;
+}
+
+message PostEntryResponse {
+  string entry_id = 1;
+  string status = 2;
+}
+
+message GetEntryRequest {
+  string company_id = 1;
+  string entry_id = 2;
+}
+
+message GetEntryResponse {
+  string entry_id = 1;
+  string status = 2;
+}
+
+message GetTrialBalanceRequest {
+  string company_id = 1;
+  string as_of_date = 2;
+  string currency = 3;
+}
+
+message GetTrialBalanceResponse {
+  string company_id = 1;
+  bool is_balanced = 2;
+}

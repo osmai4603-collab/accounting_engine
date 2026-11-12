@@ -1,0 +1,25 @@
+# import config
+importmap golang.org/x/net/dns/dnsmessage=vendor/golang.org/x/net/dns/dnsmessage
+packagefile cmp=/home/osm/.cache/go-build/dc/dc60276edb83b884f0d8fa19cace169c8e35da4a53b9cc866575515faa9545b7-d
+packagefile context=/home/osm/.cache/go-build/1c/1cd6cffa45d01dc2ae8374636ab8ff51825590e2168c20c765fca5202bbc2aa7-d
+packagefile errors=/home/osm/.cache/go-build/56/56ae96eb07ddc6bf49c0371c2bf806a16aaf5ce315b1d2e58323c3c5cab9e845-d
+packagefile vendor/golang.org/x/net/dns/dnsmessage=/home/osm/.cache/go-build/b3/b39205d3109abd56b167a7b9f185b4a0e5704b216a379b2a3f84205d795af7d8-d
+packagefile internal/bytealg=/home/osm/.cache/go-build/e1/e100afd67fbdd811fb7796e90fad653cf5a767cb4295cb6146538582d038c12b-d
+packagefile internal/godebug=/home/osm/.cache/go-build/69/69bca433630bf5425f9a6ee2effcadf20f6297d73b5eccb5feca847c7a4814f6-d
+packagefile internal/nettrace=/home/osm/.cache/go-build/2f/2f3c7e88f017495c1497b53a812b20db6480ea726b7a7b6115e29f1fde5c1a4b-d
+packagefile internal/poll=/home/osm/.cache/go-build/30/307fa7229029ae63c3b5c9035fa41c3fb77c553f3b7bf2549baa299942eba43f-d
+packagefile internal/singleflight=/home/osm/.cache/go-build/d4/d4109c61064a743e327ff1337e663828a15021ad17e7996c40d8b8d2da28bebe-d
+packagefile internal/strconv=/home/osm/.cache/go-build/bd/bd2db0ea16bfc6f0d21d0d3528d1de6f9048f42b4dc8d4b19f1230b34836c93c-d
+packagefile internal/stringslite=/home/osm/.cache/go-build/14/142b1c875be774f9a4346dcad368461c4333f43ba0dad624ba7a19ccbdce9ba3-d
+packagefile internal/syscall/unix=/home/osm/.cache/go-build/a5/a50dfd6048465906eae385b7c3f23b707c8251d4d2c44cf82a691716e747bc75-d
+packagefile io=/home/osm/.cache/go-build/89/89156c45582c46a3b15c5274cd27808b7130ee7ee91a04845ebc65dbf92212da-d
+packagefile io/fs=/home/osm/.cache/go-build/ef/ef13f2a5eb2e2bcf6eddf99c4ddd639953c67e02721c8c3897e4ec8fec64675f-d
+packagefile net/netip=/home/osm/.cache/go-build/a7/a7c9d3bbd99552dac79d590b8ec3b4953b91d677737b68644d83f9a1201f873e-d
+packagefile os=/home/osm/.cache/go-build/32/3261f0b825152ea832d1c40216311066f385e1679d995ab5054d9170e824ab19-d
+packagefile runtime=/home/osm/.cache/go-build/be/bed50f430a127efe659d402f5d624c2ec5abab68581bc45912c94534f86bcbac-d
+packagefile slices=/home/osm/.cache/go-build/20/20cf020518f5b082c3f6a47fc843dfc937031a4a12c64f03f12fd076f213a0ad-d
+packagefile sync=/home/osm/.cache/go-build/51/51d63765a4ca56454d9f8438eed3f58b39530f0306b87e99601cd3c853446235-d
+packagefile sync/atomic=/home/osm/.cache/go-build/a6/a6319f1e42f9144e65cddb11a23685064e2731b428a7d3fe46a10923c960d35a-d
+packagefile syscall=/home/osm/.cache/go-build/3e/3e9162f8f4bf092c79fe0c7b287b116300c0c60c7cbbe4933cc9af5bb4de6078-d
+packagefile time=/home/osm/.cache/go-build/c3/c351d7a4daf1d50b1e8fdb6c92c1950a0ea2b0e754e5bfce380eabe84011f2ac-d
+packagefile runtime/cgo=/home/osm/StudioProjects/cashflow_system/accounting_engine/.gotmp/go-build328736098/b117/_pkg_.a

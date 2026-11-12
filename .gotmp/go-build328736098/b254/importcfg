@@ -1,0 +1,8 @@
+# import config
+packagefile fmt=/home/osm/.cache/go-build/4d/4d07f34e34307dd2f3ccbd53a6ff5df1497d15fd9952f2548c460a2f055673d8-d
+packagefile runtime=/home/osm/.cache/go-build/be/bed50f430a127efe659d402f5d624c2ec5abab68581bc45912c94534f86bcbac-d
+packagefile strconv=/home/osm/.cache/go-build/09/09fc5c2d49473938652e296bece2cc63f01af4ece3d1a0bf1dd5a9d5764e8d10-d
+packagefile strings=/home/osm/.cache/go-build/b7/b7c59d2f8939b52ed9324f839496404fea9b1a0b688ad4628e52dc70d6ccc236-d
+packagefile sync=/home/osm/.cache/go-build/51/51d63765a4ca56454d9f8438eed3f58b39530f0306b87e99601cd3c853446235-d
+packagefile syscall=/home/osm/.cache/go-build/3e/3e9162f8f4bf092c79fe0c7b287b116300c0c60c7cbbe4933cc9af5bb4de6078-d
+packagefile runtime/cgo=/home/osm/StudioProjects/cashflow_system/accounting_engine/.gotmp/go-build328736098/b117/_pkg_.a

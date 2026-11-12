@@ -24,7 +24,7 @@ func TestT2_4_SingleWriterAuthority(t *testing.T) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".gotmp" {
 				return filepath.SkipDir
 			}
 			return nil
