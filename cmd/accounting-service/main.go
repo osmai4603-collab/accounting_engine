@@ -34,7 +34,10 @@ func main() {
 		coreStore = pgDriver
 		reportingStore = pgDriver
 		governanceStore = pgDriver
-		closeStore = func() error { return pgDriver.Close() }
+		closeStore = func() error {
+			pgDriver.Close()
+			return nil
+		}
 		log.Println("Using PostgreSQL storage backend")
 	}
 	defer func() {
