@@ -69,7 +69,19 @@ func (e *Engine) PostBulkContext(ctx context.Context, entries []JournalEntry, po
 	return nil
 }
 
-func (e *Engine) postBulkAtomic(ctx context.Context, repository BulkRepository, entries []JournalEntry, posterID string) error {
+func (e *Engine) postBulkAtomic(ctx context.Context, repository BulkRepository, entries []JournalEntry, posterID string) (err error) {
+	start := time.Now()
+	if e.metrics != nil {
+		e.metrics.IncPostingAttempts()
+		defer func() {
+			e.metrics.ObserveTransactionDuration(time.Since(start).Seconds())
+			if err != nil {
+				_, category := ClassifyError(err)
+				e.metrics.IncPostingFailure(string(category))
+			}
+		}()
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

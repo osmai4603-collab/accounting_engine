@@ -35,7 +35,7 @@ func (d *reconciliationTestDriver) BuildBalanceReconciliationReport(
 		FiscalPeriodID:  periodID,
 		CurrencyID:      currency,
 		AccountsChecked: 2,
-		GeneratedAt:      time.Now().UTC(),
+		GeneratedAt:     time.Now().UTC(),
 		ZeroDrift:       true,
 	}
 	if d.drift {

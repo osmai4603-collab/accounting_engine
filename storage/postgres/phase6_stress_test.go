@@ -30,6 +30,9 @@ func TestPhase6ConcurrentStress500Entries50Goroutines(t *testing.T) {
 	if testing.Short() {
 		t.Skip("concurrency stress test is skipped in short mode")
 	}
+	if testing.CoverMode() != "" {
+		t.Skip("concurrency stress test skipped under coverage instrumentation")
+	}
 	const (
 		numGoroutines = 50
 		entriesPerGo  = 10

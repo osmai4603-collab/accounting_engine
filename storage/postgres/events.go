@@ -32,6 +32,10 @@ func (d *Driver) SaveEvent(ctx context.Context, event subledgers.EconomicEvent) 
 	if err != nil {
 		return err
 	}
+	payloadBytes := event.PayloadJSON
+	if payloadBytes == nil {
+		payloadBytes = []byte{}
+	}
 	return d.WithCompanyTx(ctx, event.CompanyID, func(tx pgx.Tx) error {
 		result, err := tx.Exec(ctx,
 			`INSERT INTO subledger_events(
@@ -40,7 +44,7 @@ func (d *Driver) SaveEvent(ctx context.Context, event subledgers.EconomicEvent) 
 			 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 			 ON CONFLICT(company_id,source_system,idempotency_key) DO NOTHING`,
 			event.CompanyID, event.SourceSystem, event.IdempotencyKey, event.EventID, event.ExternalID,
-			event.EventType, event.EventVersion, event.PayloadJSON, event.Status, event.GeneratedEntryID,
+			event.EventType, event.EventVersion, payloadBytes, event.Status, event.GeneratedEntryID,
 			event.ErrorMessage, event.CreatedAt, event.ProcessedAt, data)
 		if err != nil {
 			return err
@@ -150,6 +154,10 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 	if err != nil {
 		return err
 	}
+	payloadBytes := event.PayloadJSON
+	if payloadBytes == nil {
+		payloadBytes = []byte{}
+	}
 	result, err := tx.Exec(ctx,
 		`INSERT INTO subledger_events(
 		 company_id,source_system,idempotency_key,event_id,external_id,event_type,event_version,
@@ -157,7 +165,7 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 		 ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		 ON CONFLICT(company_id,source_system,idempotency_key) DO NOTHING`,
 		event.CompanyID, event.SourceSystem, event.IdempotencyKey, event.EventID, event.ExternalID,
-		event.EventType, event.EventVersion, event.PayloadJSON, event.Status, event.GeneratedEntryID,
+		event.EventType, event.EventVersion, payloadBytes, event.Status, event.GeneratedEntryID,
 		event.ErrorMessage, event.CreatedAt, event.ProcessedAt, data)
 	if err != nil {
 		return err
@@ -214,7 +222,7 @@ func (d *Driver) SaveEventAndDraft(ctx context.Context, event subledgers.Economi
 		     generated_entry_id=$10,error_message=$11,created_at=$12,processed_at=$13,event=$14
 		 WHERE company_id=$1 AND source_system=$2 AND idempotency_key=$3`,
 		event.CompanyID, event.SourceSystem, event.IdempotencyKey, event.EventID, event.ExternalID,
-		event.EventType, event.EventVersion, event.PayloadJSON, event.Status, event.GeneratedEntryID,
+		event.EventType, event.EventVersion, payloadBytes, event.Status, event.GeneratedEntryID,
 		event.ErrorMessage, event.CreatedAt, event.ProcessedAt, data)
 	if err != nil {
 		return err

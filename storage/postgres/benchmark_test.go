@@ -116,6 +116,9 @@ func setupBenchmarkCompany(t *testing.T, driver *postgres.Driver) (uuid.UUID, uu
 }
 
 func TestPostgresBatchPostingPerformance(t *testing.T) {
+	if testing.CoverMode() != "" {
+		t.Skip("throughput assertion skipped under coverage instrumentation")
+	}
 	ctx := context.Background()
 	connStr := getTestPostgresConn()
 	driver, err := postgres.New(ctx, connStr)
@@ -207,6 +210,9 @@ func TestPostgresBatchPostingPerformance(t *testing.T) {
 }
 
 func TestPostgresConcurrentPostingIntegrity(t *testing.T) {
+	if testing.CoverMode() != "" {
+		t.Skip("contention test skipped under coverage instrumentation")
+	}
 	ctx := context.Background()
 	connStr := getTestPostgresConn()
 	driver, err := postgres.New(ctx, connStr)
@@ -314,6 +320,9 @@ func TestPostgresConcurrentPostingIntegrity(t *testing.T) {
 // inside every posting transaction, so lock ordering is uniform and
 // PostgreSQL cannot produce a cycle.
 func TestPostgresSingleJournalHighContentionPosting(t *testing.T) {
+	if testing.CoverMode() != "" {
+		t.Skip("high-contention test skipped under coverage instrumentation")
+	}
 	ctx := context.Background()
 	connStr := getTestPostgresConn()
 	driver, err := postgres.New(ctx, connStr)
@@ -330,10 +339,10 @@ func TestPostgresSingleJournalHighContentionPosting(t *testing.T) {
 	zero, _ := financialtypes.Zero("SAR")
 
 	const (
-		numWorkers      = 50
-		perWorker       = 20
-		totalEntries    = numWorkers * perWorker
-		minViableRate   = 10.0 // sanity floor; the goal of this test is integrity, not speed
+		numWorkers    = 50
+		perWorker     = 20
+		totalEntries  = numWorkers * perWorker
+		minViableRate = 10.0 // sanity floor; the goal of this test is integrity, not speed
 	)
 	entryDate := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 

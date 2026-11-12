@@ -243,4 +243,3 @@ func TestTraceparentMatchesApplicationLogAndDatabaseQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-

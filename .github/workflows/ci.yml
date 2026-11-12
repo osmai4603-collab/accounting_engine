@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION_FILE: go.mod
+  POSTGRES_URL: postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
+
+jobs:
+  quality:
+    name: Format, vet, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: gofmt gate
+        run: ./scripts/check_gofmt.sh
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+
+  test:
+    name: Tests + coverage (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: go test with coverage
+        run: go test -count=1 -coverprofile=coverage.out ./...
+      - name: coverage floor
+        env:
+          COVERAGE_MIN: "54.1"
+        run: ./scripts/check_coverage.sh coverage.out
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -n 25
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  race:
+    name: Race detector (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  migrations:
+    name: Migration policy + upgrade (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: accounting_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d accounting_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: migration guard and upgrade test
+        run: make migrations
+
+  security:
+    name: Security scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+      - name: secret scan (no high-confidence secrets)
+        run: ./scripts/scan_secrets.sh
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: govulncheck
+        run: "$(go env GOPATH)/bin/govulncheck ./..."
+      - name: install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: gosec (high severity)
+        run: "$(go env GOPATH)/bin/gosec -quiet -severity high -confidence high ./..."
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

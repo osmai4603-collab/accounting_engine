@@ -165,6 +165,7 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 	if entry != nil {
 		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
 		ctx = observability.WithEntryID(ctx, entry.ID)
+		ctx = observability.WithPeriodID(ctx, entry.PeriodID)
 		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
 			ctx = ensured
 		}
@@ -223,15 +224,23 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 }
 
 // recordPosting records the latency and outcome of one posting attempt and
-// emits a structured, context-enriched log record.
+// emits a structured, context-enriched log record. Failures are additionally
+// counted under the engine-wide error taxonomy so operators can alert on
+// authorization/conflict spikes separately from infrastructure faults.
 func (e *Engine) recordPosting(ctx context.Context, entry *JournalEntry, start time.Time, err error) {
 	duration := time.Since(start)
+	if entry != nil {
+		ctx = observability.WithPeriodID(ctx, entry.PeriodID)
+	}
 	if e.metrics != nil {
+		e.metrics.IncPostingAttempts()
 		e.metrics.ObservePostingDuration(duration.Seconds())
+		e.metrics.ObserveTransactionDuration(duration.Seconds())
 		if err == nil {
 			e.metrics.IncPostedEntries()
 		} else {
-			e.metrics.IncPostingFailures()
+			_, category := ClassifyError(err)
+			e.metrics.IncPostingFailure(string(category))
 		}
 	}
 	if e.logger == nil {
@@ -242,7 +251,12 @@ func (e *Engine) recordPosting(ctx context.Context, entry *JournalEntry, start t
 		attrs = append(attrs, "journal_id", entry.JournalID.String(), "status", string(entry.Status))
 	}
 	if err != nil {
-		attrs = append(attrs, "error", err.Error())
+		code, category := ClassifyError(err)
+		attrs = append(attrs, "error", err.Error(), "error_code", string(code),
+			"error_category", string(category))
+		if entry != nil {
+			attrs = append(attrs, "period_id", entry.PeriodID.String())
+		}
 		e.logger.WarnContext(ctx, "journal entry posting failed", attrs...)
 		return
 	}
@@ -267,6 +281,7 @@ func (e *Engine) postEntryWithAttachmentContext(
 	if entry != nil {
 		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
 		ctx = observability.WithEntryID(ctx, entry.ID)
+		ctx = observability.WithPeriodID(ctx, entry.PeriodID)
 		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
 			ctx = ensured
 		}
@@ -332,6 +347,7 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	if entry != nil {
 		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
 		ctx = observability.WithEntryID(ctx, entry.ID)
+		ctx = observability.WithPeriodID(ctx, entry.PeriodID)
 		if ensured, _, ensureErr := observability.EnsureTraceparent(ctx); ensureErr == nil {
 			ctx = ensured
 		}

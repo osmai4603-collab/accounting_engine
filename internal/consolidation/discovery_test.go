@@ -82,4 +82,3 @@ func TestAutoDiscoverFromAccountNames(t *testing.T) {
 		t.Fatalf("expected 1 discovered balance elimination rule, got %d", len(rules.IntercompanyBalances))
 	}
 }
-

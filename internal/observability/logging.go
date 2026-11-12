@@ -34,6 +34,7 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	companyID, hasCompany := CompanyIDFromContext(ctx)
 	entryID, hasEntry := EntryIDFromContext(ctx)
+	periodID, hasPeriod := PeriodIDFromContext(ctx)
 	traceID := TraceIDFromContext(ctx)
 
 	present := make(map[string]struct{}, record.NumAttrs())
@@ -50,6 +51,11 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	if hasEntry {
 		if _, ok := present["entry_id"]; !ok {
 			record.AddAttrs(slog.String("entry_id", entryID.String()))
+		}
+	}
+	if hasPeriod {
+		if _, ok := present["period_id"]; !ok {
+			record.AddAttrs(slog.String("period_id", periodID.String()))
 		}
 	}
 	if traceID != "" {

@@ -8,6 +8,7 @@ import (
 
 type companyIDContextKey struct{}
 type entryIDContextKey struct{}
+type periodIDContextKey struct{}
 
 // WithCompanyID attaches the tenant/company identifier to the context. A nil
 // UUID clears the value.
@@ -58,4 +59,26 @@ func WithFinancialScope(ctx context.Context, companyID, entryID uuid.UUID, trace
 	ctx = WithEntryID(ctx, entryID)
 	ctx = ContextWithTraceparent(ctx, traceparent)
 	return ctx
+}
+
+// WithPeriodID attaches the fiscal period identifier to the context. A nil UUID
+// clears the value.
+func WithPeriodID(ctx context.Context, periodID uuid.UUID) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, periodIDContextKey{}, periodID)
+}
+
+// PeriodIDFromContext returns the fiscal period identifier carried by the
+// context.
+func PeriodIDFromContext(ctx context.Context) (uuid.UUID, bool) {
+	if ctx == nil {
+		return uuid.Nil, false
+	}
+	periodID, ok := ctx.Value(periodIDContextKey{}).(uuid.UUID)
+	if !ok || periodID == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return periodID, true
 }

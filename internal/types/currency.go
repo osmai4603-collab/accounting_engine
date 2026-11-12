@@ -275,7 +275,6 @@ var currencies = map[CurrencyCode]Currency{
 	XXX: {Code: XXX, NumericCode: "999", Symbol: "", Name: "No currency", MinorUnit: 0},
 }
 
-
 func LookupCurrencyByNumericCode(numericCode string) (Currency, bool) {
 	trimmed := strings.TrimSpace(numericCode)
 	for _, currency := range currencies {

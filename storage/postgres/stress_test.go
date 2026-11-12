@@ -31,6 +31,9 @@ func TestPostgresHeavyStress50000Moves(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test is skipped in short mode")
 	}
+	if testing.CoverMode() != "" {
+		t.Skip("heavy stress test skipped under coverage instrumentation")
+	}
 	ctx, env := setupIsolatedPostingEnvWithPool(t, 16) // dedicated pool: MaxConns >= 12
 
 	// The five entry archetypes exercise assets, liabilities, income and
@@ -252,6 +255,8 @@ func TestPostgresHeavyStress50000Moves(t *testing.T) {
 
 	if raceEnabled {
 		t.Logf("skipping throughput assertion under -race: %.0f entries/sec is expected to be depressed by race instrumentation", flipRate)
+	} else if testing.CoverMode() != "" {
+		t.Logf("skipping throughput assertion under coverage instrumentation: %.0f entries/sec is expected to be depressed by coverage counters", flipRate)
 	} else if flipRate < 500.0 {
 		t.Errorf("posting throughput %.0f entries/sec is below the baseline floor 500 entries/sec", flipRate)
 	}

@@ -73,6 +73,9 @@ func (u *Unit) Enrich(ctx context.Context) *slog.Logger {
 	if entryID, ok := EntryIDFromContext(ctx); ok {
 		attrs = append(attrs, "entry_id", entryID.String())
 	}
+	if periodID, ok := PeriodIDFromContext(ctx); ok {
+		attrs = append(attrs, "period_id", periodID.String())
+	}
 	if traceID := TraceIDFromContext(ctx); traceID != "" {
 		attrs = append(attrs, "trace_id", traceID)
 	}

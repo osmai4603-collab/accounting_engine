@@ -8,6 +8,8 @@
 **الجمهور المستهدف:** المهندسون المعماريون، مهندسو Go، مهندسو قواعد البيانات، فرق الجودة، DevOps/SRE، الأمن، خبراء المحاسبة المعيارية، وإدارة المنتج.  
 **حالة الوثيقة:** خطة ملزمة قابلة للتتبع؛ تُحدَّث عند إغلاق كل مهمة مع إرفاق دليل الإثبات.
 
+> **حالة بوابة G0 (2026-11-12):** جميع مهام المرحلة 0 منفذة ولها أدلة. البند الوحيد غير المغلق هو **إلزامية CI تقنياً** (حماية الفرع) لأن المستودع خاص على خطة GitHub مجانية؛ التفاصيل في [`ci.md`](./ci.md) §7. فجوات `Critical/High` لها اختبارات حمراء أو `Skip` مبرر في [`traceability_matrix.md`](./traceability_matrix.md).
+
 ---
 
 ## 0. كيف تُقرأ هذه الخطة
@@ -32,6 +34,18 @@
 | المرحلة 3 | [phase-3-standards-remediation.md](./phase-3-standards-remediation.md) | IAS 12، IFRS 16، IFRS 9، IFRS 10/3، IAS 21، الإفصاحات |
 | المرحلة 4 | [phase-4-operational-readiness.md](./phase-4-operational-readiness.md) | الخدمة، الأتمتة المستدامة، المراقبة، التعافي، الأمن، الأداء |
 | المرحلة 5 | [phase-5-erp-expansion.md](./phase-5-erp-expansion.md) | المخزون، المشتريات، المبيعات، الرواتب، الضرائب، الموازنات، المشاريع |
+
+### ملفات الحوكمة والأدلة (المرحلة 0)
+
+| الملف | الغرض | الحالة |
+| --- | --- | --- |
+| [baseline_report.md](./baseline_report.md) | SHA، إصدار Go/PostgreSQL، نتائج الاختبارات، التغطية، أوامر إعادة الإنتاج | مكتمل — 2026-11-12 |
+| [ci.md](./ci.md) + [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | بوابات CI وحماية الفرع | مكتمل — 2026-11-12 |
+| [adr/README.md](./adr/README.md) | فهرس ADR-0001..0006 المعتمدة | مكتمل — 2026-11-12 |
+| [traceability_matrix.md](./traceability_matrix.md) | ربط كل `GAP-*` باختبار أحمر أو `Skip` مبرر | مكتمل — 2026-11-12 |
+| [error_taxonomy.md](./error_taxonomy.md) | تصنيف الأخطاء والمراقبة الموحدة | مكتمل — 2026-11-12 |
+| [security_risk_register.md](./security_risk_register.md) | خط أساس RLS والمخاطر الأمنية | مكتمل — 2026-11-12 |
+| [migration_policy.md](./migration_policy.md) | Expand/Contract والتراجع والطوارئ | مكتمل — 2026-11-12 |
 
 ---
 
@@ -190,7 +204,7 @@
 | `GAP-OPS-06` | المراقبة | لا مقاييس RED/USE ولا تتبع موحد لكل مسار | `internal/observability/*` | Medium | `P4-T4` | مفتوحة |
 | `GAP-OPS-07` | الأمن | اختبارات RLS موجودة لكن لا تحقق مستمر في CI | `storage/postgres/rls_test.go` | Medium | `P4-T6` | مفتوحة |
 | `GAP-OPS-08` | السياق | الدوال المختصرة تستخدم `context.Background()` | `internal/subledgers/*` | Low | `P4-T8` | مفتوحة |
-| `GAP-OPS-09` | التوثيق | `docs/README.md` يشير إلى ملفات غير موجودة | `docs/README.md` | Low | `P0-T5` | مفتوحة |
+| `GAP-OPS-09` | التوثيق | `docs/README.md` يشير إلى ملفات غير موجودة | `docs/README.md` | Low | `P0-T5` | مغلقة — 2026-11-12 |
 | `GAP-ERP-01` | المخزون | لا دفتر مساعد مستقل للمخزون/التقييم/تكلفة البضاعة | `internal/` | High | `P5-T2` | مفتوحة |
 | `GAP-ERP-02` | الرواتب | لا وحدة رواتب/استحقاقات/استقطاعات | `internal/` | High | `P5-T5` | مفتوحة |
 | `GAP-ERP-03` | المشتريات | دورة فاتورة المورد/المطابقة الثلاثية غير مكتملة | `internal/subledgers` | Medium | `P5-T3` | مفتوحة |
@@ -201,6 +215,16 @@
 | `GAP-ERP-08` | المشاريع | محاسبة المشاريع/التوزيع غير مكتملة | `internal/` | Medium | `P5-T9` | مفتوحة |
 | `GAP-ERP-09` | التكاليف | محاسبة التكاليف/التوزيع غير مكتملة | `internal/` | Medium | `P5-T10` | مفتوحة |
 | `GAP-ERP-10` | الإفصاح | الإفصاحات المالية غير مكتملة | `internal/reporting` | Low | `P5-T11` | مفتوحة |
+
+### 4.3 مصفوفة تتبع الفجوات
+
+كل فجوة `Critical` أو `High` في السجل أعلاه مربوطة باختبار محدد في [`traceability_matrix.md`](./traceability_matrix.md):
+
+- **مغلقة بالدليل الأحمر (14 فجوة):** `GOV-01`, `GOV-03`, `PST-01`…`PST-06`, `AST-01`, `AST-02`, `CLS-01`, `CLS-02`, `STD-01`, `STD-02` — اختبارات تحت وسم `gapred` تفشل على الكود الحالي.
+- **مؤجلة بـ`Skip` مبرر (9 فجوات):** `GOV-02`, `PST-07`, `PST-08`, `PST-10`, `AST-03`, `OPS-01`, `OPS-02`, `ERP-01`, `ERP-02` — السبب ومهمة الإزالة موثقان في المصفوفة.
+- **فجوات `Medium/Low`:** تُحوَّل إلى اختبار عند بدء مهمتها، ما عدا `GAP-OPS-09` التي أُغلقت في `P0-T5`.
+
+الخط الافتراضي `go test ./...` يبقى أخضر؛ دليل الفشل يُشغَّل بـ`go test -tags gapred -run TestGAP ./...`.
 
 ---
 
@@ -263,7 +287,7 @@ flowchart TD
 
 | البوابة | الاسم | شرط الاجتياز | المخرجات الإلزامية |
 | --- | --- | --- | --- |
-| **G0** | Baseline & Governance | `go test ./...` و`go test -race ./...` يمران؛ CI يحجب الدمج عند الفشل؛ ADRs الأساسية معتمدة؛ مصفوفة تتبع الفجوات مكتملة | تقرير خط أساس، ملف CI، ADR-0001..0005، مصفوفة `GAP → TEST` |
+| **G0** | Baseline & Governance | `go test ./...` و`go test -race ./...` يمران؛ CI يحجب الدمج عند الفشل؛ ADR-0001..0006 معتمدة؛ كل فجوة `Critical/High` لها اختبار أحمر أو `Skip` مبرر؛ `docs/README.md` بلا روابط مكسورة | [تقرير خط الأساس](./baseline_report.md)، [CI](./ci.md)، [فهرس ADRs](./adr/README.md)، [مصفوفة `GAP → TEST`](./traceability_matrix.md)، [تصنيف الأخطاء](./error_taxonomy.md)، [تقرير RLS](./security_risk_register.md)، [سياسة الهجرات](./migration_policy.md) |
 | **G1** | Ledger Integrity | لا يمكن ترحيل قيد إلى فترة مقفلة تحت التزامن؛ لا يمكن تغيير حقل مؤثر بعد الاعتماد؛ العكس/الدفعات ذرّية؛ استهلاك نفس الأصل لا يتكرر | اختبارات فشل قبل الإصلاح، اختبارات تكامل PostgreSQL، تقرير سباق `-race` |
 | **G2** | Closing Integrity | الإقفال ذرّي وقابل للاستئناف؛ محتوى قيد الإقفال مُثبت؛ إعادة الفتح مصرح ومدقق؛ لا إقفال جزئي | سيناريوهات فشل/إعادة محاولة، تقرير Preflight، سجل `ClosingRun` |
 | **G3** | Standards Conformance | IAS 12/IFRS 16/IFRS 9/IFRS 10/3/IAS 21 لها اختبارات إيجابية وسلبية وحالات ذهبية | مصفوفة امتثال، تقرير فروق، تحديث وثائق المعايير |

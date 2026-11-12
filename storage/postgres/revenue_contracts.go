@@ -121,4 +121,3 @@ func (d *Driver) DeleteContract(ctx context.Context, companyID, id uuid.UUID) er
 		return nil
 	})
 }
-
