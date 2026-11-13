@@ -96,6 +96,9 @@ func (d *Driver) CompletePublicEventIngestion(ctx context.Context, companyID uui
 	if !ok {
 		return publicevents.ErrRecordNotFound
 	}
+	if rec.EntryID != uuid.Nil && rec.EntryID != uuid.UUID(entry.ID) {
+		return publicevents.ErrStateConflict
+	}
 	if rec.Status != "processing" && (rec.Status != "processed" || rec.EntryID != uuid.UUID(entry.ID)) {
 		return publicevents.ErrStateConflict
 	}
@@ -117,7 +120,10 @@ func (d *Driver) FailPublicEventIngestion(ctx context.Context, companyID uuid.UU
 	k := publicEventIngestionKey{companyID: companyID, key: strings.TrimSpace(idempotencyKey)}
 	rec, ok := st.ingestions[k]
 	if !ok {
-		return nil
+		return publicevents.ErrRecordNotFound
+	}
+	if rec.Status != "processing" {
+		return publicevents.ErrStateConflict
 	}
 	rec.Status = "failed"
 	rec.FailureReason = reason

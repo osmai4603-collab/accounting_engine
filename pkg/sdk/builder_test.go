@@ -68,7 +68,7 @@ func (m *mockStandard) RegisterRules(registrar events.RuleRegistrar) error {
 	return nil
 }
 
-func (m *mockStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+func (m *mockStandard) RunScheduledJobs(ctx context.Context, runner standards.ScheduledJobRunner) error {
 	return nil
 }
 
@@ -157,7 +157,7 @@ func (m *dependentStandard) Initialize(ctx context.Context, ports storage.CoreLe
 	return nil
 }
 func (m *dependentStandard) RegisterRules(registrar events.RuleRegistrar) error { return nil }
-func (m *dependentStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+func (m *dependentStandard) RunScheduledJobs(ctx context.Context, runner standards.ScheduledJobRunner) error {
 	return nil
 }
 func (m *dependentStandard) Close(ctx context.Context) error { return nil }

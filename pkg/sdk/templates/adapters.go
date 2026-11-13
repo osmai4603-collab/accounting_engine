@@ -130,9 +130,15 @@ func (a *SaaSAdapter) RegisterRules(registrar events.RuleRegistrar) error {
 	return a.base.registerRules(registrar)
 }
 
-func (a *RetailAdapter) RunScheduledJobs(context.Context, interface{}) error      { return nil }
-func (a *AgricultureAdapter) RunScheduledJobs(context.Context, interface{}) error { return nil }
-func (a *SaaSAdapter) RunScheduledJobs(context.Context, interface{}) error        { return nil }
+func (a *RetailAdapter) RunScheduledJobs(context.Context, standards.ScheduledJobRunner) error {
+	return nil
+}
+func (a *AgricultureAdapter) RunScheduledJobs(context.Context, standards.ScheduledJobRunner) error {
+	return nil
+}
+func (a *SaaSAdapter) RunScheduledJobs(context.Context, standards.ScheduledJobRunner) error {
+	return nil
+}
 
 func (a *RetailAdapter) Close(context.Context) error      { return nil }
 func (a *AgricultureAdapter) Close(context.Context) error { return nil }

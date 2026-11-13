@@ -105,6 +105,7 @@ func (d *Driver) ClaimPublicEventIngestion(ctx context.Context, record publiceve
 				return err
 			}
 			status = "processing"
+			failureReason = ""
 			reclaimed = true
 			existing.Status = "processing"
 		}
@@ -148,6 +149,7 @@ func (d *Driver) CompletePublicEventIngestion(ctx context.Context, companyID uui
 			`UPDATE public_event_ingestions
 			    SET status='processed', entry_id=$3, entry_snapshot=$4, failure_reason='', updated_at=NOW()
 			  WHERE company_id=$1 AND idempotency_key=$2
+			    AND (entry_id IS NULL OR entry_id=$3)
 			    AND (status='processing' OR (status='processed' AND entry_id=$3))`,
 			companyID, strings.TrimSpace(idempotencyKey), uuid.UUID(entry.ID), snapshot,
 		)
@@ -162,15 +164,33 @@ func (d *Driver) CompletePublicEventIngestion(ctx context.Context, companyID uui
 }
 
 func (d *Driver) FailPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey, reason string) error {
-	_ = reason
 	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		tag, err := tx.Exec(ctx,
 			`UPDATE public_event_ingestions
 			    SET status='failed', failure_reason=$3, updated_at=NOW()
-			  WHERE company_id=$1 AND idempotency_key=$2`,
+			  WHERE company_id=$1 AND idempotency_key=$2 AND status='processing'`,
 			companyID, strings.TrimSpace(idempotencyKey), reason,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 1 {
+			return nil
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+			    SELECT 1 FROM public_event_ingestions
+			     WHERE company_id=$1 AND idempotency_key=$2
+			)`,
+			companyID, strings.TrimSpace(idempotencyKey),
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return publicevents.ErrRecordNotFound
+		}
+		return publicevents.ErrStateConflict
 	})
 }
 

@@ -50,7 +50,7 @@ func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
 	return nil
 }
 
-func (m *Module) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+func (m *Module) RunScheduledJobs(ctx context.Context, runner standards.ScheduledJobRunner) error {
 	return nil
 }
 

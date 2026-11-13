@@ -376,7 +376,10 @@ func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID,
 		}
 	}
 	is, err := d.GetIncomeStatement(ctx, companyID, time.Time{}, asOf, currency)
-	if err == nil && !is.NetIncome.Amount().IsZero() {
+	if err != nil {
+		return reporting.BalanceSheetReport{}, err
+	}
+	if !is.NetIncome.Amount().IsZero() {
 		equity.Lines = append(equity.Lines, reporting.BalanceSheetLine{AccountName: "Current Period Net Income", Amount: is.NetIncome})
 		totalEquity = totalEquity.Add(is.NetIncome.Amount())
 	}
