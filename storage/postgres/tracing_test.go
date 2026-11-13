@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"accounting_engine/internal/observability"
-	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
 )
 
 func TestTraceparentValidation(t *testing.T) {

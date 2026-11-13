@@ -3,7 +3,7 @@ package ledger
 import (
 	"time"
 
-	"accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 )
 
 type PeriodState string

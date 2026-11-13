@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sort"
 
-	"accounting_engine/internal/ifrs15"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs15"
 
 	"github.com/google/uuid"
 )

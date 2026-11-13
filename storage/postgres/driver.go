@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/reporting"
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"

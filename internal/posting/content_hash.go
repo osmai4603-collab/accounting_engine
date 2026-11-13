@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 // ErrEntryHashUnavailable is returned when an entry cannot be reduced to a

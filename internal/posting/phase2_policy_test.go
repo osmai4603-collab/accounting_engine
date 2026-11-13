@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/policy"
-	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 

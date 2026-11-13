@@ -1,7 +1,7 @@
 package events
 
 import (
-	apiEvents "accounting_engine/pkg/api/v1/events"
+	apiEvents "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 )
 
 type PostingRule = apiEvents.PostingRule

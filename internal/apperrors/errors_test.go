@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"accounting_engine/internal/apperrors"
+	"github.com/osmai4603-collab/accounting_engine/internal/apperrors"
 )
 
 func TestCodedErrorPreservesCauseAndClassification(t *testing.T) {

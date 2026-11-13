@@ -1,8 +1,8 @@
 package posting
 
 import (
-	financialtypes "accounting_engine/internal/types"
 	"context"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"time"
 
 	"github.com/google/uuid"

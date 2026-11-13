@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	accountingv1 "accounting_engine/proto/accounting/v1"
+	accountingv1 "github.com/osmai4603-collab/accounting_engine/proto/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"reflect"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

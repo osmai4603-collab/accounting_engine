@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/ifrsautomation"
-	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrsautomation"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 func TestSchedulerLogsFailuresAndContinuesWithOtherJobs(t *testing.T) {

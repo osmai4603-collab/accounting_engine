@@ -3,7 +3,7 @@ package accounting_engine
 import (
 	"net/http"
 
-	"accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
 )
 
 // Metrics exposes the engine's Prometheus metrics registry.

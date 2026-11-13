@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 type MockRepository struct {

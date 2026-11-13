@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/ias12"
-	financialtypes "accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/ias12"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 

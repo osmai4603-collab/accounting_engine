@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"accounting_engine/internal/consolidation"
-	"accounting_engine/internal/valuation"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/consolidation"
+	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 	"github.com/shopspring/decimal"
 )
 

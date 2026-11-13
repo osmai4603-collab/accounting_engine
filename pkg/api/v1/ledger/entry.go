@@ -3,7 +3,7 @@ package ledger
 import (
 	"time"
 
-	"accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/shopspring/decimal"
 )
 
@@ -48,6 +48,8 @@ type JournalEntry struct {
 	JournalID           types.JournalID
 	FiscalPeriodID      types.FiscalPeriodID
 	EntryNumber         string
+	SequenceNumber      int64
+	LegalNumber         string
 	Status              EntryStatus
 	Classification      EntryClassification
 	EffectiveDate       time.Time
@@ -59,7 +61,14 @@ type JournalEntry struct {
 	ExchangeRate        decimal.Decimal
 	Lines               []EntryLine
 	CreatedBy           string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	PostedBy            string
+	PostedAt            *time.Time
 	ApprovedBy          string
+	ApprovedAt          *time.Time
 	ApprovalFingerprint string
 	ReversalOfID        *types.JournalEntryID
+	ReversedByID        *types.JournalEntryID
+	ReversalReason      string
 }

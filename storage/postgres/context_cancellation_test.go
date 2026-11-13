@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 func TestPostgresQueryHonorsContextCancellation(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 

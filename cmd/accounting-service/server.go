@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"accounting_engine/internal/observability"
-	"accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/api/v1/types"
-	"accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 
 	"github.com/google/uuid"
 )

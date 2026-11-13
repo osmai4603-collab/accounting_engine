@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 
 	"github.com/google/uuid"
 )

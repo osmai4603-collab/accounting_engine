@@ -1,9 +1,9 @@
 package ias12
 
 import (
-	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 // Unit exposes IAS 12 measurement, disclosure reconciliation, and journal

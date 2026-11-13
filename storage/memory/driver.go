@@ -3,13 +3,13 @@ package memory
 import (
 	"sync"
 
-	"accounting_engine/internal/governance"
-	"accounting_engine/internal/ifrs15"
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/policy"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
-	"accounting_engine/internal/valuation"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs15"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

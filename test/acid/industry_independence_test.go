@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/modules/ifrs15"
-	"accounting_engine/modules/ifrs16"
-	"accounting_engine/modules/ifrs9"
-	"accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/types"
-	"accounting_engine/pkg/sdk"
-	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/modules/ifrs15"
+	"github.com/osmai4603-collab/accounting_engine/modules/ifrs16"
+	"github.com/osmai4603-collab/accounting_engine/modules/ifrs9"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 )
 
 func TestIndustryIndependence(t *testing.T) {

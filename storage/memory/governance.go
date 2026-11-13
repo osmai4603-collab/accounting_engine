@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"accounting_engine/internal/governance"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 )
 
 func (d *Driver) AppendAuditLog(ctx context.Context, log governance.FinancialAuditLog) error {

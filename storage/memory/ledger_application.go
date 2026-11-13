@@ -1,8 +1,8 @@
 package memory
 
 import (
-	"accounting_engine/internal/sdkapplication"
-	"accounting_engine/pkg/spi/storage"
+	"github.com/osmai4603-collab/accounting_engine/internal/sdkapplication"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
 func (d *Driver) NewLedgerApplication() (storage.LedgerApplication, error) {

@@ -3,8 +3,8 @@ package governance
 import (
 	"context"
 
-	"accounting_engine/internal/observability"
-	"accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 )
 
 type Engine struct {

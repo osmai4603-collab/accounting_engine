@@ -1,135 +1,94 @@
 # خريطة الاعتماديات الحالية — Accounting Engine
 
-- **المصدر:** تحليل ساكن لملفات Go في نسخة `engine5.zip` بتاريخ 2026-11-13.
-- **المنهج:** استخراج package paths وimports من ملفات `.go`؛ لا يتطلب تشغيل Go toolchain.
-- **الحدود:** الخريطة تثبت imports المباشرة فقط؛ لا تثبت مسارات الاستدعاء وقت التشغيل ولا الاعتماديات الديناميكية.
+- **المصدر:** `go list -f '{{.ImportPath}}|{{join .Imports " "}}' ./...` على الشجرة الحالية (44 package).
+- **البيئة:** Go `1.26.3` linux/amd64، PostgreSQL `18.6`.
+- **تاريخ القياس:** 2026-11-14.
+- **الحدود:** الخريطة تثبت imports المباشرة؛ لا تثبت مسارات الاستدعاء وقت التشغيل ولا كل الاعتماديات غير المباشرة. تعتمد على حالة الشجرة قبل تعديلات P1.
 
 ## 1. مجموعات الحزم
 
-### `pkg/api/v1` (4 packages)
+| المجموعة | الحزم | أمثلة |
+| --- | ---: | --- |
+| Root public package | 1 | `accounting_engine` (`engine.go`, `engine_observability.go`, `doc.go`) |
+| `pkg/api/v1` | 4 | `events`, `ledger`, `reporting`, `types` |
+| `pkg/sdk` | 2 | `sdk`, `sdk/templates` |
+| `pkg/spi` | 4 | `events`, `masterdata`, `standards`, `storage` |
+| `internal` | 21 | `posting`, `masterdata`, `reporting`, `subledgers`, `governance`, `sdkapplication`, ... |
+| `storage` | 3 | `postgres`, `memory`, `masterdatacontract` |
+| `modules` | 4 | `ifrs9`, `ifrs15`, `ifrs16`, `ias12` |
+| `cmd` | 2 | `accounting-service`, `agy` |
+| `proto` | 1 | `proto/accounting/v1` |
+| `test` | 3 | `acid`, `external_consumer`, `service_integration` |
 
-- `accounting_engine/pkg/api/v1/events` (3 Go files)
-- `accounting_engine/pkg/api/v1/ledger` (3 Go files)
-- `accounting_engine/pkg/api/v1/reporting` (1 Go files)
-- `accounting_engine/pkg/api/v1/types` (5 Go files)
+`storage/postgres` يحوي 48 ملف migration و17 ملفًا يعرّف Triggers/RLS Policies. هذه العمليات هي مصدر الحماية الفعلية المتوازية مع قواعد Domain، ويجب مراجعتها في P3-02 وP6-03.
 
-### `pkg/sdk` (2 packages)
+## 2. اتجاه الاعتماديات بين الحدود
 
-- `accounting_engine/pkg/sdk` (7 Go files)
-- `accounting_engine/pkg/sdk/templates` (3 Go files)
+| المصدر | يستورد مباشرة من | تقييم الاتجاه |
+| --- | --- | --- |
+| `pkg/api/v1/*` | `pkg/api/v1/*` فقط | سليم |
+| `pkg/spi/*` | `pkg/api/v1/*` و`pkg/spi/storage` | سليم جزئيًا؛ `standards` يعتمد على `CoreLedgerStore` المركب |
+| `pkg/sdk` | `internal/masterdata`, `internal/posting`, `pkg/api/v1`, `pkg/spi`, `storage/memory`, `storage/postgres` | **تسرب**: Public SDK يستورد Internal وAdapters مدمجة |
+| `modules/*` | `pkg/*`, `storage/memory` | تسرب Adapter مدمج إلى وحدات معيارية |
+| `storage/postgres` | `internal/*` (posting, masterdata, reporting, governance, policy, subledgers, valuation, sdkapplication) | **تبعية عكسية**: Adapter يستورد Domain/Application بدل تنفيذ Ports |
+| `storage/memory` | `internal/*` بنفس النمط | نفس المشكلة |
+| `internal/*` | `pkg/api/v1`, `pkg/spi`, وبعض `internal` | سليم داخل الحد الداخلي |
+| `cmd/agy` | Root `accounting_engine` + `internal/*` | يستخدم API قديمًا غير مستقر |
+| `cmd/accounting-service` | `pkg/sdk`, `internal/*`, `storage/*`, `proto` | يخلط Public وInternal |
+| `test/external_consumer` | `pkg/*` و`storage/memory` | لا يثبت Adapter خارجيًا مستقلًا |
 
-### `pkg/spi` (4 packages)
+## 3. Root Package — تحليل التصدير
 
-- `accounting_engine/pkg/spi/events` (1 Go files)
-- `accounting_engine/pkg/spi/masterdata` (1 Go files)
-- `accounting_engine/pkg/spi/standards` (2 Go files)
-- `accounting_engine/pkg/spi/storage` (5 Go files)
+`go doc -all .` يظهر الأنواع المصدرة التالية، وكلها تعرض أنواعًا داخلية أو مركبة:
 
-### `internal` (21 packages)
+- `Config.Standards StandardsConfig` حيث `StandardsConfig` يحوي `*ifrs9.Unit`, `*ifrs15.Unit`, `*ifrs16.Unit`, `*ias12.Unit`, `*consolidation.Unit` من `internal/*`.
+- `PolicyConfig` يحوي `policy.AccountingManagerAuthorizer` و`policy.BackdatingExceptionAuthorizer` من `internal/policy`.
+- `ObservabilityConfig.Metrics *observability.Metrics` و`AccountingEngine.Metrics()`.
+- `StorageDriver` و`StoragePorts` يعرّفان واجهات داخلية (`posting.BulkRepository`, `reporting.Repository`, `masterdata.ContextStorageRepository`, `subledgers.Repository`, `governance.Repository`, `valuation.RateProviderSPI`).
+- `AccountingEngine.ForCompany(...) *subledgers.CompanySubledgerService` و`SaveCostCenter(ctx, masterdata.CostCenter)` وغيرها.
+- `New(driver StorageDriver, config Config)` يعني أن المستهلك الخارجي مطالَب بتنفيذ كل الواجهات الداخلية دفعة واحدة.
 
-- `accounting_engine/internal/apperrors` (2 Go files)
-- `accounting_engine/internal/consolidation` (8 Go files)
-- `accounting_engine/internal/events` (3 Go files)
-- `accounting_engine/internal/governance` (18 Go files)
-- `accounting_engine/internal/ias12` (7 Go files)
-- `accounting_engine/internal/ifrs15` (4 Go files)
-- `accounting_engine/internal/ifrs16` (6 Go files)
-- `accounting_engine/internal/ifrs9` (5 Go files)
-- `accounting_engine/internal/ifrsautomation` (8 Go files)
-- `accounting_engine/internal/masterdata` (16 Go files)
-- `accounting_engine/internal/observability` (7 Go files)
-- `accounting_engine/internal/policy` (2 Go files)
-- `accounting_engine/internal/posting` (21 Go files)
-- `accounting_engine/internal/reconciliation` (2 Go files)
-- `accounting_engine/internal/reporting` (30 Go files)
-- `accounting_engine/internal/reporting/taxonomy` (6 Go files)
-- `accounting_engine/internal/sdkapplication` (3 Go files)
-- `accounting_engine/internal/subledgers` (23 Go files)
-- `accounting_engine/internal/subledgers/bank_parsers` (6 Go files)
-- `accounting_engine/internal/types` (6 Go files)
-- `accounting_engine/internal/valuation` (8 Go files)
+**الخلاصة:** Root package ليس Facade؛ هو تنفيذ المحرك كاملًا موجهًا للمستهلك الخارجي. لذلك لا يمكن إبقاؤه عامًا دون كسر صحة P1-01/P1-05، ويحتاج قرارًا معماريًا (ADR-0002) للتحويل إلى Facade مهمَل يستدعي `pkg/sdk` فقط.
 
-### `storage` (3 packages)
+## 4. تسريبات `internal` في الحزم العامة
 
-- `accounting_engine/storage/masterdatacontract` (1 Go files)
-- `accounting_engine/storage/memory` (25 Go files)
-- `accounting_engine/storage/postgres` (56 Go files)
+| الحزمة العامة | الاستيراد الداخلي | الأثر |
+| --- | --- | --- |
+| `accounting_engine` (root) | `internal/consolidation`, `governance`, `ias12`, `ifrs15`, `ifrs16`, `ifrs9`, `ifrsautomation`, `masterdata`, `observability`, `policy`, `posting`, `reporting`, `subledgers`, `valuation` | المستهلك لا يستطيع استيراد الجذر من خارج الوحدة لأن Go تمنع `internal` عبره؛ أي أن Root API غير قابل للاستهلاك الخارجي فعليًا |
+| `pkg/sdk` | `internal/masterdata`, `internal/posting` | نفس المشكلة: استيراد `pkg/sdk` خارجيًا يفشل لأن الحزمة تستورد `internal` |
+| `pkg/sdk/templates` | (يمرر عبر `pkg/sdk`) | يرث المشكلة |
+| `modules/*` | `storage/memory` | تثبيت Adapter واحد في وحدة اختيارية |
 
-### `modules` (4 packages)
+**ملاحظة حاسمة:** `scripts/check_public_api_purity.sh` يفحص `./pkg/...` فقط، ولذلك ينجح الآن رغم أن `pkg/sdk` يستورد `internal`. نجاح الفحص الحالي لا يعني نقاء العقود العامة.
 
-- `accounting_engine/modules/ias12` (2 Go files)
-- `accounting_engine/modules/ifrs15` (2 Go files)
-- `accounting_engine/modules/ifrs16` (2 Go files)
-- `accounting_engine/modules/ifrs9` (2 Go files)
+## 5. عمليات الكتابة والقيود الفعلية (لتنسيق P3)
 
-### `cmd` (2 packages)
+- `storage/postgres/posting.go`, `bulk_posting.go`, `ledger_application.go`: كتابة رأس القيد والسطور وحالة القيد داخل معاملة.
+- `storage/postgres/events.go`, `public_events.go`: حجز Idempotency للحدث.
+- `storage/postgres/governance.go`, `audit_chain*`: سلسلة تدقيق SHA-256 مع Triggers تمنع UPDATE/DELETE/TRUNCATE.
+- `storage/postgres/migrations/*`: Foreign Keys, CHECK constraints, Unique indexes, Triggers, RLS.
+- `storage/memory/*`: محاكاة المعاملات والأقفال داخل العملية.
 
-- `accounting_engine/cmd/accounting-service` (6 Go files)
-- `accounting_engine/cmd/agy` (5 Go files)
+هذه الملفات عالية التداخل ولا يجوز تعديلها من أكثر من مهمة متوازية. تنسيق Schema مطلوب قبل P4/P6.
 
-### `proto` (1 packages)
+## 6. الملفات المشتركة عالية الحساسية
 
-- `accounting_engine/proto/accounting/v1` (6 Go files)
+| الملف/الحزمة | المهام المالكة | قاعدة التنسيق |
+| --- | --- | --- |
+| `pkg/api/v1/**`, `pkg/spi/**` | P1 | تُجمّد عقودها قبل بدء P2/P3؛ أي تغيير بعدها يحتاج ADR |
+| `pkg/sdk/builder.go`, `engine.go` | P1-04/P1-05 | لا تُعدّل من مهام الوحدات |
+| `internal/sdkapplication/**` | P2 | مملوك لمهام P2 |
+| `internal/posting/**` | P2/P4 | أي تغيير في Posting Policy يلزمه اختبار PostgreSQL وMemory |
+| `storage/postgres/**` | P3/P4/P6 | Schema واحد في كل مرة؛ تسجيل في ARD |
+| `proto/accounting/v1/**` | P6 | لا يُعدّل بالتوازي مع gRPC handler |
+| `test` harness | P3-07 | كل Adapter يضيف اختباراته دون تغيير قواعد المقارنة |
 
-### `test` (3 packages)
+## 7. مسارات تحتاج إصلاحًا (مرتبطة بالمهام)
 
-- `accounting_engine/test/acid` (3 Go files)
-- `accounting_engine/test/external_consumer` (1 Go files)
-- `accounting_engine/test/service_integration` (1 Go files)
-
-## 2. الاعتماديات بين حدود المشروع
-
-| المصدر | يستورد مباشرة |
-| --- | --- |
-| `pkg/api/v1` | `pkg/api/v1/ledger`, `pkg/api/v1/types` |
-| `pkg/sdk` | `internal/masterdata`, `internal/posting`, `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`, `pkg/sdk`, `pkg/sdk/templates`, `pkg/spi/events`, `pkg/spi/masterdata`, `pkg/spi/standards`, `pkg/spi/storage`, `storage/memory`, `storage/postgres` |
-| `pkg/spi` | `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`, `pkg/spi/storage` |
-| `internal` | `internal/apperrors`, `internal/consolidation`, `internal/governance`, `internal/ias12`, `internal/ifrs15`, `internal/ifrs16`, `internal/ifrs9`, `internal/ifrsautomation`, `internal/masterdata`, `internal/observability`, `internal/policy`, `internal/posting`, `internal/reporting`, `internal/reporting/taxonomy`, `internal/subledgers`, `internal/types`, `internal/valuation`, `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/types`, `pkg/spi/storage`, `storage/memory`, `storage/postgres` |
-| `storage` | `internal/governance`, `internal/ifrs15`, `internal/masterdata`, `internal/observability`, `internal/policy`, `internal/posting`, `internal/reporting`, `internal/reporting/taxonomy`, `internal/sdkapplication`, `internal/subledgers`, `internal/types`, `internal/valuation`, `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`, `pkg/spi/events`, `pkg/spi/masterdata`, `pkg/spi/storage`, `storage/masterdatacontract`, `storage/memory`, `storage/postgres` |
-| `modules` | `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/types`, `pkg/sdk`, `pkg/spi/masterdata`, `pkg/spi/standards`, `pkg/spi/storage`, `storage/memory` |
-| `cmd` | `internal/ifrs15`, `internal/ifrs16`, `internal/ifrsautomation`, `internal/masterdata`, `internal/observability`, `internal/posting`, `internal/subledgers`, `internal/types`, `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`, `pkg/sdk`, `pkg/spi/storage`, `proto/accounting/v1`, `storage/memory`, `storage/postgres` |
-
-## 3. Imports داخل الحزم العامة
-
-### `pkg/api/v1`
-
-- `accounting_engine/pkg/api/v1/events` → `pkg/api/v1/ledger`, `pkg/api/v1/types`
-- `accounting_engine/pkg/api/v1/ledger` → `pkg/api/v1/types`
-- `accounting_engine/pkg/api/v1/reporting` → `pkg/api/v1/types`
-- `accounting_engine/pkg/api/v1/types` → لا توجد imports داخلية من الوحدة
-
-### `pkg/sdk`
-
-- `accounting_engine/pkg/sdk` → `internal/masterdata`, `internal/posting`, `pkg/api/v1/events`, `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`, `pkg/sdk`, `pkg/spi/events`, `pkg/spi/masterdata`, `pkg/spi/standards`, `pkg/spi/storage`, `storage/memory`, `storage/postgres`
-- `accounting_engine/pkg/sdk/templates` → `pkg/api/v1/events`, `pkg/api/v1/types`, `pkg/sdk`, `pkg/sdk/templates`, `pkg/spi/masterdata`, `pkg/spi/standards`, `pkg/spi/storage`, `storage/memory`
-
-### `pkg/spi`
-
-- `accounting_engine/pkg/spi/events` → `pkg/api/v1/ledger`
-- `accounting_engine/pkg/spi/masterdata` → `pkg/api/v1/types`
-- `accounting_engine/pkg/spi/standards` → `pkg/api/v1/events`, `pkg/spi/storage`
-- `accounting_engine/pkg/spi/storage` → `pkg/api/v1/ledger`, `pkg/api/v1/reporting`, `pkg/api/v1/types`
-
-## 4. ملاحظات حدودية مثبتة من الكود
-
-- `pkg/sdk` يعتمد على عقود `pkg/api/v1` و`pkg/spi`، لكنه يطلب من `CoreLedgerStore` تنفيذ `LedgerApplicationProvider` عبر Type Assertion، كما يطلب `MasterDataStore()` عبر Type Assertion إضافي في `pkg/sdk/builder.go`.
-- `pkg/spi/storage.CoreLedgerStore` يضم `PostEntry` إلى جانب عمليات القراءة والحفظ؛ وهذا يخلط أمرًا تطبيقيًا بواجهة التخزين.
-- `pkg/spi/storage.LedgerApplicationProvider` يجعل الـ Store موفرًا لـ Application Service؛ أي أن اتجاه الإنشاء معكوس عن هدف أن ينشئ SDK التطبيق من Ports.
-- `pkg/spi/standards.StandardModule` يعتمد على `pkg/spi/storage.CoreLedgerStore`، ما يربط واجهة الوحدات المعيارية بعقد التخزين المركب الحالي.
-- Root `engine.go` و`engine_observability.go` يقدمان API منفصلًا عن `pkg/sdk`; يلزم فحص أنواعها وتبعياتها قبل تقرير إزالتها أو تحويلها إلى واجهة توافقية.
-- `internal/sdkapplication` و`internal/posting` و`internal/masterdata` تبقى تفاصيل تنفيذ داخلية، ولا ينبغي نقل أنواعها كما هي إلى Public SPI.
-- يوجد فصل مبدئي بين `storage/postgres` و`storage/memory`، لكن ذلك لا يثبت إمكان بناء Adapter خارجي مستقل.
-
-## 5. مسارات يجب تتبعها في P1/P2
-
-1. `pkg/sdk/builder.go` → `storage.CoreLedgerStore` → `LedgerApplicationProvider` → `internal/sdkapplication`.
-2. `pkg/sdk/builder.go` → Type Assertion `MasterDataStore()` → `pkg/spi/masterdata.Store`.
-3. `pkg/sdk` → `pkg/spi/standards` → `pkg/spi/storage`.
-4. Root `engine.go` → internal services and storage ports.
-5. SDK event ingestion → event mapping → journal/account resolution → `internal/sdkapplication` → Posting repository.
-
-## 6. القيود
-
-- لم يتمكن `go list ./...` من العمل لأن `go.mod` يطلب Go toolchain `1.26.3` ولم يكن متاحًا محليًا، كما تعذر تنزيله بسبب عدم توفر DNS/اتصال بـ `proxy.golang.org`.
-- لذلك هذه خريطة imports ساكنة وليست ناتج `go list` أو `go mod graph`.
-- لا تُستخدم هذه الخريطة وحدها لاتخاذ قرار حذف حزمة أو تغيير عقد عام.
+1. `pkg/sdk/builder.go` → Type Assertion `LedgerApplicationProvider` → `storage.postgres.NewLedgerApplication` (P1-04).
+2. `pkg/sdk/builder.go` → Type Assertion `MasterDataStore()` (P1-04).
+3. Root `accounting_engine.New/NewWithPorts` → `internal/posting` etc. (P1-05).
+4. `internal/sdkapplication.PostEntry` → posts `entry.CreatedBy` كـ poster (P2-04/P2-05).
+5. `internal/sdkapplication.ReverseEntry` → يستخدم `reason` كـ creator/poster (P2-05).
+6. `storage/postgres.NewLedgerApplication` → ينشئ Application Service من داخل Adapter (P3-02).
+7. Event ingestion fallback idempotency في الذاكرة (P3-04).

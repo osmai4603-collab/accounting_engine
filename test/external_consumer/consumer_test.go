@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/api/v1/types"
-	"accounting_engine/pkg/sdk"
-	"accounting_engine/pkg/spi/masterdata"
-	"accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 	"github.com/shopspring/decimal"
 )
 
@@ -200,7 +200,7 @@ func TestNoInternalImports(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.HasPrefix(importPath, "accounting_engine/internal/") {
+			if strings.HasPrefix(importPath, "github.com/osmai4603-collab/accounting_engine/internal/") {
 				return fmt.Errorf("%s imports forbidden internal package %q", path, importPath)
 			}
 		}

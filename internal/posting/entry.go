@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 
@@ -163,6 +163,8 @@ type JournalEntry struct {
 	ExchangeRate         decimal.Decimal
 	ApprovalFingerprint  string
 	CreatedBy            string
+	ApprovedBy           string
+	ApprovedAt           *time.Time
 	PostedBy             string
 	PostedAt             *time.Time
 	CreatedAt            time.Time
@@ -173,6 +175,7 @@ type JournalEntry struct {
 	TargetPeriodNumber   int
 	AdjustmentAuthorized bool
 	Classification       EntryClassification
+	ReversalReason       string
 	Lines                []JournalEntryLine
 }
 

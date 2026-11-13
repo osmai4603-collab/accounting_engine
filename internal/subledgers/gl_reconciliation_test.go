@@ -1,15 +1,15 @@
 package subledgers
 
 import (
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
 	"context"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"testing"
 	"time"
 
-	"accounting_engine/internal/governance"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 	"github.com/shopspring/decimal"
 )
 

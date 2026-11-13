@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/ias12"
-	"accounting_engine/internal/ifrs15"
-	"accounting_engine/internal/ifrs16"
-	"accounting_engine/internal/ifrs9"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/ias12"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs15"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs16"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs9"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 

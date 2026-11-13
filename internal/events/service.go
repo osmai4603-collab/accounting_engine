@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	apiEvents "accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/spi/storage"
+	apiEvents "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
 // EventService is a legacy/internal helper. It must not guess account mappings.

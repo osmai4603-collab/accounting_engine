@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	accountingengine "accounting_engine"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/reporting"
-	financialtypes "accounting_engine/internal/types"
+	accountingengine "github.com/osmai4603-collab/accounting_engine"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

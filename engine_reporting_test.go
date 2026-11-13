@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/reporting"
-	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 	"github.com/shopspring/decimal"
 )
 

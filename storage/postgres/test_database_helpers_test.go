@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
 )
 
 func newIsolatedPostgresDriver(t *testing.T, ctx context.Context) (*postgres.Driver, error) {

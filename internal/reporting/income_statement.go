@@ -5,10 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/reporting/taxonomy"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/reporting/taxonomy"
 	"github.com/shopspring/decimal"
 )
 

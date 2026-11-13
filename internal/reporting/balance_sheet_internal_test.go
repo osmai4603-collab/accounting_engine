@@ -3,7 +3,7 @@ package reporting
 import (
 	"testing"
 
-	"accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 
 	"github.com/shopspring/decimal"
 )

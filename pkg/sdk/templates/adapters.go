@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/types"
-	"accounting_engine/pkg/spi/standards"
-	"accounting_engine/pkg/spi/storage"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
 type RetailEffect string

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"accounting_engine/internal/apperrors"
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/policy"
-	financialtypes "accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/apperrors"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 // ClassifyError maps a posting error to the engine-wide error taxonomy. The

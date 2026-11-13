@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	accountingengine "accounting_engine"
-	"accounting_engine/internal/observability"
-	"accounting_engine/storage/postgres"
+	accountingengine "github.com/osmai4603-collab/accounting_engine"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
 )
 
 // runServe exposes the engine's Prometheus metrics and a liveness endpoint. A

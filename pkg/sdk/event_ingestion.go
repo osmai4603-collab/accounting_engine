@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/pkg/api/v1/events"
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/api/v1/types"
-	publicevents "accounting_engine/pkg/spi/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 
 	"github.com/google/uuid"
 )

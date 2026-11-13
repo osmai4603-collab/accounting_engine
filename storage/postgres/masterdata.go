@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

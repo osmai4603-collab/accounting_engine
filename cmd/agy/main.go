@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"accounting_engine/internal/ifrsautomation"
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/storage/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrsautomation"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
 )
 
 func main() {

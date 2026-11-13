@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/internal/policy"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
 )
 
 type Engine struct {

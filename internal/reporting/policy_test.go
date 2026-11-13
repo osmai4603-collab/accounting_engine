@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/policy"
-	"accounting_engine/internal/reporting"
-	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 )
 
 func TestReportingCurrencyDefaultsToEffectivePresentationCurrency(t *testing.T) {

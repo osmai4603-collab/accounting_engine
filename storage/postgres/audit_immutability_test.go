@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/governance"
-	"accounting_engine/internal/masterdata"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 )
 
 func TestPostgresAuditLogsRejectUpdateDeleteAndTruncate(t *testing.T) {

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/internal/ifrs16"
-	"accounting_engine/internal/ifrs9"
-	"accounting_engine/internal/subledgers"
-	"accounting_engine/internal/types"
-	"accounting_engine/storage/postgres"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs16"
+	"github.com/osmai4603-collab/accounting_engine/internal/ifrs9"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	"github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
 	"github.com/shopspring/decimal"
 )
 

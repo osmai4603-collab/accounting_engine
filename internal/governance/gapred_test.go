@@ -12,8 +12,8 @@ import (
 	"context"
 	"testing"
 
-	"accounting_engine/internal/governance"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 )
 
 // GAP-GOV-03: an ApprovalGate with no policy configured defaults to fail-open,

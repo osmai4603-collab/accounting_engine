@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 func gapAssetMoney(t *testing.T, amount string) financialtypes.Money {

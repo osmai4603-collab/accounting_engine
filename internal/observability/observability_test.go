@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"accounting_engine/internal/observability"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
 )
 
 func TestTraceparentLifecycle(t *testing.T) {

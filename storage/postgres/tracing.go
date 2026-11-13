@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
 
 	"github.com/jackc/pgx/v5"
 )

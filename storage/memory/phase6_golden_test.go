@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	accountingengine "accounting_engine"
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
-	"accounting_engine/storage/memory"
+	accountingengine "github.com/osmai4603-collab/accounting_engine"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

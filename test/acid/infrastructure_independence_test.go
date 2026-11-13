@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/api/v1/types"
-	"accounting_engine/pkg/sdk"
-	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 	"github.com/shopspring/decimal"
 )
 

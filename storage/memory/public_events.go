@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"accounting_engine/pkg/api/v1/ledger"
-	publicevents "accounting_engine/pkg/spi/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 
 	"github.com/google/uuid"
 )

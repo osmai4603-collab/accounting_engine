@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/subledgers"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 func TestGAP_AST_02_ConcurrentDepreciationOfSameAssetPostsOnce(t *testing.T) {

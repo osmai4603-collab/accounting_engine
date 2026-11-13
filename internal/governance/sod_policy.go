@@ -3,7 +3,7 @@ package governance
 import (
 	"errors"
 
-	financialtypes "accounting_engine/internal/types"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 
 	"github.com/google/uuid"
 )

@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/posting"
-	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -77,7 +77,10 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := fromInternalEntry(internal)
+	got, err := fromInternalEntry(internal)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got.ID != entry.ID || got.CompanyID != entry.CompanyID ||
 		got.JournalID != entry.JournalID || got.FiscalPeriodID != entry.FiscalPeriodID {
@@ -122,9 +125,12 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 }
 
 func TestFromInternalEntryUsesSequenceForEntryNumber(t *testing.T) {
-	entry := fromInternalEntry(posting.JournalEntry{
+	entry, err := fromInternalEntry(posting.JournalEntry{
 		JournalID: uuid.New(), SequenceNumber: 42,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if entry.EntryNumber != "42" {
 		t.Fatalf("entry number = %q, want sequence 42", entry.EntryNumber)
 	}

@@ -3,8 +3,8 @@ package memory_test
 import (
 	"testing"
 
-	"accounting_engine/storage/masterdatacontract"
-	"accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/storage/masterdatacontract"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 )
 
 func TestPublicMasterDataContract(t *testing.T) {

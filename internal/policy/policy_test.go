@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"accounting_engine/internal/policy"
-	financialtypes "accounting_engine/internal/types"
-	"accounting_engine/storage/memory"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/storage/memory"
 )
 
 type approvedEntryChecker bool

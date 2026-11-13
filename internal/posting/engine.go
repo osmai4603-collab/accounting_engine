@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/observability"
-	"accounting_engine/internal/policy"
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/policy"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
 

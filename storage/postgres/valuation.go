@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	financialtypes "accounting_engine/internal/types"
-	"accounting_engine/internal/valuation"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

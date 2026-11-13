@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 
 	"github.com/google/uuid"
 )

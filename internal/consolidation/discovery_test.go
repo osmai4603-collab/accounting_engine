@@ -3,7 +3,7 @@ package consolidation_test
 import (
 	"testing"
 
-	"accounting_engine/internal/consolidation"
+	"github.com/osmai4603-collab/accounting_engine/internal/consolidation"
 )
 
 func TestDiscoverEliminationRules(t *testing.T) {

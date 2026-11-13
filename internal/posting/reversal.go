@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	financialtypes "accounting_engine/internal/types"
 	"github.com/google/uuid"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 )
 
 func (e *Engine) Reverse(companyID, entryID uuid.UUID, posterID string) (JournalEntry, error) {
@@ -21,6 +21,13 @@ func (e *Engine) ReverseDual(companyID, entryID uuid.UUID, creatorID, posterID s
 }
 
 func (e *Engine) ReverseDualContext(ctx context.Context, companyID, entryID uuid.UUID, creatorID, posterID string, reversalDate time.Time) (JournalEntry, error) {
+	return e.ReverseWithReasonContext(ctx, companyID, entryID, creatorID, posterID, "", reversalDate)
+}
+
+// ReverseWithReasonContext reverses an entry while persisting an explicit
+// reason distinct from the actor identity. The reason is stored on the reversal
+// entry and survives restarts.
+func (e *Engine) ReverseWithReasonContext(ctx context.Context, companyID, entryID uuid.UUID, creatorID, posterID, reason string, reversalDate time.Time) (JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return JournalEntry{}, err
 	}
@@ -45,6 +52,7 @@ func (e *Engine) ReverseDualContext(ctx context.Context, companyID, entryID uuid
 		Classification:    EntryClassReversing,
 		DocumentReference: original.DocumentReference,
 		Reference:         original.Reference,
+		ReversalReason:    reason,
 		CreatedBy:         creatorID,
 		CreatedAt:         time.Now().UTC(),
 		OriginalEntryID:   &original.ID,

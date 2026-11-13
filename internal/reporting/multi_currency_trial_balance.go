@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
-	"accounting_engine/internal/valuation"
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 	"github.com/shopspring/decimal"
 )
 

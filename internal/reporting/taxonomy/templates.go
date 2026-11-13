@@ -130,7 +130,7 @@ func ifrsBalanceSheet() FinancialReportDefinition {
 }
 
 func definition(code, name string, framework ReportingFramework, statementType StatementType, nodes []*ReportNode) FinancialReportDefinition {
-	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte("accounting_engine/reporting/taxonomy/"+code))
+	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/osmai4603-collab/accounting_engine/reporting/taxonomy/"+code))
 	for _, node := range nodes {
 		node.DefinitionID = id
 		node.ID = uuid.NewSHA1(id, []byte(node.Code))
@@ -164,7 +164,7 @@ func tagNode(definitionCode, code, titleAr, titleEn string, order int, tags ...s
 }
 
 func node(definitionCode, code, titleAr, titleEn string, nodeType NodeType, order int) *ReportNode {
-	definitionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("accounting_engine/reporting/taxonomy/"+definitionCode))
+	definitionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/osmai4603-collab/accounting_engine/reporting/taxonomy/"+definitionCode))
 	return &ReportNode{
 		ID:             uuid.NewSHA1(definitionID, []byte(code)),
 		DefinitionID:   definitionID,
