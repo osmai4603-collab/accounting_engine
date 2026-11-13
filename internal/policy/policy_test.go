@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/policy"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 type approvedEntryChecker bool

@@ -12,6 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
@@ -25,7 +26,7 @@ type ledgerApplication struct {
 	engine *posting.Engine
 }
 
-func New(core storage.CoreLedgerStore) (storage.LedgerApplication, error) {
+func New(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) {
 	postingRepository, ok := core.(posting.Repository)
 	if !ok {
 		return nil, types.ErrCapabilityNotImplemented
@@ -39,7 +40,7 @@ func New(core storage.CoreLedgerStore) (storage.LedgerApplication, error) {
 }
 
 // NewLegacy builds the legacy adapter surface from a core store.
-func NewLegacy(core storage.CoreLedgerStore) (storage.LedgerApplication, error) { return New(core) }
+func NewLegacy(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) { return New(core) }
 
 // Application is the extended application surface used by the SDK. It exposes
 // explicit actor/reason reversal while remaining a stable-port consumer.
@@ -57,7 +58,9 @@ func NewApplicationFromPorts(ports storage.Ports) (*Application, error) {
 
 // NewApplicationWithEngine wraps an already configured engine. It is used only
 // by the composition root.
-func NewApplicationWithEngine(engine *posting.Engine) *Application { return &Application{engine: engine} }
+func NewApplicationWithEngine(engine *posting.Engine) *Application {
+	return &Application{engine: engine}
+}
 
 func (a *Application) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
 	return postEntry(ctx, a.engine, entry)
@@ -150,5 +153,5 @@ func reverseWithIdentity(ctx context.Context, engine *posting.Engine, companyID 
 	return fromInternalEntry(entry)
 }
 
-var _ storage.LedgerApplication = (*ledgerApplication)(nil)
-var _ storage.LedgerApplication = (*Application)(nil)
+var _ legacy.LedgerApplication = (*ledgerApplication)(nil)
+var _ legacy.LedgerApplication = (*Application)(nil)

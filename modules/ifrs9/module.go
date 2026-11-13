@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
 type Module struct{}
@@ -25,14 +25,14 @@ func (m *Module) Dependencies() []string {
 	return nil
 }
 
-func (m *Module) ValidateDependencies(ports storage.CoreLedgerStore) error {
+func (m *Module) ValidateDependencies(ports legacy.CoreLedgerStore) error {
 	if ports == nil {
 		return errors.New("core ledger store cannot be nil for IFRS 9")
 	}
 	return nil
 }
 
-func (m *Module) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error {
+func (m *Module) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) error {
 	return m.ValidateDependencies(ports)
 }
 

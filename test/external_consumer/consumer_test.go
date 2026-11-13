@@ -127,7 +127,7 @@ func runJourney(ctx context.Context) (ledger.JournalEntry, error) {
 		return ledger.JournalEntry{}, fmt.Errorf("read created fiscal period number %d, want 1", createdPeriod.Number)
 	}
 
-	engine, err := sdk.NewBuilder(sdk.WithCoreStorage(driver)).Build(ctx)
+	engine, err := sdk.NewBuilder(sdk.WithStoragePorts(driver.Ports())).Build(ctx)
 	if err != nil {
 		return ledger.JournalEntry{}, fmt.Errorf("build SDK engine: %w", err)
 	}

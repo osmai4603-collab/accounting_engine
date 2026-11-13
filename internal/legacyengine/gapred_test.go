@@ -3,7 +3,7 @@
 // Red tests for the Phase 0 traceability matrix (missing ERP subledgers).
 // Tracked by the Phase 5 tasks and intentionally skipped until those packages
 // exist; there is no code path to exercise today.
-package accounting_engine_test
+package legacyengine_test
 
 import "testing"
 

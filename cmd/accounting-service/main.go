@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 func main() {
@@ -29,7 +30,7 @@ func run() error {
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 
-	var coreStore storage.CoreLedgerStore
+	var coreStore legacy.CoreLedgerStore
 	var reportingStore storage.ReportingStore
 	var governanceStore storage.GovernanceStore
 	var closeStore func() error

@@ -12,7 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/ifrs9"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	"github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 	"github.com/shopspring/decimal"
 )
 

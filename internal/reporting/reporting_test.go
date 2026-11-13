@@ -12,7 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

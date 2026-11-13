@@ -12,7 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 type failedAttachment struct{}

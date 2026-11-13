@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 // freshMigrationPool provisions a completely empty isolated schema and a pool

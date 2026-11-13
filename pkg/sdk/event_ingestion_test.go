@@ -8,7 +8,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 func TestPublicEventFingerprintCoversAccountingInputs(t *testing.T) {

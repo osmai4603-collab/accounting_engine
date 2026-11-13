@@ -10,7 +10,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
 	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

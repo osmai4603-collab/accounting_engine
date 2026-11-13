@@ -10,10 +10,12 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/sdkapplication"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
@@ -22,8 +24,20 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// EngineBuilder composes the engine from exactly one storage dependency
+// source:
+//
+//   - WithStoragePorts: the recommended, implementation-neutral path. The SDK
+//     builds the application layer from public ports and never asks the adapter
+//     to construct application services.
+//   - WithCoreStorage: the deprecated monolithic store path, kept for
+//     compatibility until the next MAJOR release.
+//
+// Mixing both sources is rejected during preflight.
 type EngineBuilder struct {
-	coreStore       storage.CoreLedgerStore
+	coreStore       legacy.CoreLedgerStore
+	ports           storage.Ports
+	portsConfigured bool
 	reportingStore  storage.ReportingStore
 	governanceStore storage.GovernanceStore
 	standards       []standards.StandardModule
@@ -32,7 +46,23 @@ type EngineBuilder struct {
 
 type Option func(*EngineBuilder) error
 
-func WithCoreStorage(store storage.CoreLedgerStore) Option {
+// WithStoragePorts configures the engine from the stable public storage ports.
+// All required ports are validated before any standard module is initialized.
+func WithStoragePorts(ports storage.Ports) Option {
+	return func(b *EngineBuilder) error {
+		b.ports = ports
+		b.portsConfigured = true
+		return nil
+	}
+}
+
+// WithCoreStorage configures the engine from the legacy monolithic store.
+//
+// Deprecated: use WithStoragePorts with the adapter's Ports() entry point.
+// WithCoreStorage requires the adapter to implement
+// legacy.LedgerApplicationProvider and to expose master data through an
+// additional type assertion. It will be removed in the next MAJOR release.
+func WithCoreStorage(store legacy.CoreLedgerStore) Option {
 	return func(b *EngineBuilder) error {
 		if store == nil {
 			return errors.New("core ledger store is nil")
@@ -42,15 +72,26 @@ func WithCoreStorage(store storage.CoreLedgerStore) Option {
 	}
 }
 
+// WithReporting enables reporting capabilities. Reporting is optional; when it
+// is not configured, reporting calls fail explicitly instead of being
+// silently emulated.
 func WithReporting(store storage.ReportingStore) Option {
 	return func(b *EngineBuilder) error {
+		if store == nil {
+			return errors.New("reporting store is nil")
+		}
 		b.reportingStore = store
 		return nil
 	}
 }
 
+// WithGovernance enables governance capabilities. Governance is optional; when
+// it is not configured, governance calls fail explicitly.
 func WithGovernance(store storage.GovernanceStore) Option {
 	return func(b *EngineBuilder) error {
+		if store == nil {
+			return errors.New("governance store is nil")
+		}
 		b.governanceStore = store
 		return nil
 	}
@@ -80,70 +121,47 @@ func NewBuilder(opts ...Option) *EngineBuilder {
 	return b
 }
 
+// Build validates every dependency before mutating module state, then
+// initializes the configured standard modules and returns the engine.
 func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
-	var errs []error
-	errs = append(errs, b.optsErrs...)
-	if b.coreStore == nil {
-		errs = append(errs, errors.New("core ledger store is required but missing"))
-	} else {
-		if _, ok := b.coreStore.(storage.LedgerApplicationProvider); !ok {
-			errs = append(errs, fmt.Errorf("ledger application: %w", types.ErrCapabilityNotImplemented))
-		}
-	}
-
-	seenModules := map[string]standards.StandardModule{}
-	for _, mod := range b.standards {
-		if mod == nil {
-			errs = append(errs, errors.New("standard module is nil"))
-			continue
-		}
-		name := mod.Name()
-		if _, exists := seenModules[name]; exists {
-			errs = append(errs, fmt.Errorf("duplicate standard module: %s", name))
-			continue
-		}
-		seenModules[name] = mod
+	errs := b.preflight()
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
 	}
 
 	router := events.NewRouter()
 	var publicMasterData publicmasterdata.Store
-	var ledgerApplication storage.LedgerApplication
-	if provider, ok := b.coreStore.(interface {
-		MasterDataStore() publicmasterdata.Store
-	}); ok {
-		publicMasterData = provider.MasterDataStore()
-	}
-	if provider, ok := b.coreStore.(storage.LedgerApplicationProvider); ok {
+	var ledgerApplication legacy.LedgerApplication
+
+	if b.portsConfigured {
+		application, err := sdkapplication.NewApplicationFromPorts(b.ports)
+		if err != nil {
+			return nil, fmt.Errorf("application layer: %w", err)
+		}
+		ledgerApplication = application
+	} else {
+		if provider, ok := b.coreStore.(interface {
+			MasterDataStore() publicmasterdata.Store
+		}); ok {
+			publicMasterData = provider.MasterDataStore()
+		}
+		provider, ok := b.coreStore.(legacy.LedgerApplicationProvider)
+		if !ok {
+			return nil, fmt.Errorf("ledger application: %w", types.ErrCapabilityNotImplemented)
+		}
 		application, err := provider.NewLedgerApplication()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("create ledger application: %w", err))
-		} else if application == nil {
-			errs = append(errs, fmt.Errorf("create ledger application: %w", types.ErrCapabilityNotImplemented))
-		} else {
-			ledgerApplication = application
+			return nil, fmt.Errorf("create ledger application: %w", err)
 		}
+		if application == nil {
+			return nil, fmt.Errorf("create ledger application: %w", types.ErrCapabilityNotImplemented)
+		}
+		ledgerApplication = application
 	}
-	for _, mod := range b.standards {
-		name := mod.Name()
-		for _, dep := range mod.Dependencies() {
-			if _, ok := seenModules[dep]; !ok {
-				errs = append(errs, fmt.Errorf("module %s requires dependency module %s which is not loaded", name, dep))
-			}
-		}
-		if b.coreStore != nil {
-			if err := mod.ValidateDependencies(b.coreStore); err != nil {
-				errs = append(errs, fmt.Errorf("standard module %s dependency validation failed: %w", name, err))
-			}
-			if err := mod.Initialize(ctx, b.coreStore); err != nil {
-				errs = append(errs, fmt.Errorf("standard module %s initialization failed: %w", name, err))
-			}
-		}
-		if err := mod.RegisterRules(router); err != nil {
-			errs = append(errs, fmt.Errorf("standard module %s rule registration failed: %w", name, err))
-		}
-	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+
+	moduleErrs := b.initializeStandards(ctx, router)
+	if len(moduleErrs) > 0 {
+		return nil, errors.Join(moduleErrs...)
 	}
 
 	inst := &engineInstance{
@@ -167,15 +185,87 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	return inst, nil
 }
 
+// preflight collects every missing or conflicting dependency without
+// initializing a module or touching adapter state.
+func (b *EngineBuilder) preflight() []error {
+	errs := append([]error(nil), b.optsErrs...)
+
+	switch {
+	case b.portsConfigured && b.coreStore != nil:
+		errs = append(errs, errors.New("storage: configure exactly one of WithStoragePorts or WithCoreStorage"))
+	case !b.portsConfigured && b.coreStore == nil:
+		errs = append(errs, errors.New("storage: WithStoragePorts or WithCoreStorage is required"))
+	case b.portsConfigured:
+		if err := b.ports.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("storage ports: %w", err))
+		}
+	}
+
+	seenModules := map[string]standards.StandardModule{}
+	for _, mod := range b.standards {
+		if mod == nil {
+			errs = append(errs, errors.New("standard module is nil"))
+			continue
+		}
+		name := mod.Name()
+		if _, exists := seenModules[name]; exists {
+			errs = append(errs, fmt.Errorf("standard module %s: duplicate module", name))
+			continue
+		}
+		seenModules[name] = mod
+	}
+
+	for _, mod := range b.standards {
+		if mod == nil {
+			continue
+		}
+		name := mod.Name()
+		for _, dep := range mod.Dependencies() {
+			if _, ok := seenModules[dep]; !ok {
+				errs = append(errs, fmt.Errorf("standard module %s: required module %s is not loaded", name, dep))
+			}
+		}
+		if b.coreStore == nil {
+			errs = append(errs, fmt.Errorf("standard module %s: standard modules require WithCoreStorage in this release; storage ports do not expose the standards repository", name))
+			continue
+		}
+		if err := mod.ValidateDependencies(b.coreStore); err != nil {
+			errs = append(errs, fmt.Errorf("standard module %s: dependency validation failed: %w", name, err))
+		}
+	}
+
+	return errs
+}
+
+// initializeStandards runs Initialize and RegisterRules only after preflight
+// succeeded.
+func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.Router) []error {
+	var errs []error
+	for _, mod := range b.standards {
+		if mod == nil {
+			continue
+		}
+		name := mod.Name()
+		if err := mod.Initialize(ctx, b.coreStore); err != nil {
+			errs = append(errs, fmt.Errorf("standard module %s: initialization failed: %w", name, err))
+			continue
+		}
+		if err := mod.RegisterRules(router); err != nil {
+			errs = append(errs, fmt.Errorf("standard module %s: rule registration failed: %w", name, err))
+		}
+	}
+	return errs
+}
+
 type engineInstance struct {
-	coreStore         storage.CoreLedgerStore
+	coreStore         legacy.CoreLedgerStore
 	reportingStore    storage.ReportingStore
 	governanceStore   storage.GovernanceStore
 	standards         []standards.StandardModule
 	eventRouter       *events.Router
 	eventService      *defaultEventService
 	publicMasterData  publicmasterdata.Store
-	ledgerApplication storage.LedgerApplication
+	ledgerApplication legacy.LedgerApplication
 }
 
 func (e *engineInstance) Ledger() LedgerService {
@@ -210,7 +300,7 @@ func (e *engineInstance) Close() error {
 }
 
 type defaultLedgerService struct {
-	application storage.LedgerApplication
+	application legacy.LedgerApplication
 }
 
 func (s *defaultLedgerService) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
@@ -285,19 +375,16 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 }
 
 type defaultEventService struct {
-	store             storage.CoreLedgerStore
+	store             legacy.CoreLedgerStore
 	router            *events.Router
 	publicMasterData  publicmasterdata.Store
-	ledgerApplication storage.LedgerApplication
+	ledgerApplication legacy.LedgerApplication
 	mu                sync.Mutex
 	keys              map[string]ledger.JournalEntry
 	inflight          map[string]struct{}
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
-	if s.store == nil {
-		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
-	}
 	if s.ledgerApplication == nil {
 		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}

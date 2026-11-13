@@ -1,4 +1,4 @@
-package accounting_engine_test
+package legacyengine_test
 
 import (
 	"context"
@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	accountingengine "github.com/osmai4603-collab/accounting_engine"
+	accountingengine "github.com/osmai4603-collab/accounting_engine/internal/legacyengine"
 	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

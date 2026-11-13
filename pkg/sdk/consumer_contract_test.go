@@ -10,10 +10,10 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -44,7 +44,7 @@ func TestSDKConsumerContractAcrossStorage(t *testing.T) {
 	})
 }
 
-func runSDKConsumerJourney(t *testing.T, core storage.CoreLedgerStore, masterData publicmasterdata.Store) ledger.JournalEntry {
+func runSDKConsumerJourney(t *testing.T, core legacy.CoreLedgerStore, masterData publicmasterdata.Store) ledger.JournalEntry {
 	t.Helper()
 	ctx := context.Background()
 

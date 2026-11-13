@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/policy"
 	"github.com/osmai4603-collab/accounting_engine/internal/reporting"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 func TestReportingCurrencyDefaultsToEffectivePresentationCurrency(t *testing.T) {

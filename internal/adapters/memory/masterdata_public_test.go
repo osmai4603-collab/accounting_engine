@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/osmai4603-collab/accounting_engine/storage/masterdatacontract"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 func TestPublicMasterDataContract(t *testing.T) {

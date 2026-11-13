@@ -13,7 +13,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 func TestPostgresPostingWithOpenLineIsAtomic(t *testing.T) {

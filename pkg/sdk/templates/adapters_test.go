@@ -10,7 +10,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk/templates"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/storage/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

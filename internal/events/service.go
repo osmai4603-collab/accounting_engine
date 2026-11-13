@@ -9,20 +9,20 @@ import (
 
 	apiEvents "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 )
 
 // EventService is a legacy/internal helper. It must not guess account mappings.
 // Prefer the SDK event ingestion path for durable, idempotent processing.
 type EventService struct {
-	store         storage.CoreLedgerStore
+	store         legacy.CoreLedgerStore
 	router        *Router
 	mu            sync.Mutex
 	processedKeys map[string]ledger.JournalEntry
 	inflight      map[string]struct{}
 }
 
-func NewEventService(store storage.CoreLedgerStore, router *Router) *EventService {
+func NewEventService(store legacy.CoreLedgerStore, router *Router) *EventService {
 	return &EventService{
 		store:         store,
 		router:        router,

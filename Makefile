@@ -12,9 +12,9 @@ COVERAGE_MIN ?= 54.1
 POSTGRES_URL ?= postgres://osm@localhost:5432/accounting_test?sslmode=disable&host=/var/run/postgresql
 export POSTGRES_URL
 
-.PHONY: ci fmt-check vet build test test-external-consumer test-gapred integration-service proto race coverage coverage-report security migrations clean
+.PHONY: ci fmt-check vet build test test-external-consumer test-gapred api-compat published-module integration-service proto race coverage coverage-report security migrations clean
 
-ci: fmt-check vet build test test-gapred integration-service race coverage security migrations
+ci: fmt-check vet build test test-gapred api-compat published-module integration-service race coverage security migrations
 
 fmt-check:
 	./scripts/check_gofmt.sh
@@ -33,6 +33,12 @@ test-external-consumer:
 
 test-gapred:
 	$(GO) test -tags gapred -count=1 ./...
+
+api-compat:
+	./scripts/check_api_compat.sh
+
+published-module:
+	./scripts/check_published_module.sh
 
 integration-service:
 	@test -n "$(POSTGRES_URL)" || (echo "POSTGRES_URL must point to PostgreSQL" >&2; exit 1)

@@ -1,8 +1,8 @@
-package accounting_engine_test
+package legacyengine_test
 
 import (
-	accountingengine "github.com/osmai4603-collab/accounting_engine"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	accountingengine "github.com/osmai4603-collab/accounting_engine/internal/legacyengine"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 // Compile-time contract: the PostgreSQL driver must satisfy every segregated

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	accountingengine "github.com/osmai4603-collab/accounting_engine"
+	accountingengine "github.com/osmai4603-collab/accounting_engine/internal/legacyengine"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"

@@ -1,4 +1,4 @@
-package accounting_engine
+package legacyengine
 
 import (
 	"net/http"

@@ -10,8 +10,8 @@ import (
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
 type RetailEffect string
@@ -110,13 +110,13 @@ func (a *RetailAdapter) Dependencies() []string      { return nil }
 func (a *AgricultureAdapter) Dependencies() []string { return nil }
 func (a *SaaSAdapter) Dependencies() []string        { return nil }
 
-func (a *RetailAdapter) ValidateDependencies(storage.CoreLedgerStore) error      { return nil }
-func (a *AgricultureAdapter) ValidateDependencies(storage.CoreLedgerStore) error { return nil }
-func (a *SaaSAdapter) ValidateDependencies(storage.CoreLedgerStore) error        { return nil }
+func (a *RetailAdapter) ValidateDependencies(legacy.CoreLedgerStore) error      { return nil }
+func (a *AgricultureAdapter) ValidateDependencies(legacy.CoreLedgerStore) error { return nil }
+func (a *SaaSAdapter) ValidateDependencies(legacy.CoreLedgerStore) error        { return nil }
 
-func (a *RetailAdapter) Initialize(context.Context, storage.CoreLedgerStore) error      { return nil }
-func (a *AgricultureAdapter) Initialize(context.Context, storage.CoreLedgerStore) error { return nil }
-func (a *SaaSAdapter) Initialize(context.Context, storage.CoreLedgerStore) error        { return nil }
+func (a *RetailAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error      { return nil }
+func (a *AgricultureAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error { return nil }
+func (a *SaaSAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error        { return nil }
 
 func (a *RetailAdapter) RegisterRules(registrar events.RuleRegistrar) error {
 	return a.base.registerRules(registrar)

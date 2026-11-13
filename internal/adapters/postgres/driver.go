@@ -59,6 +59,9 @@ func NewWithPool(pool *pgxpool.Pool) *Driver { return &Driver{pool: pool} }
 func (d *Driver) Close()                     { d.pool.Close() }
 func (d *Driver) Pool() *pgxpool.Pool        { return d.pool }
 
+// Ping verifies database connectivity.
+func (d *Driver) Ping(ctx context.Context) error { return d.pool.Ping(ctx) }
+
 func seedCurrencyRegistry(ctx context.Context, pool *pgxpool.Pool) error {
 	batch := &pgx.Batch{}
 	currencies := financialtypes.AllCurrencies()

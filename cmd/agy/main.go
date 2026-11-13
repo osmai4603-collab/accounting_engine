@@ -19,7 +19,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/ifrsautomation"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
-	"github.com/osmai4603-collab/accounting_engine/storage/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 func main() {
