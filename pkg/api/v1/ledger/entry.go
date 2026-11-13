@@ -26,13 +26,13 @@ const (
 )
 
 type EntryLine struct {
-	ID                  types.AccountID
+	ID                  types.JournalEntryLineID
 	AccountID           types.AccountID
-	PartnerID           *types.CompanyID
-	CostCenterID        *types.CompanyID
-	ProjectID           *types.CompanyID
-	SegmentID           *types.CompanyID
-	BusinessUnitID      *types.CompanyID
+	PartnerID           *types.PartnerID
+	CostCenterID        *types.CostCenterID
+	ProjectID           *types.ProjectID
+	SegmentID           *types.SegmentID
+	BusinessUnitID      *types.BusinessUnitID
 	MatchingNumber      string
 	ReconciledAmount    decimal.Decimal
 	TransactionAmount   types.Money

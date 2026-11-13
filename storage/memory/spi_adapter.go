@@ -140,7 +140,7 @@ func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID,
 	return ledger.FiscalPeriod{
 		ID:           types.FiscalPeriodID(p.ID),
 		CompanyID:    types.CompanyID(p.CompanyID),
-		FiscalYearID: types.CompanyID(p.FiscalYearID),
+		FiscalYearID: types.FiscalYearID(p.FiscalYearID),
 		Number:       p.Number,
 		Name:         p.Name,
 		StartDate:    p.StartDate,
@@ -166,7 +166,7 @@ func (d *Driver) resolveReportingCurrency(companyID types.CompanyID, currency st
 }
 
 type tbLineAgg struct {
-	account masterdata.Account
+	account                  masterdata.Account
 	openD, openC, perD, perC decimal.Decimal
 }
 
@@ -219,13 +219,19 @@ func (d *Driver) computeTrialBalance(companyID uuid.UUID, start, end time.Time) 
 }
 
 func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
-	if err := ctx.Err(); err != nil { return reporting.TrialBalance{}, err }
+	if err := ctx.Err(); err != nil {
+		return reporting.TrialBalance{}, err
+	}
 	currency = d.resolveReportingCurrency(companyID, currency)
 	aggs, err := d.computeTrialBalance(uuid.UUID(companyID), time.Time{}, asOf)
-	if err != nil { return reporting.TrialBalance{}, err }
+	if err != nil {
+		return reporting.TrialBalance{}, err
+	}
 	ids := make([]uuid.UUID, 0, len(aggs))
-	for id := range aggs { ids = append(ids, id) }
-	sort.Slice(ids, func(i,j int) bool { return aggs[ids[i]].account.Code < aggs[ids[j]].account.Code })
+	for id := range aggs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return aggs[ids[i]].account.Code < aggs[ids[j]].account.Code })
 	lines := make([]reporting.TrialBalanceLine, 0, len(ids))
 	var totD, totC decimal.Decimal
 	for _, id := range ids {
@@ -234,12 +240,16 @@ func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID,
 		endC := a.openC.Add(a.perC)
 		net := endD.Sub(endC)
 		var eD, eC decimal.Decimal
-		if net.IsPositive() { eD = net } else if net.IsNegative() { eC = net.Abs() }
+		if net.IsPositive() {
+			eD = net
+		} else if net.IsNegative() {
+			eC = net.Abs()
+		}
 		totD = totD.Add(eD)
 		totC = totC.Add(eC)
 		lines = append(lines, reporting.TrialBalanceLine{
 			AccountID: types.AccountID(a.account.ID), AccountCode: a.account.Code, AccountName: a.account.Name,
-			AccountType: string(a.account.AccountType),
+			AccountType:  string(a.account.AccountType),
 			OpeningDebit: mustMoney(a.openD, currency), OpeningCredit: mustMoney(a.openC, currency),
 			PeriodDebit: mustMoney(a.perD, currency), PeriodCredit: mustMoney(a.perC, currency),
 			EndingDebit: mustMoney(eD, currency), EndingCredit: mustMoney(eC, currency),
@@ -250,7 +260,9 @@ func (d *Driver) GetTrialBalance(ctx context.Context, companyID types.CompanyID,
 }
 
 func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
-	if err := ctx.Err(); err != nil { return reporting.GeneralLedgerReport{}, err }
+	if err := ctx.Err(); err != nil {
+		return reporting.GeneralLedgerReport{}, err
+	}
 	currency := d.resolveReportingCurrency(companyID, "")
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -258,16 +270,27 @@ func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID
 	if !ok || acc.CompanyID != uuid.UUID(companyID) {
 		return reporting.GeneralLedgerReport{}, posting.ErrEntryNotFound
 	}
-	type row struct{ entry posting.JournalEntry; line posting.JournalEntryLine }
+	type row struct {
+		entry posting.JournalEntry
+		line  posting.JournalEntryLine
+	}
 	var opening, running decimal.Decimal
 	var rows []row
 	for _, e := range d.entries {
-		if e.CompanyID != uuid.UUID(companyID) || e.Status != posting.EntryPosted { continue }
+		if e.CompanyID != uuid.UUID(companyID) || e.Status != posting.EntryPosted {
+			continue
+		}
 		date := e.EntryDate
-		if date.IsZero() { date = e.Date }
-		if !end.IsZero() && date.After(end) { continue }
+		if date.IsZero() {
+			date = e.Date
+		}
+		if !end.IsZero() && date.After(end) {
+			continue
+		}
 		for _, l := range e.Lines {
-			if l.AccountID != uuid.UUID(accountID) { continue }
+			if l.AccountID != uuid.UUID(accountID) {
+				continue
+			}
 			net := l.FunctionalDebit.Amount().Sub(l.FunctionalCredit.Amount())
 			if !start.IsZero() && date.Before(start) {
 				opening = opening.Add(net)
@@ -276,10 +299,18 @@ func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID
 			rows = append(rows, row{entry: e, line: l})
 		}
 	}
-	sort.Slice(rows, func(i,j int) bool {
-		di := rows[i].entry.EntryDate; if di.IsZero() { di = rows[i].entry.Date }
-		dj := rows[j].entry.EntryDate; if dj.IsZero() { dj = rows[j].entry.Date }
-		if di.Equal(dj) { return rows[i].entry.ID.String() < rows[j].entry.ID.String() }
+	sort.Slice(rows, func(i, j int) bool {
+		di := rows[i].entry.EntryDate
+		if di.IsZero() {
+			di = rows[i].entry.Date
+		}
+		dj := rows[j].entry.EntryDate
+		if dj.IsZero() {
+			dj = rows[j].entry.Date
+		}
+		if di.Equal(dj) {
+			return rows[i].entry.ID.String() < rows[j].entry.ID.String()
+		}
 		return di.Before(dj)
 	})
 	running = opening
@@ -287,7 +318,10 @@ func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID
 	for _, r := range rows {
 		net := r.line.FunctionalDebit.Amount().Sub(r.line.FunctionalCredit.Amount())
 		running = running.Add(net)
-		date := r.entry.EntryDate; if date.IsZero() { date = r.entry.Date }
+		date := r.entry.EntryDate
+		if date.IsZero() {
+			date = r.entry.Date
+		}
 		entries = append(entries, reporting.GeneralLedgerEntry{
 			EntryID: types.JournalEntryID(r.entry.ID), EntryNumber: fmtInt64(r.entry.SequenceNumber), EffectiveDate: date,
 			Description: r.entry.Reference, Debit: mustMoney(r.line.FunctionalDebit.Amount(), currency), Credit: mustMoney(r.line.FunctionalCredit.Amount(), currency),
@@ -300,7 +334,9 @@ func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID
 
 func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
 	tb, err := d.GetTrialBalance(ctx, companyID, asOf, currency)
-	if err != nil { return reporting.BalanceSheetReport{}, err }
+	if err != nil {
+		return reporting.BalanceSheetReport{}, err
+	}
 	currency = tb.Currency
 	assets := reporting.BalanceSheetSection{Title: "Assets"}
 	liabs := reporting.BalanceSheetSection{Title: "Liabilities"}
@@ -308,21 +344,33 @@ func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID,
 	var totalAssets, totalLiab, totalEquity decimal.Decimal
 	d.mu.RLock()
 	accTypes := map[uuid.UUID]masterdata.AccountType{}
-	for id, a := range d.accounts { if a.CompanyID == uuid.UUID(companyID) { accTypes[id] = a.AccountType } }
+	for id, a := range d.accounts {
+		if a.CompanyID == uuid.UUID(companyID) {
+			accTypes[id] = a.AccountType
+		}
+	}
 	d.mu.RUnlock()
 	for _, l := range tb.Lines {
 		net := l.EndingDebit.Amount().Sub(l.EndingCredit.Amount())
 		switch accTypes[uuid.UUID(l.AccountID)] {
 		case masterdata.AccountTypeAsset:
-			if net.IsZero() { continue }
+			if net.IsZero() {
+				continue
+			}
 			assets.Lines = append(assets.Lines, reporting.BalanceSheetLine{AccountID: l.AccountID, AccountCode: l.AccountCode, AccountName: l.AccountName, Amount: mustMoney(net, currency)})
 			totalAssets = totalAssets.Add(net)
 		case masterdata.AccountTypeLiability:
-			amt := net.Neg(); if amt.IsZero() { continue }
+			amt := net.Neg()
+			if amt.IsZero() {
+				continue
+			}
 			liabs.Lines = append(liabs.Lines, reporting.BalanceSheetLine{AccountID: l.AccountID, AccountCode: l.AccountCode, AccountName: l.AccountName, Amount: mustMoney(amt, currency)})
 			totalLiab = totalLiab.Add(amt)
 		case masterdata.AccountTypeEquity:
-			amt := net.Neg(); if amt.IsZero() { continue }
+			amt := net.Neg()
+			if amt.IsZero() {
+				continue
+			}
 			equity.Lines = append(equity.Lines, reporting.BalanceSheetLine{AccountID: l.AccountID, AccountCode: l.AccountCode, AccountName: l.AccountName, Amount: mustMoney(amt, currency)})
 			totalEquity = totalEquity.Add(amt)
 		}
@@ -342,24 +390,36 @@ func (d *Driver) GetBalanceSheet(ctx context.Context, companyID types.CompanyID,
 
 func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
 	tb, err := d.GetTrialBalanceForPeriod(ctx, companyID, start, end, currency)
-	if err != nil { return reporting.IncomeStatementReport{}, err }
+	if err != nil {
+		return reporting.IncomeStatementReport{}, err
+	}
 	currency = tb.Currency
 	revenues := reporting.IncomeStatementSection{Title: "Revenues"}
 	expenses := reporting.IncomeStatementSection{Title: "Expenses"}
 	var totalRev, totalExp decimal.Decimal
 	d.mu.RLock()
 	accTypes := map[uuid.UUID]masterdata.AccountType{}
-	for id, a := range d.accounts { if a.CompanyID == uuid.UUID(companyID) { accTypes[id] = a.AccountType } }
+	for id, a := range d.accounts {
+		if a.CompanyID == uuid.UUID(companyID) {
+			accTypes[id] = a.AccountType
+		}
+	}
 	d.mu.RUnlock()
 	for _, l := range tb.Lines {
 		net := l.EndingDebit.Amount().Sub(l.EndingCredit.Amount())
 		switch accTypes[uuid.UUID(l.AccountID)] {
 		case masterdata.AccountTypeIncome:
-			amt := net.Neg(); if amt.IsZero() { continue }
+			amt := net.Neg()
+			if amt.IsZero() {
+				continue
+			}
 			revenues.Lines = append(revenues.Lines, reporting.IncomeStatementLine{AccountID: l.AccountID, AccountCode: l.AccountCode, AccountName: l.AccountName, Amount: mustMoney(amt, currency)})
 			totalRev = totalRev.Add(amt)
 		case masterdata.AccountTypeExpense:
-			amt := net; if amt.IsZero() { continue }
+			amt := net
+			if amt.IsZero() {
+				continue
+			}
 			expenses.Lines = append(expenses.Lines, reporting.IncomeStatementLine{AccountID: l.AccountID, AccountCode: l.AccountCode, AccountName: l.AccountName, Amount: mustMoney(amt, currency)})
 			totalExp = totalExp.Add(amt)
 		}
@@ -371,13 +431,19 @@ func (d *Driver) GetIncomeStatement(ctx context.Context, companyID types.Company
 }
 
 func (d *Driver) GetTrialBalanceForPeriod(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.TrialBalance, error) {
-	if err := ctx.Err(); err != nil { return reporting.TrialBalance{}, err }
+	if err := ctx.Err(); err != nil {
+		return reporting.TrialBalance{}, err
+	}
 	currency = d.resolveReportingCurrency(companyID, currency)
 	aggs, err := d.computeTrialBalance(uuid.UUID(companyID), start, end)
-	if err != nil { return reporting.TrialBalance{}, err }
+	if err != nil {
+		return reporting.TrialBalance{}, err
+	}
 	ids := make([]uuid.UUID, 0, len(aggs))
-	for id := range aggs { ids = append(ids, id) }
-	sort.Slice(ids, func(i,j int) bool { return aggs[ids[i]].account.Code < aggs[ids[j]].account.Code })
+	for id := range aggs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return aggs[ids[i]].account.Code < aggs[ids[j]].account.Code })
 	lines := make([]reporting.TrialBalanceLine, 0, len(ids))
 	var totD, totC decimal.Decimal
 	for _, id := range ids {
@@ -386,12 +452,16 @@ func (d *Driver) GetTrialBalanceForPeriod(ctx context.Context, companyID types.C
 		endC := a.openC.Add(a.perC)
 		net := endD.Sub(endC)
 		var eD, eC decimal.Decimal
-		if net.IsPositive() { eD = net } else if net.IsNegative() { eC = net.Abs() }
+		if net.IsPositive() {
+			eD = net
+		} else if net.IsNegative() {
+			eC = net.Abs()
+		}
 		totD = totD.Add(eD)
 		totC = totC.Add(eC)
 		lines = append(lines, reporting.TrialBalanceLine{
 			AccountID: types.AccountID(a.account.ID), AccountCode: a.account.Code, AccountName: a.account.Name,
-			AccountType: string(a.account.AccountType),
+			AccountType:  string(a.account.AccountType),
 			OpeningDebit: mustMoney(a.openD, currency), OpeningCredit: mustMoney(a.openC, currency),
 			PeriodDebit: mustMoney(a.perD, currency), PeriodCredit: mustMoney(a.perC, currency),
 			EndingDebit: mustMoney(eD, currency), EndingCredit: mustMoney(eC, currency),
@@ -574,7 +644,7 @@ func mapPostingToLedger(e posting.JournalEntry) ledger.JournalEntry {
 		ta, _ := types.NewMoney(l.TransactionAmount.Amount(), l.TransactionCurrency)
 
 		lines[i] = ledger.EntryLine{
-			ID:                  types.AccountID(l.ID),
+			ID:                  types.JournalEntryLineID(l.ID),
 			AccountID:           types.AccountID(l.AccountID),
 			TransactionAmount:   ta,
 			TransactionCurrency: l.TransactionCurrency,

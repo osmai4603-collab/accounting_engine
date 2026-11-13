@@ -149,6 +149,10 @@ func toInternalEntry(e ledger.JournalEntry) (posting.JournalEntry, error) {
 	if effective.IsZero() {
 		effective = time.Now().UTC()
 	}
+	postingDate := e.PostingDate
+	if postingDate.IsZero() {
+		postingDate = effective
+	}
 	createdAt := effective
 
 	journalID := uuid.UUID{}
@@ -166,51 +170,61 @@ func toInternalEntry(e ledger.JournalEntry) (posting.JournalEntry, error) {
 	}
 
 	return posting.JournalEntry{
-		CompanyID:         uuid.UUID(e.CompanyID),
-		ID:                entryID,
-		JournalID:         journalID,
-		PeriodID:          periodID,
-		EntryDate:         effective,
-		Date:              effective,
-		Status:            status,
-		DocumentReference: e.ReferenceID,
-		Reference:         e.Description,
-		CreatedBy:         e.CreatedBy,
-		CreatedAt:         createdAt,
-		UpdatedAt:         createdAt,
-		ReversedEntryID:   revID,
-		SourceEventID:     sourceEventID,
-		Classification:    class,
-		Lines:             lines,
+		CompanyID:           uuid.UUID(e.CompanyID),
+		ID:                  entryID,
+		JournalID:           journalID,
+		PeriodID:            periodID,
+		EntryDate:           effective,
+		Date:                postingDate,
+		Status:              status,
+		DocumentReference:   e.ReferenceID,
+		Reference:           e.Description,
+		TransactionCurrency: e.TransactionCurrency,
+		ExchangeRate:        e.ExchangeRate,
+		CreatedBy:           e.CreatedBy,
+		CreatedAt:           createdAt,
+		UpdatedAt:           createdAt,
+		PostedBy:            e.ApprovedBy,
+		OriginalEntryID:     revID,
+		SourceEventID:       sourceEventID,
+		SourceModule:        e.SourceModule,
+		LegalNumber:         e.EntryNumber,
+		ApprovalFingerprint: e.ApprovalFingerprint,
+		Classification:      class,
+		Lines:               lines,
 	}, nil
 }
 
 func fromInternalEntry(e posting.JournalEntry) ledger.JournalEntry {
 	lines := make([]ledger.EntryLine, len(e.Lines))
 	for i, l := range e.Lines {
-		var partnerID, costCenterID, projectID, segmentID, businessUnitID *types.CompanyID
+		var partnerID *types.PartnerID
+		var costCenterID *types.CostCenterID
+		var projectID *types.ProjectID
+		var segmentID *types.SegmentID
+		var businessUnitID *types.BusinessUnitID
 		if l.PartnerID != nil {
-			id := types.CompanyID(*l.PartnerID)
+			id := types.PartnerID(*l.PartnerID)
 			partnerID = &id
 		}
 		if l.CostCenterID != nil {
-			id := types.CompanyID(*l.CostCenterID)
+			id := types.CostCenterID(*l.CostCenterID)
 			costCenterID = &id
 		}
 		if l.ProjectID != nil {
-			id := types.CompanyID(*l.ProjectID)
+			id := types.ProjectID(*l.ProjectID)
 			projectID = &id
 		}
 		if l.SegmentID != nil {
-			id := types.CompanyID(*l.SegmentID)
+			id := types.SegmentID(*l.SegmentID)
 			segmentID = &id
 		}
 		if l.BusinessUnitID != nil {
-			id := types.CompanyID(*l.BusinessUnitID)
+			id := types.BusinessUnitID(*l.BusinessUnitID)
 			businessUnitID = &id
 		}
 		lines[i] = ledger.EntryLine{
-			ID:                  types.AccountID(l.ID),
+			ID:                  types.JournalEntryLineID(l.ID),
 			AccountID:           types.AccountID(l.AccountID),
 			PartnerID:           partnerID,
 			CostCenterID:        costCenterID,
@@ -241,32 +255,35 @@ func fromInternalEntry(e posting.JournalEntry) ledger.JournalEntry {
 	}
 
 	return ledger.JournalEntry{
-		ID:             types.JournalEntryID(e.ID),
-		CompanyID:      types.CompanyID(e.CompanyID),
-		FiscalPeriodID: types.FiscalPeriodID(e.PeriodID),
-		EntryNumber:    entryNumber,
-		Status:         ledger.EntryStatus(e.Status),
-		Classification: ledger.EntryClassification(e.Classification),
-		EffectiveDate:  e.EntryDate,
-		PostingDate:    e.Date,
-		Description:    e.Reference,
-		SourceModule:   "",
-		ReferenceID:    e.DocumentReference,
-		Lines:          lines,
-		CreatedBy:      e.CreatedBy,
-		ApprovedBy:     e.PostedBy,
-		ReversalOfID:   revID,
+		ID:                  types.JournalEntryID(e.ID),
+		CompanyID:           types.CompanyID(e.CompanyID),
+		FiscalPeriodID:      types.FiscalPeriodID(e.PeriodID),
+		EntryNumber:         entryNumber,
+		Status:              ledger.EntryStatus(e.Status),
+		Classification:      ledger.EntryClassification(e.Classification),
+		EffectiveDate:       e.EntryDate,
+		PostingDate:         e.Date,
+		Description:         e.Reference,
+		SourceModule:        e.SourceModule,
+		ReferenceID:         e.DocumentReference,
+		TransactionCurrency: e.TransactionCurrency,
+		ExchangeRate:        e.ExchangeRate,
+		Lines:               lines,
+		CreatedBy:           e.CreatedBy,
+		ApprovedBy:          e.PostedBy,
+		ApprovalFingerprint: e.ApprovalFingerprint,
+		ReversalOfID:        revID,
 	}
 }
 
-func toInternalCompanyID(id types.CompanyID) uuid.UUID       { return uuid.UUID(id) }
-func toInternalAccountID(id types.AccountID) uuid.UUID       { return uuid.UUID(id) }
-func toInternalEntryID(id types.JournalEntryID) uuid.UUID    { return uuid.UUID(id) }
-func toInternalPeriodID(id types.FiscalPeriodID) uuid.UUID   { return uuid.UUID(id) }
-func toPublicCompanyID(id uuid.UUID) types.CompanyID         { return types.CompanyID(id) }
-func toPublicAccountID(id uuid.UUID) types.AccountID         { return types.AccountID(id) }
-func toPublicEntryID(id uuid.UUID) types.JournalEntryID      { return types.JournalEntryID(id) }
-func toPublicPeriodID(id uuid.UUID) types.FiscalPeriodID     { return types.FiscalPeriodID(id) }
+func toInternalCompanyID(id types.CompanyID) uuid.UUID     { return uuid.UUID(id) }
+func toInternalAccountID(id types.AccountID) uuid.UUID     { return uuid.UUID(id) }
+func toInternalEntryID(id types.JournalEntryID) uuid.UUID  { return uuid.UUID(id) }
+func toInternalPeriodID(id types.FiscalPeriodID) uuid.UUID { return uuid.UUID(id) }
+func toPublicCompanyID(id uuid.UUID) types.CompanyID       { return types.CompanyID(id) }
+func toPublicAccountID(id uuid.UUID) types.AccountID       { return types.AccountID(id) }
+func toPublicEntryID(id uuid.UUID) types.JournalEntryID    { return types.JournalEntryID(id) }
+func toPublicPeriodID(id uuid.UUID) types.FiscalPeriodID   { return types.FiscalPeriodID(id) }
 
 func zeroPublicMoney(currency string) types.Money {
 	if currency == "" {

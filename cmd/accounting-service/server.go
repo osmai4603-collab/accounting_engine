@@ -1,9 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"accounting_engine/pkg/api/v1/events"
@@ -13,11 +21,33 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	maxRequestBodyBytes   = 1 << 20
+	serverShutdownTimeout = 10 * time.Second
+)
+
 type Server struct {
 	engine sdk.Engine
 }
 
 func RunServer(cfg Config, engine sdk.Engine) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return RunServerContext(ctx, cfg, engine)
+}
+
+func RunServerContext(ctx context.Context, cfg Config, engine sdk.Engine) error {
+	listener, err := net.Listen("tcp", ":"+cfg.HTTPPort)
+	if err != nil {
+		return err
+	}
+
+	server := newHTTPServer(cfg, engine)
+	log.Printf("Starting Standalone Accounting Service HTTP Daemon on %s", server.Addr)
+	return serveHTTP(ctx, server, listener)
+}
+
+func newHTTPServer(cfg Config, engine sdk.Engine) *http.Server {
 	srv := &Server{engine: engine}
 	mux := http.NewServeMux()
 
@@ -37,9 +67,41 @@ func RunServer(cfg Config, engine sdk.Engine) error {
 	mux.HandleFunc("/api/v1/trial-balance", srv.handleTrialBalance)
 	mux.HandleFunc("/api/v1/events", srv.handleEvents)
 
-	addr := ":" + cfg.HTTPPort
-	log.Printf("Starting Standalone Accounting Service HTTP Daemon on %s", addr)
-	return http.ListenAndServe(addr, mux)
+	return &http.Server{
+		Addr:              ":" + cfg.HTTPPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener) error {
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- server.Serve(listener)
+	}()
+
+	select {
+	case err := <-serverErrors:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		_ = server.Close()
+		return fmt.Errorf("shutdown HTTP server: %w", err)
+	}
+	if err := <-serverErrors; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +110,8 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var entry ledger.JournalEntry
-	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeRequestJSON(w, r, &entry); err != nil {
+		writeRequestDecodeError(w, err)
 		return
 	}
 	posted, err := s.engine.Ledger().PostEntry(r.Context(), entry)
@@ -72,7 +134,12 @@ func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
 	if currency == "" {
 		currency = "USD"
 	}
-	companyID := types.CompanyID(uuid.MustParse(companyIDStr))
+	parsedCompanyID, err := uuid.Parse(companyIDStr)
+	if err != nil {
+		http.Error(w, "invalid company_id", http.StatusBadRequest)
+		return
+	}
+	companyID := types.CompanyID(parsedCompanyID)
 	tb, err := s.engine.Reporting().GetTrialBalance(r.Context(), companyID, time.Now().UTC(), currency)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -88,8 +155,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var ev events.AccountingEvent
-	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeRequestJSON(w, r, &ev); err != nil {
+		writeRequestDecodeError(w, err)
 		return
 	}
 	entry, err := s.engine.Events().ProcessEvent(r.Context(), ev)
@@ -100,4 +167,35 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(entry)
+}
+
+func decodeRequestJSON(w http.ResponseWriter, r *http.Request, destination any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	if len(raw) == 0 || raw[0] != '{' {
+		return errors.New("request body must be a JSON object")
+	}
+	if err := json.Unmarshal(raw, destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func writeRequestDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.Error(w, "invalid request body", http.StatusBadRequest)
 }

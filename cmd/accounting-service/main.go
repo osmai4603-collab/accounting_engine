@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"accounting_engine/pkg/sdk"
 	"accounting_engine/pkg/spi/storage"
@@ -11,8 +15,18 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Printf("Accounting service exited with error: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg := LoadConfig()
-	ctx := context.Background()
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
 
 	var coreStore storage.CoreLedgerStore
 	var reportingStore storage.ReportingStore
@@ -29,7 +43,7 @@ func main() {
 	} else {
 		pgDriver, err := postgres.New(ctx, cfg.Database)
 		if err != nil {
-			log.Fatalf("Failed to connect to PostgreSQL at %s: %v", cfg.Database, err)
+			return err
 		}
 		coreStore = pgDriver
 		reportingStore = pgDriver
@@ -52,17 +66,36 @@ func main() {
 		sdk.WithGovernance(governanceStore),
 	).Build(ctx)
 	if err != nil {
-		log.Fatalf("Failed to build accounting engine: %v", err)
+		return err
 	}
-	defer engine.Close()
-
-	go func() {
-		if err := StartGRPCServer(cfg, engine); err != nil {
-			log.Printf("gRPC server error: %v", err)
+	defer func() {
+		if err := engine.Close(); err != nil {
+			log.Printf("Error closing accounting engine: %v", err)
 		}
 	}()
 
-	if err := RunServer(cfg, engine); err != nil {
-		log.Fatalf("Accounting service exited with error: %v", err)
+	grpcErrors := make(chan error, 1)
+	go func() {
+		grpcErrors <- RunGRPCServer(ctx, cfg, engine)
+	}()
+
+	httpErrors := make(chan error, 1)
+	go func() {
+		httpErrors <- RunServerContext(ctx, cfg, engine)
+	}()
+
+	var httpErr, grpcErr error
+	select {
+	case httpErr = <-httpErrors:
+		cancel()
+		grpcErr = <-grpcErrors
+	case grpcErr = <-grpcErrors:
+		cancel()
+		httpErr = <-httpErrors
+	case <-signalCtx.Done():
+		cancel()
+		httpErr = <-httpErrors
+		grpcErr = <-grpcErrors
 	}
+	return errors.Join(httpErr, grpcErr)
 }

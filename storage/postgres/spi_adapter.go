@@ -128,7 +128,7 @@ func (d *Driver) GetFiscalPeriod(ctx context.Context, companyID types.CompanyID,
 		period = ledger.FiscalPeriod{
 			ID:           types.FiscalPeriodID(pID),
 			CompanyID:    types.CompanyID(cID),
-			FiscalYearID: types.CompanyID(yID),
+			FiscalYearID: types.FiscalYearID(yID),
 			Number:       number,
 			Name:         name,
 			StartDate:    start,
@@ -446,7 +446,7 @@ func mapPostingToLedger(e posting.JournalEntry) ledger.JournalEntry {
 		ta, _ := types.NewMoney(l.TransactionAmount.Amount(), l.TransactionCurrency)
 
 		lines[i] = ledger.EntryLine{
-			ID:                  types.AccountID(l.ID),
+			ID:                  types.JournalEntryLineID(l.ID),
 			AccountID:           types.AccountID(l.AccountID),
 			TransactionAmount:   ta,
 			TransactionCurrency: l.TransactionCurrency,

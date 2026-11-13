@@ -81,14 +81,14 @@ func publicEventFingerprint(eventType string, companyID types.CompanyID, ledgerI
 			})
 		}
 		payload["draft"] = map[string]any{
-			"id":          uuid.UUID(draft.ID).String(),
-			"effective":   draft.EffectiveDate.UTC().Format(timeRFC3339Nano),
-			"desc":        draft.Description,
-			"ref":         draft.ReferenceID,
-			"source":      draft.SourceModule,
-			"line_count":  len(draft.Lines),
-			"lines":       lines,
-			"company_id":  uuid.UUID(draft.CompanyID).String(),
+			"id":         uuid.UUID(draft.ID).String(),
+			"effective":  draft.EffectiveDate.UTC().Format(timeRFC3339Nano),
+			"desc":       draft.Description,
+			"ref":        draft.ReferenceID,
+			"source":     draft.SourceModule,
+			"line_count": len(draft.Lines),
+			"lines":      lines,
+			"company_id": uuid.UUID(draft.CompanyID).String(),
 		}
 	}
 	b, _ := json.Marshal(payload)
@@ -107,7 +107,7 @@ func normalizeLedgerEntryIDs(entry *ledger.JournalEntry) {
 	}
 	for i := range entry.Lines {
 		if uuid.UUID(entry.Lines[i].ID) == uuid.Nil {
-			entry.Lines[i].ID = types.AccountID(types.NewJournalEntryID())
+			entry.Lines[i].ID = types.NewJournalEntryLineID()
 		}
 		if entry.CompanyID != types.CompanyID(uuid.Nil) {
 			// Company is on entry; line-level company not represented in public DTO.

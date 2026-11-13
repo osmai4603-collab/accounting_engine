@@ -154,8 +154,12 @@ type JournalEntry struct {
 	EntryDate            time.Time
 	Date                 time.Time
 	Status               EntryStatus
+	SourceModule         string
 	DocumentReference    string
 	Reference            string
+	TransactionCurrency  string
+	ExchangeRate         decimal.Decimal
+	ApprovalFingerprint  string
 	CreatedBy            string
 	PostedBy             string
 	PostedAt             *time.Time

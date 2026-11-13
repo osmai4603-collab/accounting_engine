@@ -285,7 +285,7 @@ func (s *defaultLedgerService) ReverseEntry(ctx context.Context, companyID types
 	revLines := make([]ledger.EntryLine, len(original.Lines))
 	for i, l := range original.Lines {
 		revLines[i] = l
-		revLines[i].ID = types.AccountID(types.NewJournalEntryID())
+		revLines[i].ID = types.NewJournalEntryLineID()
 		revLines[i].FunctionalDebit = l.FunctionalCredit
 		revLines[i].FunctionalCredit = l.FunctionalDebit
 	}
@@ -581,7 +581,7 @@ func (s *defaultEventService) constructEventEntry(ctx context.Context, rule even
 		ReferenceID:    event.EventID,
 		Lines: []ledger.EntryLine{
 			{
-				ID:                  types.AccountID(types.NewJournalEntryID()),
+				ID:                  types.NewJournalEntryLineID(),
 				AccountID:           debitAccountID,
 				TransactionAmount:   amt,
 				TransactionCurrency: amt.Currency(),
@@ -590,7 +590,7 @@ func (s *defaultEventService) constructEventEntry(ctx context.Context, rule even
 				FunctionalCredit:    zeroAmt,
 			},
 			{
-				ID:                  types.AccountID(types.NewJournalEntryID()),
+				ID:                  types.NewJournalEntryLineID(),
 				AccountID:           creditAccountID,
 				TransactionAmount:   amt,
 				TransactionCurrency: amt.Currency(),

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -183,11 +184,12 @@ func (l *FixedAssetLedger) RegisterAssetContext(ctx context.Context, asset Fixed
 // مع ترحيل قيد الاستهلاك. يحل محل نمط PrepareDepreciation + ConfirmDepreciation
 // المرجع: IAS 16.43 — الاستهلاك يجب أن يُثبت بالتزامن مع القيد
 type DepreciationAttachment struct {
-	AssetID      uuid.UUID
-	CompanyID    uuid.UUID
-	Amount       financialtypes.Money
-	AsOf         time.Time
-	UpdatedAsset FixedAsset
+	AssetID       uuid.UUID
+	CompanyID     uuid.UUID
+	Amount        financialtypes.Money
+	AsOf          time.Time
+	expectedAsset FixedAsset
+	UpdatedAsset  FixedAsset
 }
 
 func (a *DepreciationAttachment) AttachmentKind() string {
@@ -195,11 +197,47 @@ func (a *DepreciationAttachment) AttachmentKind() string {
 }
 
 func (a *DepreciationAttachment) ValidateAttachment(ctx context.Context, entry posting.JournalEntry) error {
-	if a.AssetID == uuid.Nil || a.CompanyID == uuid.Nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.AssetID == uuid.Nil || a.CompanyID == uuid.Nil || a.AsOf.IsZero() ||
+		a.expectedAsset.ID != a.AssetID || a.expectedAsset.CompanyID != a.CompanyID ||
+		a.expectedAsset.IsCWIP || a.expectedAsset.DisposedAt != nil ||
+		entry.ID == uuid.Nil || entry.Status != posting.EntryDraft {
 		return ErrInvalidAsset
 	}
 	if a.CompanyID != entry.CompanyID {
 		return ErrCompanyMismatch
+	}
+	if !a.expectedAsset.LastDepreciationDate.IsZero() &&
+		(a.expectedAsset.LastDepreciationDate.UTC().Format("2006-01") == a.AsOf.UTC().Format("2006-01") ||
+			a.AsOf.Before(a.expectedAsset.LastDepreciationDate)) {
+		return ErrInvalidAsset
+	}
+	if !entry.EntryDate.Equal(a.AsOf) || !entry.Date.Equal(a.AsOf) ||
+		entry.DocumentReference != depreciationReference(a.AssetID, a.AsOf) {
+		return ErrInvalidAsset
+	}
+	expectedAmount, expectedUpdated, err := depreciationUpdate(a.expectedAsset, a.AsOf)
+	if err != nil {
+		return err
+	}
+	if !a.Amount.Equal(expectedAmount) || !reflect.DeepEqual(a.UpdatedAsset, expectedUpdated) {
+		return ErrInvalidAsset
+	}
+	expectedLines, err := depreciationJournalLines(a.expectedAsset, a.AsOf, expectedAmount)
+	if err != nil {
+		return err
+	}
+	if len(entry.Lines) != len(expectedLines) {
+		return ErrInvalidAsset
+	}
+	for i, line := range entry.Lines {
+		expected := expectedLines[i]
+		if line.CompanyID != expected.CompanyID || line.AccountID != expected.AccountID ||
+			!line.Debit.Equal(expected.Debit) || !line.Credit.Equal(expected.Credit) {
+			return ErrInvalidAsset
+		}
 	}
 	return nil
 }
@@ -398,7 +436,7 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 
 	attachment := &DepreciationAttachment{
 		AssetID: assetID, CompanyID: l.companyID,
-		Amount: expense, AsOf: asOf, UpdatedAsset: updated,
+		Amount: expense, AsOf: asOf, expectedAsset: cloneFixedAsset(asset), UpdatedAsset: updated,
 	}
 
 	if err := engine.PostEntryWithAttachmentContext(ctx, &entry, posterID, attachment); err != nil {

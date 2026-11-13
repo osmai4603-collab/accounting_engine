@@ -31,7 +31,7 @@ const (
 )
 
 type FiscalYear struct {
-	ID        types.CompanyID // or ID
+	ID        types.FiscalYearID
 	CompanyID types.CompanyID
 	Name      string
 	StartDate time.Time
@@ -43,7 +43,7 @@ type FiscalYear struct {
 type FiscalPeriod struct {
 	ID           types.FiscalPeriodID
 	CompanyID    types.CompanyID
-	FiscalYearID types.CompanyID
+	FiscalYearID types.FiscalYearID
 	Number       int
 	Name         string
 	StartDate    time.Time

@@ -19,7 +19,8 @@ func NewDimensionsRouter(mappings map[string]string) *DimensionsRouter {
 func (r *DimensionsRouter) ResolveDimensionID(dimensions map[string]string, key string) *types.CompanyID {
 	if val, ok := dimensions[key]; ok {
 		if parsed, err := uuid.Parse(val); err == nil {
-			return &parsed
+			id := types.CompanyID(parsed)
+			return &id
 		}
 	}
 	return nil

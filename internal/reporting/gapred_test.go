@@ -16,6 +16,7 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
+	"accounting_engine/internal/reporting"
 
 	"github.com/google/uuid"
 )
@@ -57,6 +58,15 @@ func (r *gapClosingRepository) UpdatePeriodStateForCompanyContext(
 
 func (r *gapClosingRepository) listClosedPeriodIDs() []uuid.UUID {
 	return append([]uuid.UUID(nil), r.hardClosedPeriods...)
+}
+
+func gapFindFiscalPeriod(year masterdata.FiscalYear, number int) (masterdata.FiscalPeriod, bool) {
+	for _, period := range year.Periods {
+		if period.Number == number {
+			return period, true
+		}
+	}
+	return masterdata.FiscalPeriod{}, false
 }
 
 func gapClosingEnv(t *testing.T) (*gapClosingRepository, masterdata.FiscalYear, uuid.UUID, uuid.UUID, uuid.UUID) {
@@ -114,12 +124,12 @@ func (r *gapClosingRepository) generatedClosingEntry(
 	journalID, retainedID uuid.UUID,
 ) posting.JournalEntry {
 	t.Helper()
-	engine := NewClosingEngine(r)
+	engine := reporting.NewClosingEngine(r)
 	entry, _, err := engine.GenerateClosingMoveContext(ctx, year, journalID, retainedID, "USD")
 	if err != nil {
 		t.Fatalf("generate closing move: %v", err)
 	}
-	period13, ok := findFiscalPeriod(year, 13)
+	period13, ok := gapFindFiscalPeriod(year, 13)
 	if !ok {
 		t.Fatal("year has no period 13")
 	}
@@ -138,7 +148,7 @@ func (r *gapClosingRepository) generatedClosingEntry(
 func TestGAP_CLS_01_ConfirmRejectsContentMismatchedClosingEntry(t *testing.T) {
 	ctx := context.Background()
 	repo, year, journalID, retainedID, incomeID := gapClosingEnv(t)
-	period13, ok := findFiscalPeriod(year, 13)
+	period13, ok := gapFindFiscalPeriod(year, 13)
 	if !ok {
 		t.Fatal("year has no period 13")
 	}
@@ -162,7 +172,7 @@ func TestGAP_CLS_01_ConfirmRejectsContentMismatchedClosingEntry(t *testing.T) {
 	bogus.EntryDate = year.EndDate
 	repo.entries = append(repo.entries, bogus)
 
-	engine := NewClosingEngine(repo)
+	engine := reporting.NewClosingEngine(repo)
 	if err := engine.ConfirmFiscalYearCloseContext(ctx, year, bogus.ID); err == nil {
 		t.Fatalf("GAP-CLS-01: accepted a closing entry that never closes income account %s", incomeID)
 	}
@@ -177,7 +187,7 @@ func TestGAP_CLS_02_CloseIsAtomicOnPartialFailure(t *testing.T) {
 	closing := repo.generatedClosingEntry(t, ctx, year, journalID, retainedID)
 
 	repo.failHardCloseAt = 2
-	engine := NewClosingEngine(repo)
+	engine := reporting.NewClosingEngine(repo)
 	if err := engine.ConfirmFiscalYearCloseContext(ctx, year, closing.ID); err == nil {
 		t.Fatal("GAP-CLS-02: expected the injected hard-close failure to abort confirmation")
 	}

@@ -62,7 +62,7 @@ func EvaluateAndConstructEntry(rule PostingRule, event AccountingEvent) (ledger.
 	zeroAmt, _ := types.NewMoney(decimal.Zero, cur)
 
 	debitLine := ledger.EntryLine{
-		ID:                  types.AccountID(types.NewJournalEntryID()),
+		ID:                  types.NewJournalEntryLineID(),
 		AccountID:           types.NewAccountID(),
 		TransactionAmount:   amt,
 		TransactionCurrency: cur,
@@ -72,7 +72,7 @@ func EvaluateAndConstructEntry(rule PostingRule, event AccountingEvent) (ledger.
 	}
 
 	creditLine := ledger.EntryLine{
-		ID:                  types.AccountID(types.NewJournalEntryID()),
+		ID:                  types.NewJournalEntryLineID(),
 		AccountID:           types.NewAccountID(),
 		TransactionAmount:   amt,
 		TransactionCurrency: cur,
