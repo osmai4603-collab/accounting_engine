@@ -1,11 +1,8 @@
 //go:build gapred
 
-// Red tests for the Phase 0 traceability matrix (closing gaps). Run with:
+// Regression tests for the Phase 0 traceability matrix (closing gaps). Run with:
 //
 //	go test -tags gapred ./internal/reporting -run TestGAP
-//
-// They are expected to FAIL until P2-T1/P2-T2 make fiscal-year confirmation
-// content-aware and atomic.
 package reporting_test
 
 import (
@@ -29,6 +26,7 @@ type gapClosingRepository struct {
 	*memoryRepository
 	year              masterdata.FiscalYear
 	failHardCloseAt   int
+	hardCloseAttempts int
 	hardClosedPeriods []uuid.UUID
 }
 
@@ -48,9 +46,30 @@ func (r *gapClosingRepository) UpdatePeriodStateForCompanyContext(
 	state masterdata.PeriodState,
 ) error {
 	if state == masterdata.PeriodHardClosed {
-		r.hardClosedPeriods = append(r.hardClosedPeriods, periodID)
-		if r.failHardCloseAt > 0 && len(r.hardClosedPeriods) == r.failHardCloseAt {
+		r.hardCloseAttempts++
+		if r.failHardCloseAt > 0 && r.hardCloseAttempts == r.failHardCloseAt {
 			return errInjectedHardClose
+		}
+	}
+	if state == masterdata.PeriodHardClosed {
+		for _, id := range r.hardClosedPeriods {
+			if id == periodID {
+				return nil
+			}
+		}
+		r.hardClosedPeriods = append(r.hardClosedPeriods, periodID)
+	} else {
+		for i, id := range r.hardClosedPeriods {
+			if id == periodID {
+				r.hardClosedPeriods = append(r.hardClosedPeriods[:i], r.hardClosedPeriods[i+1:]...)
+				break
+			}
+		}
+	}
+	for i := range r.year.Periods {
+		if r.year.Periods[i].ID == periodID {
+			r.year.Periods[i].State = state
+			break
 		}
 	}
 	return nil

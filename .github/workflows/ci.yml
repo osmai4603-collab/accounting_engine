@@ -29,12 +29,27 @@ jobs:
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
+      - name: Install pinned protobuf compiler
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.3"
+      - name: Install pinned Go protobuf generators
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Verify generated protobuf bindings
+        run: |
+          make proto
+          git diff --exit-code -- proto/accounting/v1
       - name: gofmt gate
         run: ./scripts/check_gofmt.sh
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: Docker image build
+        run: docker build --pull --file deployments/Dockerfile --tag accounting-service:ci .
 
   test:
     name: Tests + coverage (PostgreSQL)

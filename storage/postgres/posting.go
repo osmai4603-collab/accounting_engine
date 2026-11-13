@@ -174,8 +174,14 @@ func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.
 	if status != posting.EntryDraft || current.Status != posting.EntryDraft {
 		return posting.ErrEntryNotDraft
 	}
+	if entry.PeriodID == uuid.Nil {
+		entry.PeriodID = current.PeriodID
+	}
 	if !posting.DraftContentMatches(current, *entry) {
 		return financialtypes.ErrCannotModifyPostedMove
+	}
+	if err := validatePostingPeriodTx(ctx, tx, *entry); err != nil {
+		return err
 	}
 
 	sequence++
@@ -241,8 +247,14 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	if status != posting.EntryDraft || current.Status != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
 	}
+	if entry.PeriodID == uuid.Nil {
+		entry.PeriodID = current.PeriodID
+	}
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	if err := validatePostingPeriodTx(ctx, tx, entry); err != nil {
+		return posting.JournalEntry{}, err
 	}
 	sequence++
 	if _, err := tx.Exec(ctx,
@@ -299,6 +311,63 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	return entry, nil
 }
 
+func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.JournalEntry) error {
+	entryDate := entry.EntryDate
+	if entryDate.IsZero() {
+		entryDate = entry.Date
+	}
+	if entry.PeriodID == uuid.Nil || entryDate.IsZero() {
+		return posting.ErrInvalidEntry
+	}
+
+	var startDate, endDate time.Time
+	var state masterdata.PeriodState
+	var periodNumber int
+	var periodType masterdata.FiscalPeriodType
+	err := tx.QueryRow(ctx, `SELECT start_date,end_date,state,period_number,period_type
+		FROM fiscal_periods WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		entry.CompanyID, entry.PeriodID).Scan(&startDate, &endDate, &state, &periodNumber, &periodType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if state == masterdata.PeriodHardClosed {
+		return masterdata.ErrFiscalPeriodClosed
+	}
+	if state != masterdata.PeriodOpen && state != masterdata.PeriodSoftClosed {
+		return masterdata.ErrFiscalPeriodClosed
+	}
+
+	entryDate = entryDate.UTC()
+	if entryDate.Before(startDate.UTC()) || entryDate.After(endDate.UTC()) {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	if entry.TargetPeriodNumber == 0 {
+		if periodType != masterdata.FiscalPeriodTypeNormal {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		return nil
+	}
+	if periodNumber != entry.TargetPeriodNumber {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	switch entry.TargetPeriodNumber {
+	case 13:
+		if periodType != masterdata.FiscalPeriodTypeYearEndAdjustment {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+	case 14:
+		if periodType != masterdata.FiscalPeriodTypeAuditAdjustment {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+	default:
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	return nil
+}
+
 func (d *Driver) PostReversalAtomic(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {
 	return d.PostReversalAtomicContext(ctx, original, reversal)
 }
@@ -333,10 +402,15 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	if currentOriginal.Status != posting.EntryPosted || currentOriginal.ReversedEntryID != nil {
 		return posting.JournalEntry{}, posting.ErrEntryAlreadyReversed
 	}
+	if err := posting.ValidateReversalLines(currentOriginal, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	reversal.Classification = posting.EntryClassReversing
 	var reversalStatus posting.EntryStatus
+	var reversalData []byte
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM account_moves WHERE company_id=$1 AND id=$2 AND journal_id=$3 FOR UPDATE`,
-		reversal.CompanyID, reversal.ID, reversal.JournalID).Scan(&reversalStatus); err != nil {
+		`SELECT status,entry FROM account_moves WHERE company_id=$1 AND id=$2 AND journal_id=$3 FOR UPDATE`,
+		reversal.CompanyID, reversal.ID, reversal.JournalID).Scan(&reversalStatus, &reversalData); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return posting.JournalEntry{}, posting.ErrEntryNotFound
 		}
@@ -344,6 +418,19 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	}
 	if reversalStatus != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+	}
+	var currentReversal posting.JournalEntry
+	if err := json.Unmarshal(reversalData, &currentReversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if reversal.PeriodID == uuid.Nil {
+		reversal.PeriodID = currentReversal.PeriodID
+	}
+	if !posting.DraftContentMatches(currentReversal, reversal) {
+		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
+		return posting.JournalEntry{}, err
 	}
 
 	var sequence int64

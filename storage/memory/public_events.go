@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"accounting_engine/pkg/api/v1/ledger"
-	"accounting_engine/pkg/sdk"
+	publicevents "accounting_engine/pkg/spi/events"
 
 	"github.com/google/uuid"
 )
@@ -24,13 +24,13 @@ type publicEventMappingKey struct {
 }
 
 type publicEventState struct {
-	ingestions map[publicEventIngestionKey]sdk.PublicEventIngestion
-	mappings   map[publicEventMappingKey]sdk.PublicEventAccountMapping
+	ingestions map[publicEventIngestionKey]publicevents.Ingestion
+	mappings   map[publicEventMappingKey]publicevents.AccountMapping
 }
 
 var (
-	publicEventMu     sync.Mutex
-	publicEventByDrv  = map[*Driver]*publicEventState{}
+	publicEventMu    sync.Mutex
+	publicEventByDrv = map[*Driver]*publicEventState{}
 )
 
 func (d *Driver) publicEventState() *publicEventState {
@@ -39,17 +39,17 @@ func (d *Driver) publicEventState() *publicEventState {
 	st, ok := publicEventByDrv[d]
 	if !ok {
 		st = &publicEventState{
-			ingestions: map[publicEventIngestionKey]sdk.PublicEventIngestion{},
-			mappings:   map[publicEventMappingKey]sdk.PublicEventAccountMapping{},
+			ingestions: map[publicEventIngestionKey]publicevents.Ingestion{},
+			mappings:   map[publicEventMappingKey]publicevents.AccountMapping{},
 		}
 		publicEventByDrv[d] = st
 	}
 	return st
 }
 
-func (d *Driver) GetPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string) (sdk.PublicEventIngestion, bool, error) {
+func (d *Driver) GetPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string) (publicevents.Ingestion, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.PublicEventIngestion{}, false, err
+		return publicevents.Ingestion{}, false, err
 	}
 	st := d.publicEventState()
 	d.mu.RLock()
@@ -58,9 +58,9 @@ func (d *Driver) GetPublicEventIngestion(ctx context.Context, companyID uuid.UUI
 	return rec, ok, nil
 }
 
-func (d *Driver) ClaimPublicEventIngestion(ctx context.Context, record sdk.PublicEventIngestion) (sdk.PublicEventIngestion, bool, error) {
+func (d *Driver) ClaimPublicEventIngestion(ctx context.Context, record publicevents.Ingestion) (publicevents.Ingestion, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.PublicEventIngestion{}, false, err
+		return publicevents.Ingestion{}, false, err
 	}
 	key := strings.TrimSpace(record.IdempotencyKey)
 	record.IdempotencyKey = key
@@ -72,6 +72,12 @@ func (d *Driver) ClaimPublicEventIngestion(ctx context.Context, record sdk.Publi
 	defer d.mu.Unlock()
 	k := publicEventIngestionKey{companyID: record.CompanyID, key: key}
 	if existing, ok := st.ingestions[k]; ok {
+		if existing.Status == "failed" && existing.PayloadHash == record.PayloadHash {
+			existing.Status = "processing"
+			existing.FailureReason = ""
+			st.ingestions[k] = existing
+			return existing, true, nil
+		}
 		return existing, false, nil
 	}
 	st.ingestions[k] = record
@@ -88,9 +94,13 @@ func (d *Driver) CompletePublicEventIngestion(ctx context.Context, companyID uui
 	k := publicEventIngestionKey{companyID: companyID, key: strings.TrimSpace(idempotencyKey)}
 	rec, ok := st.ingestions[k]
 	if !ok {
-		return context.Canceled
+		return publicevents.ErrRecordNotFound
+	}
+	if rec.Status != "processing" && (rec.Status != "processed" || rec.EntryID != uuid.UUID(entry.ID)) {
+		return publicevents.ErrStateConflict
 	}
 	rec.Status = "processed"
+	rec.FailureReason = ""
 	rec.EntryID = uuid.UUID(entry.ID)
 	rec.Entry = entry
 	st.ingestions[k] = rec
@@ -110,14 +120,14 @@ func (d *Driver) FailPublicEventIngestion(ctx context.Context, companyID uuid.UU
 		return nil
 	}
 	rec.Status = "failed"
+	rec.FailureReason = reason
 	st.ingestions[k] = rec
-	_ = reason
 	return nil
 }
 
-func (d *Driver) GetPublicEventAccountMapping(ctx context.Context, companyID uuid.UUID, eventType, ledgerID string) (sdk.PublicEventAccountMapping, bool, error) {
+func (d *Driver) GetPublicEventAccountMapping(ctx context.Context, companyID uuid.UUID, eventType, ledgerID string) (publicevents.AccountMapping, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.PublicEventAccountMapping{}, false, err
+		return publicevents.AccountMapping{}, false, err
 	}
 	st := d.publicEventState()
 	d.mu.RLock()
@@ -126,7 +136,7 @@ func (d *Driver) GetPublicEventAccountMapping(ctx context.Context, companyID uui
 	return m, ok, nil
 }
 
-func (d *Driver) SavePublicEventAccountMapping(ctx context.Context, mapping sdk.PublicEventAccountMapping) error {
+func (d *Driver) SavePublicEventAccountMapping(ctx context.Context, mapping publicevents.AccountMapping) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -139,6 +149,6 @@ func (d *Driver) SavePublicEventAccountMapping(ctx context.Context, mapping sdk.
 }
 
 var (
-	_ sdk.PublicEventIdempotencyStore = (*Driver)(nil)
-	_ sdk.PublicEventMappingStore     = (*Driver)(nil)
+	_ publicevents.IdempotencyStore = (*Driver)(nil)
+	_ publicevents.MappingStore     = (*Driver)(nil)
 )

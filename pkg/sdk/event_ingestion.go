@@ -1,102 +1,62 @@
 package sdk
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
+	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
+	publicevents "accounting_engine/pkg/spi/events"
 
 	"github.com/google/uuid"
 )
 
 var (
-	ErrIdempotencyKeyConflict = errors.New("idempotency key already used with a different payload")
-	ErrIdempotencyInProgress  = errors.New("idempotency key processing is in progress")
-	ErrEventMappingNotFound   = errors.New("no account mapping registered for event type")
+	ErrIdempotencyKeyConflict     = errors.New("idempotency key already used with a different payload")
+	ErrIdempotencyInProgress      = errors.New("idempotency key processing is in progress")
+	ErrEventMappingNotFound       = errors.New("no account mapping registered for event type")
+	ErrExchangeRateUnavailable    = errors.New("exchange rate source is unavailable")
+	ErrEventDimensionsUnsupported = errors.New("event dimensions cannot be resolved to approved master data")
+	ErrEventPayloadUnsupported    = errors.New("event payload requires a template that explicitly maps payload fields")
+	ErrIdempotencyRecordNotFound  = publicevents.ErrRecordNotFound
+	ErrIdempotencyStateConflict   = publicevents.ErrStateConflict
 )
 
-// PublicEventIngestion stores the durable result of a public event ingestion (B.2).
-type PublicEventIngestion struct {
-	CompanyID      uuid.UUID
-	IdempotencyKey string
-	EventType      string
-	PayloadHash    string
-	EntryID        uuid.UUID
-	Status         string // processing|processed|failed
-	Entry          ledger.JournalEntry
-}
+type PublicEventIngestion = publicevents.Ingestion
+type PublicEventAccountMapping = publicevents.AccountMapping
+type PublicEventIdempotencyStore = publicevents.IdempotencyStore
+type PublicEventMappingStore = publicevents.MappingStore
 
-// PublicEventAccountMapping is a per-company (and optional ledger) mapping for B.4.
-type PublicEventAccountMapping struct {
-	CompanyID           uuid.UUID
-	EventType           string
-	LedgerID            string
-	DebitAccountCode    string
-	CreditAccountCode   string
-	DescriptionTemplate string
-	JournalCode         string
-}
-
-// PublicEventIdempotencyStore provides durable idempotency for public event ingestion.
-type PublicEventIdempotencyStore interface {
-	GetPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string) (PublicEventIngestion, bool, error)
-	// ClaimPublicEventIngestion atomically reserves the key if unused and returns (record, claimed, err).
-	// If not claimed, record contains the existing ingestion.
-	ClaimPublicEventIngestion(ctx context.Context, record PublicEventIngestion) (existing PublicEventIngestion, claimed bool, err error)
-	CompletePublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey string, entry ledger.JournalEntry) error
-	FailPublicEventIngestion(ctx context.Context, companyID uuid.UUID, idempotencyKey, reason string) error
-}
-
-// PublicEventMappingStore provides configurable per-company/ledger event mappings (B.4).
-type PublicEventMappingStore interface {
-	GetPublicEventAccountMapping(ctx context.Context, companyID uuid.UUID, eventType, ledgerID string) (PublicEventAccountMapping, bool, error)
-	SavePublicEventAccountMapping(ctx context.Context, mapping PublicEventAccountMapping) error
-}
-
-func publicEventFingerprint(eventType string, companyID types.CompanyID, ledgerID string, draft *ledger.JournalEntry, amountCurrency string, amount string, debitCode, creditCode string) string {
-	payload := map[string]any{
-		"event_type":  eventType,
-		"company_id":  uuid.UUID(companyID).String(),
-		"ledger_id":   strings.TrimSpace(ledgerID),
-		"amount":      amount,
-		"currency":    amountCurrency,
-		"debit_code":  debitCode,
-		"credit_code": creditCode,
+func publicEventFingerprint(event events.AccountingEvent, rule events.PostingRule) (string, error) {
+	payload := struct {
+		EventType     string               `json:"event_type"`
+		EventID       string               `json:"event_id"`
+		CompanyID     types.CompanyID      `json:"company_id"`
+		LedgerID      string               `json:"ledger_id"`
+		EffectiveDate time.Time            `json:"effective_date"`
+		Amount        types.Money          `json:"amount"`
+		Dimensions    map[string]string    `json:"dimensions"`
+		Payload       map[string]any       `json:"payload"`
+		JournalDraft  *ledger.JournalEntry `json:"journal_draft"`
+		Rule          events.PostingRule   `json:"rule"`
+	}{
+		EventType: event.EventType, EventID: event.EventID, CompanyID: event.CompanyID,
+		LedgerID: strings.TrimSpace(event.LedgerID), EffectiveDate: event.EffectiveDate.UTC(),
+		Amount: event.Amount, Dimensions: event.Dimensions, Payload: event.Payload,
+		JournalDraft: event.JournalDraft, Rule: rule,
 	}
-	if draft != nil {
-		// Fingerprint key draft identity/content aspects.
-		lines := make([]map[string]any, 0, len(draft.Lines))
-		for _, l := range draft.Lines {
-			lines = append(lines, map[string]any{
-				"account_id":  uuid.UUID(l.AccountID).String(),
-				"tx_amount":   l.TransactionAmount.Amount().String(),
-				"tx_currency": l.TransactionCurrency,
-				"fd":          l.FunctionalDebit.Amount().String(),
-				"fc":          l.FunctionalCredit.Amount().String(),
-			})
-		}
-		payload["draft"] = map[string]any{
-			"id":         uuid.UUID(draft.ID).String(),
-			"effective":  draft.EffectiveDate.UTC().Format(timeRFC3339Nano),
-			"desc":       draft.Description,
-			"ref":        draft.ReferenceID,
-			"source":     draft.SourceModule,
-			"line_count": len(draft.Lines),
-			"lines":      lines,
-			"company_id": uuid.UUID(draft.CompanyID).String(),
-		}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
 	}
-	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
-
-const timeRFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
 
 func normalizeLedgerEntryIDs(entry *ledger.JournalEntry) {
 	if entry == nil {

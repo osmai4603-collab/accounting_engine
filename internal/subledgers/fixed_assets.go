@@ -246,6 +246,10 @@ type FixedAssetMemoryStore interface {
 	SaveFixedAsset(ctx context.Context, asset FixedAsset) error
 }
 
+type DepreciatedAssetMemoryStore interface {
+	UpdateDepreciatedAsset(ctx context.Context, expected, updated FixedAsset) error
+}
+
 type FixedAssetOperationMemoryStore interface {
 	ApplyFixedAssetOperation(ctx context.Context, expected, updated FixedAsset, entry posting.JournalEntry) error
 }
@@ -365,11 +369,11 @@ func ValidateFixedAssetOperationDraft(expected, updated FixedAsset, entry postin
 
 func (a *DepreciationAttachment) ExecuteAtomicMutation(ctx context.Context, tx posting.AtomicTransaction, entry posting.JournalEntry) error {
 	err := tx.CustomMutation(ctx, "memory", func(state any) error {
-		store, ok := state.(FixedAssetMemoryStore)
+		store, ok := state.(DepreciatedAssetMemoryStore)
 		if !ok {
 			return posting.ErrUnsupportedMutationBackend
 		}
-		return store.SaveFixedAsset(ctx, a.UpdatedAsset)
+		return store.UpdateDepreciatedAsset(ctx, a.expectedAsset, a.UpdatedAsset)
 	})
 	if err == nil {
 		return nil
@@ -382,10 +386,18 @@ func (a *DepreciationAttachment) ExecuteAtomicMutation(ctx context.Context, tx p
 	if err != nil {
 		return err
 	}
-	return tx.Exec(ctx,
-		`UPDATE fixed_assets SET asset_data = $1 WHERE company_id = $2 AND id = $3`,
-		data, a.CompanyID, a.AssetID,
-	)
+	expectedData, err := json.Marshal(a.expectedAsset)
+	if err != nil {
+		return err
+	}
+	var updatedID uuid.UUID
+	err = tx.QueryRow(ctx, `UPDATE fixed_assets SET asset_data=$1::jsonb
+		WHERE company_id=$2 AND id=$3 AND asset_data=$4::jsonb RETURNING id`,
+		data, a.CompanyID, a.AssetID, expectedData).Scan(&updatedID)
+	if err != nil {
+		return errors.Join(ErrConcurrentAssetUpdate, err)
+	}
+	return nil
 }
 
 // DepreciateAssetAtomic يولد قيد الاستهلاك ويرفقه بملحق ذري

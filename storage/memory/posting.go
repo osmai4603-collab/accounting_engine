@@ -30,6 +30,26 @@ func cloneFixedAsset(asset subledgers.FixedAsset) subledgers.FixedAsset {
 }
 
 func (d *Driver) SaveDraft(entry posting.JournalEntry) error {
+	if entry.CompanyID != uuid.Nil && entry.PeriodID == uuid.Nil {
+		entryDate := entry.EntryDate
+		if entryDate.IsZero() {
+			entryDate = entry.Date
+		}
+		d.mu.RLock()
+		for _, period := range d.periods {
+			if period.CompanyID != entry.CompanyID {
+				continue
+			}
+			if period.Type != masterdata.FiscalPeriodTypeNormal {
+				continue
+			}
+			if !entryDate.IsZero() && period.Contains(entryDate) {
+				entry.PeriodID = period.ID
+				break
+			}
+		}
+		d.mu.RUnlock()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if entry.CompanyID != uuid.Nil {
@@ -51,6 +71,24 @@ func (d *Driver) SaveDraft(entry posting.JournalEntry) error {
 		return financialtypes.ErrCannotModifyPostedMove
 	}
 	d.entries[entry.ID] = cloneEntry(entry)
+	return nil
+}
+
+func (s *memoryMutationState) UpdateDepreciatedAsset(
+	ctx context.Context,
+	expected, updated subledgers.FixedAsset,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, ok := s.assets[expected.ID]
+	if !ok {
+		current, ok = s.driver.assets[expected.ID]
+	}
+	if !ok || !reflect.DeepEqual(current, expected) {
+		return subledgers.ErrConcurrentAssetUpdate
+	}
+	s.assets[updated.ID] = cloneFixedAsset(updated)
 	return nil
 }
 
@@ -92,6 +130,9 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 		if current.Status != posting.EntryDraft {
 			return posting.ErrEntryNotDraft
 		}
+		if entry.PeriodID == uuid.Nil {
+			entry.PeriodID = current.PeriodID
+		}
 		if !posting.DraftContentMatches(current, entry) {
 			return financialtypes.ErrCannotModifyPostedMove
 		}
@@ -116,6 +157,9 @@ func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEnt
 	if current.Status != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
 	}
+	if entry.PeriodID == uuid.Nil {
+		entry.PeriodID = current.PeriodID
+	}
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
 	}
@@ -138,6 +182,9 @@ func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachm
 	}
 	if current.Status != posting.EntryDraft || entry.Status != posting.EntryPosted {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+	}
+	if entry.PeriodID == uuid.Nil {
+		entry.PeriodID = current.PeriodID
 	}
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
@@ -194,6 +241,16 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 	if !ok || currentReversal.Status != posting.EntryDraft {
 		return posting.JournalEntry{}, posting.ErrEntryNotDraft
 	}
+	if reversal.PeriodID == uuid.Nil {
+		reversal.PeriodID = currentReversal.PeriodID
+	}
+	if !posting.DraftContentMatches(currentReversal, reversal) {
+		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	if err := posting.ValidateReversalLines(currentOriginal, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	reversal.Classification = posting.EntryClassReversing
 	if err := d.updateAccountBalancesLocked(reversal); err != nil {
 		return posting.JournalEntry{}, err
 	}
@@ -214,6 +271,20 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 func (d *Driver) SaveDraftContext(ctx context.Context, entry posting.JournalEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if entry.PeriodID == uuid.Nil && entry.CompanyID != uuid.Nil {
+		entryDate := entry.EntryDate
+		if entryDate.IsZero() {
+			entryDate = entry.Date
+		}
+		if entryDate.IsZero() {
+			return posting.ErrInvalidEntry
+		}
+		period, err := d.GetPeriodByDateForCompany(ctx, entry.CompanyID, entryDate)
+		if err != nil {
+			return err
+		}
+		entry.PeriodID = period.ID
 	}
 	return d.SaveDraft(entry)
 }
@@ -415,7 +486,6 @@ func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.
 	if !posting.DraftContentMatches(current, *entry) {
 		return financialtypes.ErrCannotModifyPostedMove
 	}
-
 	mutationState := &memoryMutationState{
 		driver: d,
 		assets: make(map[uuid.UUID]subledgers.FixedAsset),
@@ -562,6 +632,17 @@ func (d *Driver) accountBalanceDeltasLocked(entry posting.JournalEntry) (map[acc
 	}
 	period, ok := d.periods[entry.PeriodID]
 	if !ok || period.CompanyID != entry.CompanyID {
+		return nil, masterdata.ErrFiscalPeriodNotFound
+	}
+	if period.State == masterdata.PeriodHardClosed {
+		return nil, masterdata.ErrFiscalPeriodClosed
+	}
+	entryDate := entry.EntryDate
+	if entryDate.IsZero() {
+		entryDate = entry.Date
+	}
+	if period.Type == masterdata.FiscalPeriodTypeNormal && !entryDate.IsZero() &&
+		(entryDate.Before(period.StartDate) || entryDate.After(period.EndDate)) {
 		return nil, masterdata.ErrFiscalPeriodNotFound
 	}
 	company, ok := d.companies[entry.CompanyID]

@@ -33,6 +33,9 @@ func TestPhaseCTransactionAtomicity(t *testing.T) {
 
 	// Force posting failure by closing the target period; posting must be atomic
 	// and leave the draft unposted.
+	if err := env.Driver.UpdatePeriodStateForCompanyContext(ctx, env.CompanyID, env.PeriodID, masterdata.PeriodSoftClosed); err != nil {
+		t.Fatal(err)
+	}
 	if err := env.Driver.UpdatePeriodStateForCompanyContext(ctx, env.CompanyID, env.PeriodID, masterdata.PeriodHardClosed); err != nil {
 		t.Fatal(err)
 	}

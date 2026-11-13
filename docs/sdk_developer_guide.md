@@ -68,8 +68,11 @@ Start the accounting service using Docker Compose:
 
 ```bash
 cd deployments
+# Set POSTGRES_PASSWORD and DATABASE_DSN through your environment or secret manager.
 docker compose up --build
 ```
+
+Keep these values out of source control and build logs.
 
 ### Endpoints
 

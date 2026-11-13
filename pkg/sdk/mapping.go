@@ -155,8 +155,8 @@ func toInternalEntry(e ledger.JournalEntry) (posting.JournalEntry, error) {
 	}
 	createdAt := effective
 
-	journalID := uuid.UUID{}
-	if e.SourceModule != "" {
+	journalID := uuid.UUID(e.JournalID)
+	if journalID == uuid.Nil && e.SourceModule != "" {
 		journalID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("journal-"+uuid.UUID(e.CompanyID).String()+"-"+e.SourceModule))
 	}
 	if journalID == uuid.Nil {
@@ -257,6 +257,7 @@ func fromInternalEntry(e posting.JournalEntry) ledger.JournalEntry {
 	return ledger.JournalEntry{
 		ID:                  types.JournalEntryID(e.ID),
 		CompanyID:           types.CompanyID(e.CompanyID),
+		JournalID:           types.JournalID(e.JournalID),
 		FiscalPeriodID:      types.FiscalPeriodID(e.PeriodID),
 		EntryNumber:         entryNumber,
 		Status:              ledger.EntryStatus(e.Status),

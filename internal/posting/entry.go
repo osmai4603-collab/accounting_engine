@@ -23,6 +23,8 @@ var (
 	ErrMissingFunctionalCurrency  = errors.New("functional currency is required")
 	ErrInvalidExchangeRate        = errors.New("exchange rate must be strictly positive")
 	ErrFunctionalBalanceMismatch  = errors.New("functional debit and credit totals must balance")
+	ErrAtomicReversalRequired     = errors.New("repository does not support atomic reversal")
+	ErrAtomicBulkPostingRequired  = errors.New("repository does not support atomic bulk posting")
 )
 
 type EntryStatus string
@@ -459,11 +461,19 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 	if saved.ID != candidate.ID ||
 		saved.CompanyID != candidate.CompanyID ||
 		saved.JournalID != candidate.JournalID ||
+		(saved.PeriodID != uuid.Nil && candidate.PeriodID != uuid.Nil && saved.PeriodID != candidate.PeriodID) ||
 		!savedDate.Equal(candidateDate) ||
 		saved.CreatedBy != candidate.CreatedBy ||
+		saved.SourceModule != candidate.SourceModule ||
 		saved.DocumentReference != candidate.DocumentReference ||
 		saved.Reference != candidate.Reference ||
+		saved.TransactionCurrency != candidate.TransactionCurrency ||
+		!(saved.ExchangeRate.Equal(candidate.ExchangeRate) ||
+			(saved.ExchangeRate.IsZero() && candidate.ExchangeRate.IsZero())) ||
 		!equalUUIDPointer(saved.SourceEventID, candidate.SourceEventID) ||
+		!equalUUIDPointer(saved.OriginalEntryID, candidate.OriginalEntryID) ||
+		saved.TargetPeriodNumber != candidate.TargetPeriodNumber ||
+		saved.AdjustmentAuthorized != candidate.AdjustmentAuthorized ||
 		normalizedEntryClassification(saved.Classification) != normalizedEntryClassification(candidate.Classification) ||
 		len(saved.Lines) != len(candidate.Lines) {
 		return false

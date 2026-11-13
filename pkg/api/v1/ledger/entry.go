@@ -45,6 +45,7 @@ type EntryLine struct {
 type JournalEntry struct {
 	ID                  types.JournalEntryID
 	CompanyID           types.CompanyID
+	JournalID           types.JournalID
 	FiscalPeriodID      types.FiscalPeriodID
 	EntryNumber         string
 	Status              EntryStatus

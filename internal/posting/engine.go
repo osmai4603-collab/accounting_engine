@@ -102,6 +102,24 @@ func (e *Engine) CreateDraftContext(ctx context.Context, entry JournalEntry) err
 	if entry.EntryDate.IsZero() {
 		entry.EntryDate = entry.Date
 	}
+	if e.masterdata != nil && entry.CompanyID != uuid.Nil && entry.PeriodID == uuid.Nil {
+		var period masterdata.FiscalPeriod
+		var err error
+		switch entry.TargetPeriodNumber {
+		case 13, 14:
+			period, err = e.masterdata.GetAdjustmentPeriodForCompanyDateContext(
+				ctx, entry.CompanyID, effectiveDate(&entry), entry.TargetPeriodNumber,
+			)
+		case 0:
+			period, err = e.masterdata.GetPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(&entry))
+		default:
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		if err != nil {
+			return err
+		}
+		entry.PeriodID = period.ID
+	}
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now().UTC()
 	}

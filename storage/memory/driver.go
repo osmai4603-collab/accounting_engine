@@ -22,6 +22,7 @@ type Driver struct {
 	centers                    map[uuid.UUID]masterdata.CostCenter
 	dimensions                 map[string]masterdata.AnalyticalDimensionValue
 	companies                  map[uuid.UUID]masterdata.Company
+	journals                   map[uuid.UUID]journalRecord
 	years                      map[uuid.UUID]masterdata.FiscalYear
 	periods                    map[uuid.UUID]masterdata.FiscalPeriod
 	journalSeq                 map[string]int64
@@ -39,6 +40,13 @@ type Driver struct {
 	policies                   map[string][]policy.VersionedPolicy
 	audit                      []*governance.FinancialAuditLog
 	rates                      *valuation.RateRegistry
+}
+
+type journalRecord struct {
+	ID        uuid.UUID
+	CompanyID uuid.UUID
+	Code      string
+	Name      string
 }
 
 type accountBalanceKey struct {
@@ -72,6 +80,7 @@ func New() *Driver {
 		centers:          make(map[uuid.UUID]masterdata.CostCenter),
 		dimensions:       make(map[string]masterdata.AnalyticalDimensionValue),
 		companies:        make(map[uuid.UUID]masterdata.Company),
+		journals:         make(map[uuid.UUID]journalRecord),
 		years:            make(map[uuid.UUID]masterdata.FiscalYear),
 		periods:          make(map[uuid.UUID]masterdata.FiscalPeriod),
 		journalSeq:       make(map[string]int64),

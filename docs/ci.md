@@ -19,7 +19,7 @@
 
 | المهمة | الاسم في GitHub | ما تفعله | شرط الفشل |
 | --- | --- | --- | --- |
-| `quality` | Format, vet, build | `gofmt -l`, `go vet ./...`, `go build ./...` | أي ملف غير منسق، أو تحذير vet، أو خطأ بناء |
+| `quality` | Format, vet, build | `gofmt -l`, `go vet ./...`, `go build ./...`, وبناء صورة Docker من `deployments/Dockerfile` | أي ملف غير منسق، أو تحذير vet، أو خطأ بناء |
 | `test` | Tests + coverage (PostgreSQL) | `go test -count=1 -coverprofile=coverage.out ./...` مع خدمة PostgreSQL | فشل أي اختبار أو انخفاض التغطية عن `54.1%` |
 | `race` | Race detector (PostgreSQL) | `go test -race -count=1 ./...` مع خدمة PostgreSQL | أي سباق بيانات |
 | `migrations` | Migration policy + upgrade (PostgreSQL) | `make migrations` — فحص الهجرات القابلة للعكس/الخطرة + دورة ترقية كاملة | هجرة غير قابلة للعكس، DDL خطير بلا موافقة، أو فشل الترقية |
@@ -45,7 +45,7 @@ ports: ["5432:5432"]
 postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
 ```
 
-هذا يطابق إصدار PostgreSQL الموثق في خط الأساس (`18.6`)، ويمنع اختلاف السلوك بين CI والبيئة المحلية.
+يستخدم Compose أيضاً `postgres:18.6` حتى تتطابق البيئة المحلية مع CI وخط الأساس. يتطلب Compose ضبط `POSTGRES_PASSWORD` و`DATABASE_DSN` في البيئة؛ لا تُحفظ بيانات الاعتماد في ملفات المصدر أو سجلات البناء.
 
 ## 4. التغطية
 

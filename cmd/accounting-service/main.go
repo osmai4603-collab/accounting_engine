@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"accounting_engine/pkg/sdk"
 	"accounting_engine/pkg/spi/storage"
@@ -32,6 +33,12 @@ func run() error {
 	var reportingStore storage.ReportingStore
 	var governanceStore storage.GovernanceStore
 	var closeStore func() error
+	storageHealth := func(healthCtx context.Context) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return healthCtx.Err()
+	}
 
 	if cfg.Database == "memory" || cfg.Database == "" {
 		memStore := memory.New()
@@ -51,6 +58,14 @@ func run() error {
 		closeStore = func() error {
 			pgDriver.Close()
 			return nil
+		}
+		storageHealth = func(healthCtx context.Context) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			pingCtx, pingCancel := context.WithTimeout(healthCtx, 2*time.Second)
+			defer pingCancel()
+			return pgDriver.Pool().Ping(pingCtx)
 		}
 		log.Println("Using PostgreSQL storage backend")
 	}
@@ -81,7 +96,7 @@ func run() error {
 
 	httpErrors := make(chan error, 1)
 	go func() {
-		httpErrors <- RunServerContext(ctx, cfg, engine)
+		httpErrors <- RunServerContext(ctx, cfg, engine, storageHealth)
 	}()
 
 	var httpErr, grpcErr error

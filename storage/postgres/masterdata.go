@@ -419,10 +419,29 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 
 func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
 	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE fiscal_periods
+		var current masterdata.PeriodState
+		err := tx.QueryRow(ctx, `SELECT state FROM fiscal_periods
+			WHERE company_id=$1 AND id=$2 FOR UPDATE`, companyID, id).Scan(&current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := masterdata.ValidatePeriodTransition(current, state); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE fiscal_periods
 			SET state=$3,closed_at=CASE WHEN $3::varchar='open' THEN NULL ELSE COALESCE(closed_at,NOW()) END
-			WHERE company_id=$1 AND id=$2`, companyID, id, state)
-		return err
+			WHERE company_id=$1 AND id=$2`, companyID, id, state); err != nil {
+			return err
+		}
+		action := "FISCAL_PERIOD_STATE_CHANGED"
+		if state == masterdata.PeriodHardClosed {
+			action = "FISCAL_PERIOD_CLOSED"
+		}
+		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_period", id, action, uuid.Nil,
+			map[string]any{"state": current}, map[string]any{"state": state})
 	})
 }
 

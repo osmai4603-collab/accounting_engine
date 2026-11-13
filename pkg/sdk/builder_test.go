@@ -2,8 +2,11 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"accounting_engine/internal/masterdata"
+	"accounting_engine/internal/posting"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
@@ -13,14 +16,26 @@ import (
 
 type mockCoreStore struct {
 	storage.CoreLedgerStore
+	postCalls int
+}
+
+type mockPostingCoreStore struct {
+	*mockCoreStore
+	posting.BulkRepository
+	masterdata.ContextStorageRepository
 }
 
 func (m *mockCoreStore) PostEntry(ctx context.Context, entry ledger.JournalEntry) error {
+	m.postCalls++
 	return nil
 }
 
 func (m *mockCoreStore) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
 	return ledger.JournalEntry{}, nil
+}
+
+func newMockPostingCoreStore() *mockPostingCoreStore {
+	return &mockPostingCoreStore{mockCoreStore: &mockCoreStore{}}
 }
 
 type mockStandard struct {
@@ -72,9 +87,31 @@ func TestBuilder_FailFast(t *testing.T) {
 	}
 }
 
+func TestBuilder_RejectsStoreWithoutPostingCapabilities(t *testing.T) {
+	_, err := NewBuilder(WithCoreStorage(&mockCoreStore{})).Build(context.Background())
+	if !errors.Is(err, types.ErrCapabilityNotImplemented) {
+		t.Fatalf("Build error = %v, want %v", err, types.ErrCapabilityNotImplemented)
+	}
+}
+
+func TestLedgerServiceDoesNotFallbackToDirectStorage(t *testing.T) {
+	store := &mockCoreStore{}
+	service := &defaultLedgerService{store: store}
+
+	if _, err := service.PostEntry(context.Background(), ledger.JournalEntry{}); !errors.Is(err, types.ErrCapabilityNotImplemented) {
+		t.Fatalf("PostEntry error = %v, want %v", err, types.ErrCapabilityNotImplemented)
+	}
+	if _, err := service.ReverseEntry(context.Background(), types.CompanyID{}, types.JournalEntryID{}, "reason"); !errors.Is(err, types.ErrCapabilityNotImplemented) {
+		t.Fatalf("ReverseEntry error = %v, want %v", err, types.ErrCapabilityNotImplemented)
+	}
+	if store.postCalls != 0 {
+		t.Fatalf("direct storage posting was called %d times", store.postCalls)
+	}
+}
+
 func TestBuilder_Success(t *testing.T) {
 	ctx := context.Background()
-	store := &mockCoreStore{}
+	store := newMockPostingCoreStore()
 	engine, err := NewBuilder(WithCoreStorage(store)).Build(ctx)
 	if err != nil {
 		t.Fatalf("failed to build engine: %v", err)
@@ -89,7 +126,7 @@ func TestBuilder_Success(t *testing.T) {
 
 func TestBuilder_StandardValidation(t *testing.T) {
 	ctx := context.Background()
-	store := &mockCoreStore{}
+	store := newMockPostingCoreStore()
 	mod := &mockStandard{name: "IFRS15", err: nil}
 	engine, err := NewBuilder(
 		WithCoreStorage(store),
@@ -112,18 +149,22 @@ type dependentStandard struct {
 	deps []string
 }
 
-func (m *dependentStandard) Name() string { return m.name }
-func (m *dependentStandard) Version() string { return "1.0.0" }
-func (m *dependentStandard) Dependencies() []string { return m.deps }
+func (m *dependentStandard) Name() string                                             { return m.name }
+func (m *dependentStandard) Version() string                                          { return "1.0.0" }
+func (m *dependentStandard) Dependencies() []string                                   { return m.deps }
 func (m *dependentStandard) ValidateDependencies(ports storage.CoreLedgerStore) error { return nil }
-func (m *dependentStandard) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error { return nil }
+func (m *dependentStandard) Initialize(ctx context.Context, ports storage.CoreLedgerStore) error {
+	return nil
+}
 func (m *dependentStandard) RegisterRules(registrar events.RuleRegistrar) error { return nil }
-func (m *dependentStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error { return nil }
+func (m *dependentStandard) RunScheduledJobs(ctx context.Context, runner interface{}) error {
+	return nil
+}
 func (m *dependentStandard) Close(ctx context.Context) error { return nil }
 
 func TestBuilder_ModuleDependencies(t *testing.T) {
 	ctx := context.Background()
-	store := &mockCoreStore{}
+	store := newMockPostingCoreStore()
 	// Module A requires Module B, but B is not provided.
 	modA := &dependentStandard{name: "ModuleA", deps: []string{"ModuleB"}}
 	_, err := NewBuilder(
@@ -134,4 +175,3 @@ func TestBuilder_ModuleDependencies(t *testing.T) {
 		t.Fatalf("expected error due to missing dependency, got nil")
 	}
 }
-

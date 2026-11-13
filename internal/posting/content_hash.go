@@ -47,10 +47,14 @@ type entryHashPayload struct {
 	DocumentReference    string          `json:"document_reference"`
 	Reference            string          `json:"reference"`
 	CreatedBy            string          `json:"created_by"`
+	SourceModule         string          `json:"source_module"`
+	TransactionCurrency  string          `json:"transaction_currency"`
+	ExchangeRate         string          `json:"exchange_rate"`
 	Classification       string          `json:"classification"`
 	TargetPeriodNumber   int             `json:"target_period_number"`
 	AdjustmentAuthorized bool            `json:"adjustment_authorized"`
 	OriginalEntryID      *uuid.UUID      `json:"original_entry_id,omitempty"`
+	SourceEventID        *uuid.UUID      `json:"source_event_id,omitempty"`
 	Lines                []entryHashLine `json:"lines"`
 }
 
@@ -79,10 +83,14 @@ func EntryContentHash(entry JournalEntry) (string, error) {
 		DocumentReference:    entry.DocumentReference,
 		Reference:            entry.Reference,
 		CreatedBy:            entry.CreatedBy,
+		SourceModule:         entry.SourceModule,
+		TransactionCurrency:  entry.TransactionCurrency,
+		ExchangeRate:         entry.ExchangeRate.String(),
 		Classification:       string(classification),
 		TargetPeriodNumber:   entry.TargetPeriodNumber,
 		AdjustmentAuthorized: entry.AdjustmentAuthorized,
 		OriginalEntryID:      entry.OriginalEntryID,
+		SourceEventID:        entry.SourceEventID,
 		Lines:                make([]entryHashLine, len(entry.Lines)),
 	}
 	for i, line := range entry.Lines {

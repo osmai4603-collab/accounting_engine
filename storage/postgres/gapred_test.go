@@ -50,12 +50,23 @@ func TestGAP_PST_01_PostingRechecksPeriodInsideTransaction(t *testing.T) {
 	engine := posting.NewEngine(env.Driver, nil)
 	draft := createDraftTestEntry(t, ctx, engine, env.CompanyID, env.JournalID,
 		env.DebitAccID, env.CreditAccID, gapPGMoney(t, "100.00"), time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC))
-
-	if err := env.Driver.UpdatePeriodState(ctx, env.CompanyID, env.PeriodID, masterdata.PeriodSoftClosed); err != nil {
+	postingPeriod, err := env.Driver.GetPeriodByDateForCompany(ctx, env.CompanyID, draft.EntryDate)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Driver.UpdatePeriodState(ctx, env.CompanyID, env.PeriodID, masterdata.PeriodHardClosed); err != nil {
+
+	if err := env.Driver.UpdatePeriodState(ctx, env.CompanyID, postingPeriod.ID, masterdata.PeriodSoftClosed); err != nil {
 		t.Fatal(err)
+	}
+	if err := env.Driver.UpdatePeriodState(ctx, env.CompanyID, postingPeriod.ID, masterdata.PeriodHardClosed); err != nil {
+		t.Fatal(err)
+	}
+	closedPeriod, err := env.Driver.GetPeriodByDateForCompany(ctx, env.CompanyID, draft.EntryDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closedPeriod.State != masterdata.PeriodHardClosed {
+		t.Fatalf("period state after hard close = %q, want %q", closedPeriod.State, masterdata.PeriodHardClosed)
 	}
 
 	if _, err := env.Driver.PostAndSequenceContext(ctx, draft); err == nil {

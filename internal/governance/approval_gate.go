@@ -12,7 +12,8 @@ import (
 // When a company has configured a maker-checker threshold, entries whose
 // functional total is at or below it are allowed without an approval request;
 // larger entries require a completed approval whose stored fingerprint still
-// matches the draft. StrictGovernance requires a configured company policy.
+// matches the draft. An absent policy always fails closed; StrictGovernance
+// also requires a policy to be configured for each company.
 type ApprovalGate struct {
 	approvals        *ApprovalEngine
 	entries          ApprovalEntryRepository
@@ -27,10 +28,7 @@ func (g *ApprovalGate) IsApproved(ctx context.Context, companyID, entryID uuid.U
 		return true, nil
 	}
 	if g.policy == nil {
-		if g.StrictGovernance {
-			return false, ErrUnconfiguredApprovalPolicy
-		}
-		return true, nil
+		return false, ErrUnconfiguredApprovalPolicy
 	}
 	threshold, configured, err := g.policy.MakerCheckerThreshold(ctx, companyID)
 	if err != nil {

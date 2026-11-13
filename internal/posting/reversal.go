@@ -76,37 +76,27 @@ func (e *Engine) ReverseDualContext(ctx context.Context, companyID, entryID uuid
 		return JournalEntry{}, err
 	}
 	contextRepository, hasContextRepository := e.repo.(ContextAtomicReversalRepository)
-	if hasContextRepository {
-		if err := e.prepareForPosting(ctx, &reversal, posterID); err != nil {
-			return JournalEntry{}, err
-		}
-		if err := e.repo.SaveDraftContext(ctx, reversal); err != nil {
-			return JournalEntry{}, err
-		}
-		now := time.Now().UTC()
-		reversal.Status = EntryPosted
-		reversal.PostedBy = posterID
-		reversal.PostedAt = &now
-		reversal.UpdatedAt = now
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		return contextRepository.PostReversalAtomicContext(ctx, original, reversal)
+	atomicRepository, hasAtomicRepository := e.repo.(AtomicReversalRepository)
+	if !hasContextRepository && !hasAtomicRepository {
+		return JournalEntry{}, ErrAtomicReversalRequired
+	}
+	if err := e.prepareForPosting(ctx, &reversal, posterID); err != nil {
+		return JournalEntry{}, err
 	}
 	if err := e.repo.SaveDraftContext(ctx, reversal); err != nil {
 		return JournalEntry{}, err
 	}
-	if err := e.PostEntryContext(ctx, &reversal, posterID); err != nil {
-		return JournalEntry{}, err
+	now := time.Now().UTC()
+	reversal.Status = EntryPosted
+	reversal.PostedBy = posterID
+	reversal.PostedAt = &now
+	reversal.UpdatedAt = now
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if hasContextRepository {
+		return contextRepository.PostReversalAtomicContext(ctx, original, reversal)
 	}
-
-	reversalID := reversal.ID
-	original.ReversedEntryID = &reversalID
-	original.Status = EntryReversed
-	original.UpdatedAt = time.Now().UTC()
-	if err := e.repo.PostAtomicContext(ctx, original); err != nil {
-		return JournalEntry{}, err
-	}
-	return reversal, nil
+	return atomicRepository.PostReversalAtomic(original, reversal)
 }
 
 var _ = financialtypes.ErrCannotModifyPostedMove

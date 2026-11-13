@@ -27,8 +27,8 @@ func (e *BulkPostError) Unwrap() error {
 // repository implements BulkRepository the whole batch is handed to the
 // storage layer as one atomic unit: either every entry is posted and sequenced
 // or the entire group is rolled back with no dangling or partially posted
-// entries. Repositories without bulk support fall back to sequential
-// per-entry posting.
+// entries. Repositories without bulk support reject the operation rather than
+// risk leaving a partially posted batch.
 func (e *Engine) PostBulk(entries []JournalEntry, posterID string) error {
 	return e.PostBulkContext(context.Background(), entries, posterID)
 }
@@ -61,12 +61,7 @@ func (e *Engine) PostBulkContext(ctx context.Context, entries []JournalEntry, po
 	if repository, ok := e.repo.(BulkRepository); ok {
 		return e.postBulkAtomic(ctx, repository, entries, posterID)
 	}
-	for i := range entries {
-		if err := e.PostEntryContext(ctx, &entries[i], posterID); err != nil {
-			return &BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
-		}
-	}
-	return nil
+	return ErrAtomicBulkPostingRequired
 }
 
 func (e *Engine) postBulkAtomic(ctx context.Context, repository BulkRepository, entries []JournalEntry, posterID string) (err error) {

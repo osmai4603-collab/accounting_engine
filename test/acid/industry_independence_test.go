@@ -2,6 +2,7 @@ package acid
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -101,7 +102,6 @@ func TestIndustryIndependence(t *testing.T) {
 				CompanyID:      companyID,
 				EffectiveDate:  now,
 				Amount:         moneyUSD,
-				Dimensions:     map[string]string{"domain": domain.name},
 				IdempotencyKey: "key-" + domain.eventType,
 			}
 			entry, err := engine.Events().ProcessEvent(ctx, event)
@@ -116,4 +116,15 @@ func TestIndustryIndependence(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("UnsupportedDimensionsAreRejected", func(t *testing.T) {
+		event := events.AccountingEvent{
+			EventID: "evt-with-dimensions", EventType: "IFRS15_REVENUE_RECOGNITION",
+			CompanyID: companyID, EffectiveDate: now, Amount: moneyUSD,
+			Dimensions: map[string]string{"domain": "IFRS 15 Revenue"},
+		}
+		if _, err := engine.Events().ProcessEvent(ctx, event); !errors.Is(err, sdk.ErrEventDimensionsUnsupported) {
+			t.Fatalf("ProcessEvent error = %v, want %v", err, sdk.ErrEventDimensionsUnsupported)
+		}
+	})
 }

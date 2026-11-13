@@ -266,12 +266,60 @@ func (e *ClosingEngine) ConfirmFiscalYearCloseContext(ctx context.Context, year 
 	if entry.PeriodID != period.ID {
 		return ErrClosingMoveNotPosted
 	}
-	if err := hardCloseFiscalPeriod(ctx, e.repository, year.CompanyID, period); err != nil {
+	if err := e.validateClosingEntryContents(ctx, year, entry); err != nil {
 		return err
 	}
-	if auditPeriod, exists := findFiscalPeriod(year, 14); exists {
-		if err := hardCloseFiscalPeriod(ctx, e.repository, year.CompanyID, auditPeriod); err != nil {
+
+	changedPeriods := make([]periodStateChange, 0, 2)
+	changedYear := false
+	setPeriodState := func(periodID uuid.UUID, original masterdata.PeriodState, state masterdata.PeriodState) error {
+		if err := e.repository.UpdatePeriodStateForCompanyContext(ctx, year.CompanyID, periodID, state); err != nil {
 			return err
+		}
+		for _, change := range changedPeriods {
+			if change.id == periodID {
+				return nil
+			}
+		}
+		changedPeriods = append(changedPeriods, periodStateChange{id: periodID, state: original})
+		return nil
+	}
+	rollback := func(cause error) error {
+		var rollbackErr error
+		for i := len(changedPeriods) - 1; i >= 0; i-- {
+			change := changedPeriods[i]
+			rollbackErr = errors.Join(rollbackErr, e.repository.UpdatePeriodStateForCompanyContext(
+				ctx, year.CompanyID, change.id, change.state,
+			))
+		}
+		if changedYear {
+			rollbackErr = errors.Join(rollbackErr, e.repository.UpdateFiscalYearStateForCompanyContext(
+				ctx, year.CompanyID, year.ID, year.State,
+			))
+		}
+		return errors.Join(cause, rollbackErr)
+	}
+	closePeriod := func(target masterdata.FiscalPeriod) error {
+		switch target.State {
+		case masterdata.PeriodHardClosed:
+			return nil
+		case masterdata.PeriodOpen:
+			if err := setPeriodState(target.ID, target.State, masterdata.PeriodSoftClosed); err != nil {
+				return err
+			}
+			return setPeriodState(target.ID, target.State, masterdata.PeriodHardClosed)
+		case masterdata.PeriodSoftClosed:
+			return setPeriodState(target.ID, target.State, masterdata.PeriodHardClosed)
+		default:
+			return ErrPeriodsNotHardClosed
+		}
+	}
+	if err := closePeriod(period); err != nil {
+		return rollback(err)
+	}
+	if auditPeriod, exists := findFiscalPeriod(year, 14); exists {
+		if err := closePeriod(auditPeriod); err != nil {
+			return rollback(err)
 		}
 	}
 	switch year.State {
@@ -279,30 +327,125 @@ func (e *ClosingEngine) ConfirmFiscalYearCloseContext(ctx context.Context, year 
 		return nil
 	case masterdata.FiscalYearOpen:
 		if err := e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearSoftClosed); err != nil {
-			return err
+			return rollback(err)
 		}
-		return e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed)
+		changedYear = true
+		if err := e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed); err != nil {
+			return rollback(err)
+		}
+		return nil
 	case masterdata.FiscalYearSoftClosed:
-		return e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed)
+		if err := e.repository.UpdateFiscalYearStateForCompanyContext(ctx, year.CompanyID, year.ID, masterdata.FiscalYearHardClosed); err != nil {
+			return rollback(err)
+		}
+		return nil
 	default:
-		return ErrPeriodsNotHardClosed
+		return rollback(ErrPeriodsNotHardClosed)
 	}
 }
 
-func hardCloseFiscalPeriod(ctx context.Context, repository FiscalYearRepository, companyID uuid.UUID, period masterdata.FiscalPeriod) error {
-	switch period.State {
-	case masterdata.PeriodHardClosed:
-		return nil
-	case masterdata.PeriodOpen:
-		if err := repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodSoftClosed); err != nil {
+type periodStateChange struct {
+	id    uuid.UUID
+	state masterdata.PeriodState
+}
+
+func (e *ClosingEngine) validateClosingEntryContents(
+	ctx context.Context,
+	year masterdata.FiscalYear,
+	entry posting.JournalEntry,
+) error {
+	currency := entry.TransactionCurrency
+	if currency == "" && len(entry.Lines) > 0 {
+		_, _, currency = posting.LineFunctionalAmounts(entry.Lines[0])
+	}
+	if currency == "" {
+		return ErrClosingMoveNotPosted
+	}
+	for _, line := range entry.Lines {
+		_, _, lineCurrency := posting.LineFunctionalAmounts(line)
+		if lineCurrency != currency {
+			return ErrClosingMoveNotPosted
+		}
+	}
+
+	repository, err := newCompanyReportingRepository(ctx, e.repository, year.CompanyID, year.EndDate)
+	if err != nil {
+		return err
+	}
+	accounts, err := listAccounts(repository)
+	if err != nil {
+		return err
+	}
+	entries, err := listPostedEntries(repository, year.StartDate, year.EndDate)
+	if err != nil {
+		return err
+	}
+	yearEntries := make([]posting.JournalEntry, 0, len(entries))
+	for _, candidate := range entries {
+		if candidate.ID != entry.ID {
+			yearEntries = append(yearEntries, candidate)
+		}
+	}
+	balances, err := accountBalancesFromEntries(
+		repository, accounts, yearEntries, year.StartDate, year.EndDate, currency,
+	)
+	if err != nil {
+		return err
+	}
+	actual := closingEntryAmounts(entry)
+	for _, account := range accounts {
+		if account.AccountType != masterdata.AccountTypeEquity ||
+			account.SubClassification != masterdata.SubClassRetainedEarnings {
+			continue
+		}
+		expectedEntry, _, err := e.generateYearMove(
+			year.EndDate, entry.JournalID, account.ID, currency, accounts, balances,
+		)
+		if err != nil {
 			return err
 		}
-		return repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodHardClosed)
-	case masterdata.PeriodSoftClosed:
-		return repository.UpdatePeriodStateForCompanyContext(ctx, companyID, period.ID, masterdata.PeriodHardClosed)
-	default:
-		return ErrPeriodsNotHardClosed
+		if closingEntriesMatch(actual, closingEntryAmounts(expectedEntry)) {
+			return nil
+		}
 	}
+	return ErrClosingMoveNotPosted
+}
+
+type closingAmounts struct {
+	debit    decimal.Decimal
+	credit   decimal.Decimal
+	currency string
+}
+
+func closingEntryAmounts(entry posting.JournalEntry) map[uuid.UUID]closingAmounts {
+	amounts := make(map[uuid.UUID]closingAmounts, len(entry.Lines))
+	for _, line := range entry.Lines {
+		debit, credit, currency := posting.LineFunctionalAmounts(line)
+		current := amounts[line.AccountID]
+		current.debit = current.debit.Add(debit)
+		current.credit = current.credit.Add(credit)
+		if current.currency == "" {
+			current.currency = currency
+		} else if currency != "" && currency != current.currency {
+			current.currency = ""
+		}
+		amounts[line.AccountID] = current
+	}
+	return amounts
+}
+
+func closingEntriesMatch(actual, expected map[uuid.UUID]closingAmounts) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for accountID, want := range expected {
+		got, ok := actual[accountID]
+		if !ok || got.currency != want.currency ||
+			!got.debit.Equal(want.debit) || !got.credit.Equal(want.credit) {
+			return false
+		}
+	}
+	return true
 }
 
 func findFiscalPeriod(year masterdata.FiscalYear, number int) (masterdata.FiscalPeriod, bool) {

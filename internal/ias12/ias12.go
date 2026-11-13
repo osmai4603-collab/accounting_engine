@@ -60,7 +60,7 @@ func (r TaxRate) Validate(asOf time.Time) error {
 		return ErrInvalidRate
 	}
 	if !r.Enacted || r.EnactedOn.IsZero() || r.EffectiveFrom.IsZero() ||
-		r.EnactedOn.After(asOf) || r.EffectiveFrom.After(asOf) {
+		r.EnactedOn.After(asOf) {
 		return ErrRateNotEnacted
 	}
 	return nil
@@ -72,9 +72,9 @@ type TaxBalance struct {
 	CarryingAmount financialtypes.Money
 	TaxBase        financialtypes.Money
 	Rate           TaxRate
-	// When non-nil, controls recognition of a DTA for this deductible
-	// temporary difference based on probable future taxable profit. Nil
-	// preserves the historical behavior for existing callers.
+	// Controls recognition of a DTA for this deductible temporary difference
+	// based on probable future taxable profit. Nil does not establish
+	// probability, so the DTA is not recognized.
 	FutureTaxableProfitProbable *bool
 }
 
@@ -147,7 +147,7 @@ func Measure(balances []TaxBalance, period MeasurementPeriod) (Measurement, erro
 			taxable = difference.Abs()
 		}
 		dtaAmount := deductible.Mul(balance.Rate.Value)
-		if balance.FutureTaxableProfitProbable != nil && !*balance.FutureTaxableProfitProbable {
+		if balance.FutureTaxableProfitProbable == nil || !*balance.FutureTaxableProfitProbable {
 			dtaAmount = decimal.Zero
 		}
 		dtlAmount := taxable.Mul(balance.Rate.Value)

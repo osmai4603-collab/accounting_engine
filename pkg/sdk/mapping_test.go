@@ -14,6 +14,7 @@ import (
 func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	now := time.Date(2026, time.November, 13, 0, 0, 0, 0, time.UTC)
 	companyID := types.NewCompanyID()
+	journalID := types.JournalID(uuid.New())
 	entryID := types.NewJournalEntryID()
 	periodID := types.NewFiscalPeriodID()
 	lineID := types.NewJournalEntryLineID()
@@ -36,6 +37,7 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	entry := ledger.JournalEntry{
 		ID:                  entryID,
 		CompanyID:           companyID,
+		JournalID:           journalID,
 		FiscalPeriodID:      periodID,
 		EntryNumber:         "JE-42",
 		Status:              ledger.EntryPosted,
@@ -75,7 +77,8 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	}
 	got := fromInternalEntry(internal)
 
-	if got.ID != entry.ID || got.CompanyID != entry.CompanyID || got.FiscalPeriodID != entry.FiscalPeriodID {
+	if got.ID != entry.ID || got.CompanyID != entry.CompanyID ||
+		got.JournalID != entry.JournalID || got.FiscalPeriodID != entry.FiscalPeriodID {
 		t.Fatalf("entry identifiers changed during mapping: got %+v", got)
 	}
 	if got.EntryNumber != entry.EntryNumber || got.SourceModule != entry.SourceModule {

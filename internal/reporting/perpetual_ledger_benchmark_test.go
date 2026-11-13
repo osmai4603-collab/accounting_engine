@@ -8,8 +8,8 @@ import (
 
 	"accounting_engine/internal/masterdata"
 	"accounting_engine/internal/posting"
-	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/internal/reporting"
+	financialtypes "accounting_engine/internal/types"
 	"accounting_engine/storage/memory"
 
 	"github.com/google/uuid"

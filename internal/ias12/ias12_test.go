@@ -32,10 +32,11 @@ func testPeriod(kind PeriodKind) MeasurementPeriod {
 }
 
 func TestMeasureDTAAndDTLSignsAndRates(t *testing.T) {
+	probable := true
 	measurement, err := Measure([]TaxBalance{
 		{ID: "tax-depreciation", Kind: Asset, CarryingAmount: testMoney(t, "100", "USD"), TaxBase: testMoney(t, "70", "USD"), Rate: testRate("0.25")},
-		{ID: "ecl-provision", Kind: Asset, CarryingAmount: testMoney(t, "60", "USD"), TaxBase: testMoney(t, "90", "USD"), Rate: testRate("0.20")},
-		{ID: "accrual", Kind: Liability, CarryingAmount: testMoney(t, "40", "USD"), TaxBase: testMoney(t, "10", "USD"), Rate: testRate("0.30")},
+		{ID: "ecl-provision", Kind: Asset, CarryingAmount: testMoney(t, "60", "USD"), TaxBase: testMoney(t, "90", "USD"), Rate: testRate("0.20"), FutureTaxableProfitProbable: &probable},
+		{ID: "accrual", Kind: Liability, CarryingAmount: testMoney(t, "40", "USD"), TaxBase: testMoney(t, "10", "USD"), Rate: testRate("0.30"), FutureTaxableProfitProbable: &probable},
 		{ID: "prepaid-liability", Kind: Liability, CarryingAmount: testMoney(t, "10", "USD"), TaxBase: testMoney(t, "30", "USD"), Rate: testRate("0.10")},
 	}, testPeriod(Quarterly))
 	if err != nil {

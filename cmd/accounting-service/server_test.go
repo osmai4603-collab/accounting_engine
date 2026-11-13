@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"accounting_engine/pkg/api/v1/events"
+	"accounting_engine/pkg/api/v1/ledger"
+	"accounting_engine/pkg/api/v1/reporting"
+	"accounting_engine/pkg/api/v1/types"
+	"accounting_engine/pkg/sdk"
 )
 
 func TestHTTPHandlersReturnBadRequestForInvalidInput(t *testing.T) {
@@ -29,6 +36,12 @@ func TestHTTPHandlersReturnBadRequestForInvalidInput(t *testing.T) {
 			name:   "invalid event UUID",
 			method: http.MethodPost,
 			path:   "/api/v1/events",
+			body:   `{"CompanyID":"not-a-uuid"}`,
+		},
+		{
+			name:   "invalid entry UUID",
+			method: http.MethodPost,
+			path:   "/api/v1/entries",
 			body:   `{"CompanyID":"not-a-uuid"}`,
 		},
 		{
@@ -55,6 +68,124 @@ func TestHTTPHandlersReturnBadRequestForInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadinessChecksRequiredStorage(t *testing.T) {
+	healthy := true
+	server := newHTTPServer(Config{}, nil, func(context.Context) error {
+		if !healthy {
+			return errors.New("storage unavailable")
+		}
+		return nil
+	})
+
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("healthy readiness status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	healthy = false
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unhealthy readiness status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestReadinessFailsClosedWithoutStorageHealthCheck(t *testing.T) {
+	server := newHTTPServer(Config{}, nil)
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPostingMetricsReflectSuccessfulAndFailedRequests(t *testing.T) {
+	ledgerService := &serviceTestLedger{}
+	server := newHTTPServer(Config{}, &serviceTestEngine{ledger: ledgerService}, func(context.Context) error { return nil })
+
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{}`)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("successful post status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body)
+	}
+
+	ledgerService.err = errors.New("storage failure")
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{}`)))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("failed post status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	metrics := response.Body.String()
+	for _, expected := range []string{
+		"accounting_posting_attempts_total 2",
+		"accounting_posted_entries_total 1",
+		"accounting_posting_failures_total 1",
+		"accounting_posting_duration_seconds_count 2",
+	} {
+		if !strings.Contains(metrics, expected) {
+			t.Errorf("metrics output missing %q:\n%s", expected, metrics)
+		}
+	}
+}
+
+type serviceTestEngine struct {
+	ledger sdk.LedgerService
+}
+
+func (e *serviceTestEngine) Ledger() sdk.LedgerService         { return e.ledger }
+func (e *serviceTestEngine) Reporting() sdk.ReportingService   { return serviceTestReporting{} }
+func (e *serviceTestEngine) Governance() sdk.GovernanceService { return serviceTestGovernance{} }
+func (e *serviceTestEngine) Events() sdk.EventIngestionService { return serviceTestEvents{} }
+func (e *serviceTestEngine) Close() error                      { return nil }
+
+type serviceTestLedger struct {
+	err error
+}
+
+func (s *serviceTestLedger) PostEntry(_ context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	return entry, s.err
+}
+func (*serviceTestLedger) GetEntry(context.Context, types.CompanyID, types.JournalEntryID) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+func (*serviceTestLedger) ReverseEntry(context.Context, types.CompanyID, types.JournalEntryID, string) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+
+type serviceTestReporting struct{}
+
+func (serviceTestReporting) GetTrialBalance(context.Context, types.CompanyID, time.Time, string) (reporting.TrialBalance, error) {
+	return reporting.TrialBalance{}, nil
+}
+func (serviceTestReporting) GetBalanceSheet(context.Context, types.CompanyID, time.Time, string) (reporting.BalanceSheetReport, error) {
+	return reporting.BalanceSheetReport{}, nil
+}
+func (serviceTestReporting) GetIncomeStatement(context.Context, types.CompanyID, time.Time, time.Time, string) (reporting.IncomeStatementReport, error) {
+	return reporting.IncomeStatementReport{}, nil
+}
+func (serviceTestReporting) GetGeneralLedger(context.Context, types.CompanyID, types.AccountID, time.Time, time.Time) (reporting.GeneralLedgerReport, error) {
+	return reporting.GeneralLedgerReport{}, nil
+}
+
+type serviceTestGovernance struct{}
+
+func (serviceTestGovernance) RecordAuditLog(context.Context, string, map[string]any) error {
+	return nil
+}
+func (serviceTestGovernance) GetApprovalFingerprint(context.Context, types.JournalEntryID) (string, error) {
+	return "", nil
+}
+
+type serviceTestEvents struct{}
+
+func (serviceTestEvents) ProcessEvent(context.Context, events.AccountingEvent) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
 }
 
 func TestHTTPHandlersRejectOversizedRequestBody(t *testing.T) {

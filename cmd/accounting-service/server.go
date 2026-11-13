@@ -14,10 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"accounting_engine/internal/observability"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/sdk"
+
 	"github.com/google/uuid"
 )
 
@@ -27,42 +29,71 @@ const (
 )
 
 type Server struct {
-	engine sdk.Engine
+	engine  sdk.Engine
+	metrics *observability.Metrics
+	health  func(context.Context) error
 }
 
-func RunServer(cfg Config, engine sdk.Engine) error {
+func RunServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.Context) error) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return RunServerContext(ctx, cfg, engine)
+	return RunServerContext(ctx, cfg, engine, healthChecks...)
 }
 
-func RunServerContext(ctx context.Context, cfg Config, engine sdk.Engine) error {
+func RunServerContext(ctx context.Context, cfg Config, engine sdk.Engine, healthChecks ...func(context.Context) error) error {
+	var health func(context.Context) error
+	if len(healthChecks) > 0 {
+		health = healthChecks[0]
+	}
+	return runServerContext(ctx, cfg, engine, health)
+}
+
+func runServerContext(ctx context.Context, cfg Config, engine sdk.Engine, health func(context.Context) error) error {
 	listener, err := net.Listen("tcp", ":"+cfg.HTTPPort)
 	if err != nil {
 		return err
 	}
 
-	server := newHTTPServer(cfg, engine)
+	server := newHTTPServer(cfg, engine, health)
 	log.Printf("Starting Standalone Accounting Service HTTP Daemon on %s", server.Addr)
 	return serveHTTP(ctx, server, listener)
 }
 
-func newHTTPServer(cfg Config, engine sdk.Engine) *http.Server {
-	srv := &Server{engine: engine}
+func newHTTPServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.Context) error) *http.Server {
+	var health func(context.Context) error
+	if len(healthChecks) > 0 {
+		health = healthChecks[0]
+	}
+	srv := &Server{engine: engine, metrics: observability.NewMetrics(), health: health}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if srv.health == nil {
+			http.Error(w, "NOT READY", http.StatusServiceUnavailable)
+			return
+		}
+		if err := srv.health(r.Context()); err != nil {
+			http.Error(w, "NOT READY", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("READY"))
 	})
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("# HELP accounting_engine_up Accounting engine status\naccounting_engine_up 1\n"))
-	})
+	mux.Handle("/metrics", srv.metrics.Handler())
 	mux.HandleFunc("/api/v1/entries", srv.handleEntries)
 	mux.HandleFunc("/api/v1/trial-balance", srv.handleTrialBalance)
 	mux.HandleFunc("/api/v1/events", srv.handleEvents)
@@ -114,11 +145,16 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 		writeRequestDecodeError(w, err)
 		return
 	}
+	started := time.Now()
+	s.metrics.IncPostingAttempts()
 	posted, err := s.engine.Ledger().PostEntry(r.Context(), entry)
+	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
+		s.metrics.IncPostingFailure("service")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.metrics.IncPostedEntries()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(posted)
@@ -159,11 +195,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeRequestDecodeError(w, err)
 		return
 	}
+	started := time.Now()
+	s.metrics.IncPostingAttempts()
 	entry, err := s.engine.Events().ProcessEvent(r.Context(), ev)
+	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
+		s.metrics.IncPostingFailure("service")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.metrics.IncPostedEntries()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(entry)

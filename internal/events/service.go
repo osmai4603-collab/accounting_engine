@@ -78,4 +78,3 @@ func (s *EventService) ProcessEvent(ctx context.Context, event apiEvents.Account
 	}
 	return entry, nil
 }
-

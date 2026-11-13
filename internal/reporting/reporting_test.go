@@ -811,15 +811,32 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	if err := repository.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatal(err)
 	}
-	debitAccountID, creditAccountID := uuid.New(), uuid.New()
+	debitAccountID, incomeAccountID, retainedEarningsID := uuid.New(), uuid.New(), uuid.New()
 	for _, account := range []masterdata.Account{
 		reportAccount(debitAccountID, "1000", "Cash", masterdata.AccountTypeAsset, masterdata.SubClassCashAndEquivalents),
-		reportAccount(creditAccountID, "3000", "Equity", masterdata.AccountTypeEquity, masterdata.SubClassShareCapital),
+		reportAccount(incomeAccountID, "4000", "Revenue", masterdata.AccountTypeIncome, masterdata.IFRSCategoryOperating),
+		reportAccount(retainedEarningsID, "3000", "Retained earnings", masterdata.AccountTypeEquity, masterdata.SubClassRetainedEarnings),
 	} {
 		account.CompanyID = companyID
 		if err := repository.CreateAccount(ctx, account); err != nil {
 			t.Fatal(err)
 		}
+	}
+	activity, err := posting.NewJournalEntry(uuid.New(), time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), "test",
+		[]posting.JournalEntryLine{
+			{CompanyID: companyID, AccountID: debitAccountID, Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
+			{CompanyID: companyID, AccountID: incomeAccountID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity.CompanyID = companyID
+	if err := repository.SaveDraft(activity); err != nil {
+		t.Fatal(err)
+	}
+	activity.Status = posting.EntryPosted
+	if err := repository.PostAtomic(activity); err != nil {
+		t.Fatal(err)
 	}
 	for _, period := range year.Periods {
 		if period.Number > 12 {
@@ -833,19 +850,12 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 		}
 	}
 	period13 := year.Periods[12]
-	entry, err := posting.NewJournalEntry(uuid.New(), year.EndDate, "test",
-		[]posting.JournalEntryLine{
-			{AccountID: debitAccountID, Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
-			{AccountID: creditAccountID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
-		})
+	entry, _, err := reporting.NewClosingEngine(repository).GenerateClosingMoveContext(
+		ctx, year, uuid.New(), retainedEarningsID, "USD",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry.CompanyID = companyID
-	entry.Classification = posting.EntryClassClosing
-	entry.DocumentReference = "YEAR-END CLOSING"
-	entry.TargetPeriodNumber = 13
-	entry.AdjustmentAuthorized = true
 	entry.PeriodID = period13.ID
 	if err := repository.SaveDraft(entry); err != nil {
 		t.Fatal(err)
