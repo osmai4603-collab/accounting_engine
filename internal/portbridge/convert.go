@@ -395,6 +395,26 @@ func ToPublicAccount(a masterdata.Account) publicmasterdata.Account {
 	return account
 }
 
+// ToInternalJournal converts public journal master data.
+func ToInternalJournal(j publicmasterdata.Journal) masterdata.Journal {
+	return masterdata.Journal{
+		CompanyID: uuid.UUID(j.CompanyID),
+		ID:        uuid.UUID(j.ID),
+		Code:      j.Code,
+		Name:      j.Name,
+	}
+}
+
+// ToPublicJournal converts internal journal master data.
+func ToPublicJournal(j masterdata.Journal) publicmasterdata.Journal {
+	return publicmasterdata.Journal{
+		CompanyID: types.CompanyID(j.CompanyID),
+		ID:        publicmasterdata.JournalID(j.ID),
+		Code:      j.Code,
+		Name:      j.Name,
+	}
+}
+
 // ToInternalFiscalYear converts public fiscal year master data.
 func ToInternalFiscalYear(y publicmasterdata.FiscalYear) masterdata.FiscalYear {
 	result := masterdata.FiscalYear{

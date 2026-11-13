@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/osmai4603-collab/accounting_engine/internal/observability"
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/observability"
 )
 
 func TestTraceparentValidation(t *testing.T) {

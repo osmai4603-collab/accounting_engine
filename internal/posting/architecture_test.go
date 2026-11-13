@@ -30,7 +30,8 @@ func TestT2_4_SingleWriterAuthority(t *testing.T) {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") ||
-			strings.HasSuffix(path, filepath.Join("storage", "postgres", "posting.go")) {
+			strings.HasSuffix(path, filepath.Join("storage", "postgres", "posting.go")) ||
+			strings.HasSuffix(path, filepath.Join("internal", "adapters", "postgres", "posting.go")) {
 			return nil
 		}
 

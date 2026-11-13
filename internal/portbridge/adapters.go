@@ -29,6 +29,7 @@ type Driver interface {
 	GetCompanyByIDContext(context.Context, uuid.UUID) (masterdata.Company, error)
 	GetAccountByIDForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (masterdata.Account, error)
 	GetAccountByCodeForCompany(context.Context, uuid.UUID, string) (masterdata.Account, error)
+	GetJournalByCodeForCompany(context.Context, uuid.UUID, string) (masterdata.Journal, error)
 	HasChildrenForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	GetFiscalYearForCompany(context.Context, uuid.UUID, uuid.UUID) (masterdata.FiscalYear, error)
 	GetPeriodByDateForCompany(context.Context, uuid.UUID, time.Time) (masterdata.FiscalPeriod, error)
@@ -132,6 +133,17 @@ func (p *masterDataPort) GetAccountByCode(ctx context.Context, companyID types.C
 		return publicmasterdata.Account{}, err
 	}
 	return ToPublicAccount(account), nil
+}
+
+func (p *masterDataPort) GetJournalByCode(ctx context.Context, companyID types.CompanyID, code string) (publicmasterdata.Journal, error) {
+	journal, err := p.driver.GetJournalByCodeForCompany(ctx, uuid.UUID(companyID), code)
+	if err != nil {
+		if errors.Is(err, masterdata.ErrJournalNotFound) {
+			return publicmasterdata.Journal{}, publicmasterdata.ErrJournalNotFound
+		}
+		return publicmasterdata.Journal{}, err
+	}
+	return ToPublicJournal(journal), nil
 }
 
 func (p *masterDataPort) HasAccountChildren(ctx context.Context, companyID types.CompanyID, accountID types.AccountID) (bool, error) {

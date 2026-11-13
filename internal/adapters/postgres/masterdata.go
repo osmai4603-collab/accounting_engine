@@ -67,6 +67,12 @@ func scanAccount(row pgx.Row) (masterdata.Account, error) {
 	return account, err
 }
 
+func scanJournal(row pgx.Row) (masterdata.Journal, error) {
+	var journal masterdata.Journal
+	err := row.Scan(&journal.ID, &journal.CompanyID, &journal.Code, &journal.Name, &journal.LastNumber)
+	return journal, err
+}
+
 func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) error {
 	return d.WithCompanyTx(ctx, account.CompanyID, func(tx pgx.Tx) error {
 		var inserted bool
@@ -138,6 +144,21 @@ func (d *Driver) GetAccountByCodeForCompany(ctx context.Context, companyID uuid.
 		return scanErr
 	})
 	return account, err
+}
+
+func (d *Driver) GetJournalByCodeForCompany(ctx context.Context, companyID uuid.UUID, code string) (masterdata.Journal, error) {
+	var journal masterdata.Journal
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var scanErr error
+		journal, scanErr = scanJournal(tx.QueryRow(ctx,
+			`SELECT id, company_id, code, name, current_sequence
+			 FROM journals WHERE company_id=$1 AND lower(code)=lower($2)`, companyID, code))
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			return masterdata.ErrJournalNotFound
+		}
+		return scanErr
+	})
+	return journal, err
 }
 
 func (d *Driver) GetAccountByCode(ctx context.Context, code string) (masterdata.Account, error) {

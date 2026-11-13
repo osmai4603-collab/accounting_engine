@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/osmai4603-collab/accounting_engine/storage/masterdatacontract"
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
+	"github.com/osmai4603-collab/accounting_engine/storage/masterdatacontract"
 )
 
 func TestPublicMasterDataContract(t *testing.T) {

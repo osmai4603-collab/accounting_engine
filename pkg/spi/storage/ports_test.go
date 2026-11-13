@@ -45,6 +45,9 @@ func (stubMasterData) GetAccount(context.Context, types.CompanyID, types.Account
 func (stubMasterData) GetAccountByCode(context.Context, types.CompanyID, string) (masterdata.Account, error) {
 	return masterdata.Account{}, nil
 }
+func (stubMasterData) GetJournalByCode(context.Context, types.CompanyID, string) (masterdata.Journal, error) {
+	return masterdata.Journal{}, nil
+}
 func (stubMasterData) HasAccountChildren(context.Context, types.CompanyID, types.AccountID) (bool, error) {
 	return false, nil
 }

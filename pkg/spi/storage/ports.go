@@ -90,6 +90,7 @@ type MasterDataReader interface {
 	GetCompany(ctx context.Context, companyID types.CompanyID) (masterdata.Company, error)
 	GetAccount(ctx context.Context, companyID types.CompanyID, accountID types.AccountID) (masterdata.Account, error)
 	GetAccountByCode(ctx context.Context, companyID types.CompanyID, code string) (masterdata.Account, error)
+	GetJournalByCode(ctx context.Context, companyID types.CompanyID, code string) (masterdata.Journal, error)
 	HasAccountChildren(ctx context.Context, companyID types.CompanyID, accountID types.AccountID) (bool, error)
 	GetFiscalYear(ctx context.Context, companyID types.CompanyID, fiscalYearID types.FiscalYearID) (masterdata.FiscalYear, error)
 	GetPeriodForDate(ctx context.Context, companyID types.CompanyID, date time.Time) (masterdata.FiscalPeriod, error)
@@ -123,22 +124,22 @@ type AuditWriter interface {
 
 // IdempotencyRecord is the durable state of one idempotency key.
 type IdempotencyRecord struct {
-	CompanyID      types.CompanyID
-	Key            string
-	Operation      string
-	PayloadHash    string
-	Status         string
-	EntryID        *types.JournalEntryID
-	Response       []byte
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	CompanyID   types.CompanyID
+	Key         string
+	Operation   string
+	PayloadHash string
+	Status      string
+	EntryID     *types.JournalEntryID
+	Response    []byte
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 const (
-	IdempotencyStarted    = "started"
-	IdempotencyCompleted  = "completed"
-	IdempotencyRetryable  = "retryable_failure"
-	IdempotencyTerminal   = "terminal_failure"
+	IdempotencyStarted   = "started"
+	IdempotencyCompleted = "completed"
+	IdempotencyRetryable = "retryable_failure"
+	IdempotencyTerminal  = "terminal_failure"
 )
 
 // IdempotencyStore reserves and completes idempotency keys atomically with the

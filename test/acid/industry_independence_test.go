@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/modules/ifrs15"
 	"github.com/osmai4603-collab/accounting_engine/modules/ifrs16"
@@ -14,7 +15,6 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 func TestIndustryIndependence(t *testing.T) {

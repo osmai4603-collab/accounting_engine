@@ -24,13 +24,13 @@ type Principal struct {
 type Action string
 
 const (
-	ActionRead      Action = "ledger.read"
-	ActionCreate    Action = "ledger.create"
-	ActionValidate  Action = "ledger.validate"
-	ActionPost      Action = "ledger.post"
-	ActionReverse   Action = "ledger.reverse"
-	ActionClose     Action = "period.close"
-	ActionReopen    Action = "period.reopen"
+	ActionRead     Action = "ledger.read"
+	ActionCreate   Action = "ledger.create"
+	ActionValidate Action = "ledger.validate"
+	ActionPost     Action = "ledger.post"
+	ActionReverse  Action = "ledger.reverse"
+	ActionClose    Action = "period.close"
+	ActionReopen   Action = "period.reopen"
 )
 
 // AuthorizationRequest is passed to an optional host-provided Authorizer.
@@ -94,12 +94,12 @@ type PostEntryCommand struct {
 // are intentionally separate fields.
 type ReverseEntryCommand struct {
 	Context
-	CompanyID        types.CompanyID
-	EntryID          types.JournalEntryID
-	Reason           string
-	EffectiveDate    time.Time
-	PostingDate      time.Time
-	IdempotencyKey   string
+	CompanyID      types.CompanyID
+	EntryID        types.JournalEntryID
+	Reason         string
+	EffectiveDate  time.Time
+	PostingDate    time.Time
+	IdempotencyKey string
 }
 
 // GetEntryQuery reads one company-scoped entry.

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
@@ -16,7 +17,6 @@ import (
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"

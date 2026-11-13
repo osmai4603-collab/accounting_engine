@@ -607,6 +607,47 @@ func (s *defaultEventService) fetchPostedEntry(ctx context.Context, companyID ty
 	return s.ledgerApplication.GetEntry(ctx, companyID, entryID)
 }
 
+func resolveDefaultJournalIDForStore(ctx context.Context, masterData publicmasterdata.Store, companyID types.CompanyID, journalCode string) (types.JournalID, error) {
+	if masterData == nil {
+		return types.JournalID{}, types.ErrCapabilityNotImplemented
+	}
+	companyID = types.CompanyID(uuid.UUID(companyID))
+	if uuid.UUID(companyID) == uuid.Nil {
+		return types.JournalID{}, errors.New("company id is required")
+	}
+	journalCode = strings.TrimSpace(journalCode)
+	if journalCode == "" {
+		journalCode = "GENERAL"
+	}
+	journal, err := masterData.GetJournalByCode(ctx, companyID, journalCode)
+	if err == nil {
+		return types.JournalID(journal.ID), nil
+	}
+	if !errors.Is(err, publicmasterdata.ErrJournalNotFound) {
+		return types.JournalID{}, fmt.Errorf("resolve journal %q: %w", journalCode, err)
+	}
+	if journalCode != "GENERAL" {
+		return types.JournalID{}, fmt.Errorf("resolve journal %q: %w", journalCode, err)
+	}
+	journalID := publicmasterdata.NewJournalID()
+	if err := masterData.CreateJournal(ctx, publicmasterdata.Journal{
+		ID:        journalID,
+		CompanyID: companyID,
+		Code:      journalCode,
+		Name:      "General Journal",
+	}); err != nil {
+		if errors.Is(err, publicmasterdata.ErrDuplicateJournalCode) {
+			journal, retryErr := masterData.GetJournalByCode(ctx, companyID, journalCode)
+			if retryErr == nil {
+				return types.JournalID(journal.ID), nil
+			}
+			return types.JournalID{}, fmt.Errorf("resolve journal %q: %w", journalCode, retryErr)
+		}
+		return types.JournalID{}, fmt.Errorf("create journal %q: %w", journalCode, err)
+	}
+	return types.JournalID(journalID), nil
+}
+
 func (s *defaultEventService) constructEventEntry(ctx context.Context, rule events.PostingRule, event events.AccountingEvent) (ledger.JournalEntry, error) {
 	amt := event.Amount
 	if amt.Currency() == "" {
@@ -622,16 +663,9 @@ func (s *defaultEventService) constructEventEntry(ctx context.Context, rule even
 	if !strings.EqualFold(amt.Currency(), company.FunctionalCurrency) {
 		return ledger.JournalEntry{}, ErrExchangeRateUnavailable
 	}
-	var journalID types.JournalID
-	if journalCode := strings.TrimSpace(rule.JournalCode); journalCode != "" {
-		if s.publicMasterData == nil {
-			return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
-		}
-		journal, err := s.publicMasterData.GetJournalByCode(ctx, event.CompanyID, journalCode)
-		if err != nil {
-			return ledger.JournalEntry{}, fmt.Errorf("resolve journal %q: %w", journalCode, err)
-		}
-		journalID = types.JournalID(journal.ID)
+	journalID, err := resolveDefaultJournalIDForStore(ctx, s.publicMasterData, event.CompanyID, rule.JournalCode)
+	if err != nil {
+		return ledger.JournalEntry{}, err
 	}
 	if len(event.Payload) > 0 && !strings.Contains(rule.DescriptionTemplate, ".Payload") {
 		return ledger.JournalEntry{}, ErrEventPayloadUnsupported

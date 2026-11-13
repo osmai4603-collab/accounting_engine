@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 	"github.com/osmai4603-collab/accounting_engine/internal/consolidation"
 	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 	"github.com/osmai4603-collab/accounting_engine/internal/ias12"
@@ -18,7 +19,6 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/policy"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 )
 
 func TestNewWithPortsAcceptsIndependentStoragePorts(t *testing.T) {

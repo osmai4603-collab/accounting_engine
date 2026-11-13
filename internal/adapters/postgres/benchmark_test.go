@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

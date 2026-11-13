@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
+	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
-	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 )
 
 func main() {

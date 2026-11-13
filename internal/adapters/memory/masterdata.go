@@ -46,6 +46,24 @@ func (d *Driver) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID)
 	return d.GetCompanyByID(companyID)
 }
 
+func (d *Driver) GetJournalByCodeForCompany(ctx context.Context, companyID uuid.UUID, code string) (masterdata.Journal, error) {
+	if err := ctx.Err(); err != nil {
+		return masterdata.Journal{}, err
+	}
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
+		return masterdata.Journal{}, masterdata.ErrInvalidJournalType
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, journal := range d.journals {
+		if journal.CompanyID == companyID && strings.EqualFold(journal.Code, trimmed) {
+			return masterdata.Journal{CompanyID: journal.CompanyID, ID: journal.ID, Code: journal.Code, Name: journal.Name}, nil
+		}
+	}
+	return masterdata.Journal{}, masterdata.ErrJournalNotFound
+}
+
 func (d *Driver) CreateAccount(ctx context.Context, account masterdata.Account) error {
 	if err := ctx.Err(); err != nil {
 		return err

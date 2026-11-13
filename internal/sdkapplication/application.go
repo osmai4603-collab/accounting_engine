@@ -13,6 +13,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
+	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
 
@@ -23,7 +24,8 @@ var (
 )
 
 type ledgerApplication struct {
-	engine *posting.Engine
+	engine           *posting.Engine
+	publicMasterData publicmasterdata.Store
 }
 
 func New(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) {
@@ -36,7 +38,11 @@ func New(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) {
 		return nil, types.ErrCapabilityNotImplemented
 	}
 	masterService := masterdata.NewService(masterdata.NewRepositoryAdapter(masterRepository))
-	return &ledgerApplication{engine: posting.NewEngine(postingRepository, masterService)}, nil
+	var publicMasterData publicmasterdata.Store
+	if provider, ok := core.(interface{ MasterDataStore() publicmasterdata.Store }); ok {
+		publicMasterData = provider.MasterDataStore()
+	}
+	return &ledgerApplication{engine: posting.NewEngine(postingRepository, masterService), publicMasterData: publicMasterData}, nil
 }
 
 // NewLegacy builds the legacy adapter surface from a core store.
@@ -45,7 +51,8 @@ func NewLegacy(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) { 
 // Application is the extended application surface used by the SDK. It exposes
 // explicit actor/reason reversal while remaining a stable-port consumer.
 type Application struct {
-	engine *posting.Engine
+	engine           *posting.Engine
+	publicMasterData publicmasterdata.Store
 }
 
 // NewApplicationFromPorts builds the application from public storage ports.
@@ -62,7 +69,75 @@ func NewApplicationWithEngine(engine *posting.Engine) *Application {
 	return &Application{engine: engine}
 }
 
+func resolveDefaultJournalID(ctx context.Context, masterData publicmasterdata.Store, companyID types.CompanyID) (types.JournalID, error) {
+	if masterData == nil {
+		return types.JournalID{}, types.ErrCapabilityNotImplemented
+	}
+	companyID = types.CompanyID(uuid.UUID(companyID))
+	if uuid.UUID(companyID) == uuid.Nil {
+		return types.JournalID{}, errors.New("company id is required")
+	}
+	const defaultJournalCode = "GENERAL"
+	journal, err := masterData.GetJournalByCode(ctx, companyID, defaultJournalCode)
+	if err == nil {
+		return types.JournalID(journal.ID), nil
+	}
+	if !errors.Is(err, publicmasterdata.ErrJournalNotFound) {
+		return types.JournalID{}, err
+	}
+	journalID := publicmasterdata.NewJournalID()
+	if err := masterData.CreateJournal(ctx, publicmasterdata.Journal{
+		ID:        journalID,
+		CompanyID: companyID,
+		Code:      defaultJournalCode,
+		Name:      "General Journal",
+	}); err != nil {
+		if errors.Is(err, publicmasterdata.ErrDuplicateJournalCode) {
+			journal, retryErr := masterData.GetJournalByCode(ctx, companyID, defaultJournalCode)
+			if retryErr == nil {
+				return types.JournalID(journal.ID), nil
+			}
+			return types.JournalID{}, retryErr
+		}
+		return types.JournalID{}, err
+	}
+	return types.JournalID(journalID), nil
+}
+
+func (a *Application) EnsureJournalID(ctx context.Context, entry *ledger.JournalEntry) error {
+	if entry == nil {
+		return errors.New("entry is required")
+	}
+	if entry.JournalID != (types.JournalID{}) && uuid.UUID(entry.JournalID) != uuid.Nil {
+		return nil
+	}
+	journalID, err := resolveDefaultJournalID(ctx, a.publicMasterData, entry.CompanyID)
+	if err != nil {
+		return err
+	}
+	entry.JournalID = journalID
+	return nil
+}
+
+func (a *ledgerApplication) EnsureJournalID(ctx context.Context, entry *ledger.JournalEntry) error {
+	if entry == nil {
+		return errors.New("entry is required")
+	}
+	if entry.JournalID != (types.JournalID{}) && uuid.UUID(entry.JournalID) != uuid.Nil {
+		return nil
+	}
+	journalID, err := resolveDefaultJournalID(ctx, a.publicMasterData, entry.CompanyID)
+	if err != nil {
+		return err
+	}
+	entry.JournalID = journalID
+	return nil
+}
+
 func (a *Application) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	if err := a.EnsureJournalID(ctx, &entry); err != nil {
+		return ledger.JournalEntry{}, err
+	}
 	return postEntry(ctx, a.engine, entry)
 }
 
@@ -83,6 +158,9 @@ func (a *Application) ReverseEntryWithIdentity(ctx context.Context, companyID ty
 }
 
 func (a *ledgerApplication) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	if err := a.EnsureJournalID(ctx, &entry); err != nil {
+		return ledger.JournalEntry{}, err
+	}
 	return postEntry(ctx, a.engine, entry)
 }
 

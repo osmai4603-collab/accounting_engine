@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 )
 
 // TestMigrationUpgradeFromPreviousVersionPreservesData simulates deploying the
