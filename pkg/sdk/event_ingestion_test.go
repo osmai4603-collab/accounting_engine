@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"accounting_engine/internal/masterdata"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/types"
-	"github.com/google/uuid"
+	publicmasterdata "accounting_engine/pkg/spi/masterdata"
+	"accounting_engine/storage/memory"
 )
 
 func TestPublicEventFingerprintCoversAccountingInputs(t *testing.T) {
@@ -90,16 +90,17 @@ func TestEventDescriptionTemplateUsesPayload(t *testing.T) {
 }
 
 func TestConstructEventEntryRejectsCurrencyWithoutRateSource(t *testing.T) {
-	repository := masterdata.NewMockRepository()
+	driver := memory.New()
+	masterData := driver.MasterDataStore()
 	companyID := types.NewCompanyID()
-	if err := repository.CreateCompany(masterdata.Company{
-		ID: uuid.UUID(companyID), Code: "EVENT-TEST", LegalName: "Event Test",
+	if err := masterData.CreateCompany(context.Background(), publicmasterdata.Company{
+		ID: companyID, Code: "EVENT-TEST", LegalName: "Event Test",
 		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	service := &defaultEventService{
-		masterService: masterdata.NewService(repository),
+		publicMasterData: masterData,
 	}
 	amount, err := types.NewMoneyFromString("100", "EUR")
 	if err != nil {

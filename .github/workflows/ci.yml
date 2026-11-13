@@ -44,6 +44,10 @@ jobs:
           git diff --exit-code -- proto/accounting/v1
       - name: gofmt gate
         run: ./scripts/check_gofmt.sh
+      - name: public API purity gate
+        run: |
+          ./scripts/check_public_api_purity.sh --self-test
+          ./scripts/check_public_api_purity.sh
       - name: go vet
         run: go vet ./...
       - name: go build

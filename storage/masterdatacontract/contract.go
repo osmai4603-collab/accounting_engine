@@ -87,6 +87,9 @@ func Run(t *testing.T, store masterdata.Store) {
 	if got, err := store.GetAccount(ctx, company.ID, account.ID); err != nil || !reflect.DeepEqual(got, account) {
 		t.Fatalf("get account = %#v, %v; want %#v", got, err, account)
 	}
+	if got, err := store.GetAccountByCode(ctx, company.ID, account.Code); err != nil || !reflect.DeepEqual(got, account) {
+		t.Fatalf("get account by code = %#v, %v; want %#v", got, err, account)
+	}
 
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, time.December, 31, 0, 0, 0, 0, time.UTC)
@@ -139,6 +142,7 @@ func AssertUnsupported(t *testing.T, store masterdata.Store) {
 		{"read journal", func() error { _, err := store.GetJournalByCode(ctx, companyID, "GENERAL"); return err }},
 		{"create account", func() error { return store.CreateAccount(ctx, masterdata.Account{}) }},
 		{"read account", func() error { _, err := store.GetAccount(ctx, companyID, accountID); return err }},
+		{"read account by code", func() error { _, err := store.GetAccountByCode(ctx, companyID, "1000"); return err }},
 		{"create fiscal year", func() error { return store.CreateFiscalYear(ctx, masterdata.FiscalYear{}) }},
 		{"read fiscal year", func() error { _, err := store.GetFiscalYear(ctx, companyID, fiscalYearID); return err }},
 		{"create fiscal period", func() error { return store.CreateFiscalPeriod(ctx, masterdata.FiscalPeriod{}) }},

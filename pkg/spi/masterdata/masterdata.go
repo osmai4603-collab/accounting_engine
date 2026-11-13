@@ -147,6 +147,7 @@ type Store interface {
 	GetJournalByCode(context.Context, types.CompanyID, string) (Journal, error)
 	CreateAccount(context.Context, Account) error
 	GetAccount(context.Context, types.CompanyID, types.AccountID) (Account, error)
+	GetAccountByCode(context.Context, types.CompanyID, string) (Account, error)
 	CreateFiscalYear(context.Context, FiscalYear) error
 	GetFiscalYear(context.Context, types.CompanyID, types.FiscalYearID) (FiscalYear, error)
 	CreateFiscalPeriod(context.Context, FiscalPeriod) error

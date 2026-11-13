@@ -12,6 +12,7 @@ import (
 	"accounting_engine/pkg/api/v1/types"
 	"accounting_engine/pkg/spi/standards"
 	"accounting_engine/pkg/spi/storage"
+	"accounting_engine/storage/memory"
 )
 
 type mockCoreStore struct {
@@ -96,7 +97,7 @@ func TestBuilder_RejectsStoreWithoutPostingCapabilities(t *testing.T) {
 
 func TestLedgerServiceDoesNotFallbackToDirectStorage(t *testing.T) {
 	store := &mockCoreStore{}
-	service := &defaultLedgerService{store: store}
+	service := &defaultLedgerService{}
 
 	if _, err := service.PostEntry(context.Background(), ledger.JournalEntry{}); !errors.Is(err, types.ErrCapabilityNotImplemented) {
 		t.Fatalf("PostEntry error = %v, want %v", err, types.ErrCapabilityNotImplemented)
@@ -111,7 +112,7 @@ func TestLedgerServiceDoesNotFallbackToDirectStorage(t *testing.T) {
 
 func TestBuilder_Success(t *testing.T) {
 	ctx := context.Background()
-	store := newMockPostingCoreStore()
+	store := memory.New()
 	engine, err := NewBuilder(WithCoreStorage(store)).Build(ctx)
 	if err != nil {
 		t.Fatalf("failed to build engine: %v", err)
@@ -126,7 +127,7 @@ func TestBuilder_Success(t *testing.T) {
 
 func TestBuilder_StandardValidation(t *testing.T) {
 	ctx := context.Background()
-	store := newMockPostingCoreStore()
+	store := memory.New()
 	mod := &mockStandard{name: "IFRS15", err: nil}
 	engine, err := NewBuilder(
 		WithCoreStorage(store),
@@ -164,7 +165,7 @@ func (m *dependentStandard) Close(ctx context.Context) error { return nil }
 
 func TestBuilder_ModuleDependencies(t *testing.T) {
 	ctx := context.Background()
-	store := newMockPostingCoreStore()
+	store := memory.New()
 	// Module A requires Module B, but B is not provided.
 	modA := &dependentStandard{name: "ModuleA", deps: []string{"ModuleB"}}
 	_, err := NewBuilder(

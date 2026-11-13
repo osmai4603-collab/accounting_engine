@@ -1,6 +1,7 @@
-package sdk
+package sdkapplication
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,7 +252,7 @@ func fromInternalEntry(e posting.JournalEntry) ledger.JournalEntry {
 	}
 	entryNumber := e.LegalNumber
 	if entryNumber == "" && e.SequenceNumber > 0 {
-		entryNumber = uuid.UUID(e.JournalID).String()
+		entryNumber = strconv.FormatInt(e.SequenceNumber, 10)
 	}
 
 	return ledger.JournalEntry{

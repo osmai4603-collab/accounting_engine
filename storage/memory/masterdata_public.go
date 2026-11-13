@@ -139,6 +139,21 @@ func (s *publicMasterDataStore) GetAccount(ctx context.Context, companyID types.
 	if err != nil {
 		return publicmasterdata.Account{}, err
 	}
+	return publicAccount(account), nil
+}
+
+func (s *publicMasterDataStore) GetAccountByCode(ctx context.Context, companyID types.CompanyID, code string) (publicmasterdata.Account, error) {
+	if !s.available() {
+		return publicmasterdata.Account{}, publicmasterdata.ErrCapabilityNotImplemented
+	}
+	account, err := s.driver.GetAccountByCodeForCompany(ctx, uuid.UUID(companyID), code)
+	if err != nil {
+		return publicmasterdata.Account{}, err
+	}
+	return publicAccount(account), nil
+}
+
+func publicAccount(account masterdata.Account) publicmasterdata.Account {
 	var parentID *types.AccountID
 	if account.ParentID != nil {
 		parent := types.AccountID(*account.ParentID)
@@ -154,7 +169,7 @@ func (s *publicMasterDataStore) GetAccount(ctx context.Context, companyID types.
 		IsNonCashAdjustment: account.IsNonCashAdjustment, CashFlowActivity: account.CashFlowActivity,
 		SubClassification: account.SubClassification,
 		IFRSCategory:      account.IFRSCategory, DisplayOrder: account.DisplayOrder,
-	}, nil
+	}
 }
 
 func (s *publicMasterDataStore) CreateFiscalYear(ctx context.Context, year publicmasterdata.FiscalYear) error {

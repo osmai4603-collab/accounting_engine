@@ -1,9 +1,10 @@
-package sdk
+package sdkapplication
 
 import (
 	"testing"
 	"time"
 
+	"accounting_engine/internal/posting"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/types"
 
@@ -29,6 +30,7 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	zero, err := types.NewMoney(decimal.Zero, "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -116,5 +118,14 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 		!line.FunctionalDebit.Equal(entry.Lines[0].FunctionalDebit) ||
 		!line.FunctionalCredit.Equal(entry.Lines[0].FunctionalCredit) {
 		t.Fatalf("line fields changed during mapping: got %+v", line)
+	}
+}
+
+func TestFromInternalEntryUsesSequenceForEntryNumber(t *testing.T) {
+	entry := fromInternalEntry(posting.JournalEntry{
+		JournalID: uuid.New(), SequenceNumber: 42,
+	})
+	if entry.EntryNumber != "42" {
+		t.Fatalf("entry number = %q, want sequence 42", entry.EntryNumber)
 	}
 }

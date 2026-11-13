@@ -10,8 +10,6 @@ import (
 	"text/template"
 	"time"
 
-	"accounting_engine/internal/masterdata"
-	"accounting_engine/internal/posting"
 	"accounting_engine/pkg/api/v1/events"
 	"accounting_engine/pkg/api/v1/ledger"
 	"accounting_engine/pkg/api/v1/reporting"
@@ -88,11 +86,8 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	if b.coreStore == nil {
 		errs = append(errs, errors.New("core ledger store is required but missing"))
 	} else {
-		if _, ok := b.coreStore.(posting.BulkRepository); !ok {
-			errs = append(errs, fmt.Errorf("ledger posting: %w", types.ErrCapabilityNotImplemented))
-		}
-		if _, ok := b.coreStore.(masterdata.ContextStorageRepository); !ok {
-			errs = append(errs, fmt.Errorf("master data for posting: %w", types.ErrCapabilityNotImplemented))
+		if _, ok := b.coreStore.(storage.LedgerApplicationProvider); !ok {
+			errs = append(errs, fmt.Errorf("ledger application: %w", types.ErrCapabilityNotImplemented))
 		}
 	}
 
@@ -112,10 +107,21 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 
 	router := events.NewRouter()
 	var publicMasterData publicmasterdata.Store
+	var ledgerApplication storage.LedgerApplication
 	if provider, ok := b.coreStore.(interface {
 		MasterDataStore() publicmasterdata.Store
 	}); ok {
 		publicMasterData = provider.MasterDataStore()
+	}
+	if provider, ok := b.coreStore.(storage.LedgerApplicationProvider); ok {
+		application, err := provider.NewLedgerApplication()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("create ledger application: %w", err))
+		} else if application == nil {
+			errs = append(errs, fmt.Errorf("create ledger application: %w", types.ErrCapabilityNotImplemented))
+		} else {
+			ledgerApplication = application
+		}
 	}
 	for _, mod := range b.standards {
 		name := mod.Name()
@@ -141,51 +147,40 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	}
 
 	inst := &engineInstance{
-		coreStore:        b.coreStore,
-		reportingStore:   b.reportingStore,
-		governanceStore:  b.governanceStore,
-		standards:        b.standards,
-		eventRouter:      router,
-		eventService:     &defaultEventService{}, // initialized below
-		publicMasterData: publicMasterData,
-	}
-
-	// Prefer real posting engine path when storage driver implements internal ports (P0-1).
-	if postingRepo, ok := b.coreStore.(posting.BulkRepository); ok {
-		if masterRepo, ok := b.coreStore.(masterdata.ContextStorageRepository); ok {
-			masterSvc := masterdata.NewService(masterdata.NewRepositoryAdapter(masterRepo))
-			inst.postingEngine = posting.NewEngine(postingRepo, masterSvc)
-			inst.masterService = masterSvc
-		}
+		coreStore:         b.coreStore,
+		reportingStore:    b.reportingStore,
+		governanceStore:   b.governanceStore,
+		standards:         b.standards,
+		eventRouter:       router,
+		eventService:      &defaultEventService{}, // initialized below
+		publicMasterData:  publicMasterData,
+		ledgerApplication: ledgerApplication,
 	}
 
 	inst.eventService = &defaultEventService{
-		store:            b.coreStore,
-		router:           router,
-		postingEngine:    inst.postingEngine,
-		masterService:    inst.masterService,
-		publicMasterData: inst.publicMasterData,
+		store:             b.coreStore,
+		router:            router,
+		publicMasterData:  inst.publicMasterData,
+		ledgerApplication: inst.ledgerApplication,
 	}
 
 	return inst, nil
 }
 
 type engineInstance struct {
-	coreStore        storage.CoreLedgerStore
-	reportingStore   storage.ReportingStore
-	governanceStore  storage.GovernanceStore
-	standards        []standards.StandardModule
-	eventRouter      *events.Router
-	eventService     *defaultEventService
-	postingEngine    *posting.Engine
-	masterService    *masterdata.Service
-	publicMasterData publicmasterdata.Store
+	coreStore         storage.CoreLedgerStore
+	reportingStore    storage.ReportingStore
+	governanceStore   storage.GovernanceStore
+	standards         []standards.StandardModule
+	eventRouter       *events.Router
+	eventService      *defaultEventService
+	publicMasterData  publicmasterdata.Store
+	ledgerApplication storage.LedgerApplication
 }
 
 func (e *engineInstance) Ledger() LedgerService {
 	return &defaultLedgerService{
-		store:         e.coreStore,
-		postingEngine: e.postingEngine,
+		application: e.ledgerApplication,
 	}
 }
 
@@ -215,75 +210,28 @@ func (e *engineInstance) Close() error {
 }
 
 type defaultLedgerService struct {
-	store         storage.CoreLedgerStore
-	postingEngine *posting.Engine
+	application storage.LedgerApplication
 }
 
 func (s *defaultLedgerService) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
-	if s.postingEngine != nil {
-		internalEntry, err := toInternalEntry(entry)
-		if err != nil {
-			return ledger.JournalEntry{}, err
-		}
-		// Application path: draft -> validate/prepare/post via posting engine (P0-1).
-		internalEntry.Status = posting.EntryDraft
-		if err := s.postingEngine.CreateDraftContext(ctx, internalEntry); err != nil {
-			return ledger.JournalEntry{}, err
-		}
-		posterID := strings.TrimSpace(internalEntry.CreatedBy)
-		if posterID == "" {
-			posterID = "system"
-		}
-		if err := s.postingEngine.PostEntryContext(ctx, &internalEntry, posterID); err != nil {
-			return fromInternalEntry(internalEntry), err
-		}
-		// Return canonical posted state.
-		posted, err := s.postingEngine.GetEntry(ctx, internalEntry.CompanyID, internalEntry.ID)
-		if err != nil {
-			return fromInternalEntry(internalEntry), err
-		}
-		return fromInternalEntry(posted), nil
+	if s.application == nil {
+		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+	return s.application.PostEntry(ctx, entry)
 }
 
 func (s *defaultLedgerService) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	if s.postingEngine != nil {
-		e, err := s.postingEngine.GetEntry(ctx, uuid.UUID(companyID), uuid.UUID(entryID))
-		if err != nil {
-			return ledger.JournalEntry{}, err
-		}
-		return fromInternalEntry(e), nil
+	if s.application == nil {
+		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	if s.store == nil {
-		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
-	}
-	return s.store.GetEntry(ctx, companyID, entryID)
+	return s.application.GetEntry(ctx, companyID, entryID)
 }
 
 func (s *defaultLedgerService) ReverseEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID, reason string) (ledger.JournalEntry, error) {
-	if s.postingEngine != nil {
-		// Use posting engine reversal path (P0-2): atomic, validates state/period, swaps lines,
-		// marks original reversed, prevents double reversal.
-		creator := strings.TrimSpace(reason)
-		if creator == "" {
-			creator = "system-reversal"
-		}
-		rev, err := s.postingEngine.ReverseDualContext(ctx, uuid.UUID(companyID), uuid.UUID(entryID), creator, creator, time.Now().UTC())
-		if err != nil {
-			return ledger.JournalEntry{}, err
-		}
-		// Persist reason in reference/description field on returned DTO.
-		out := fromInternalEntry(rev)
-		if reason != "" {
-			out.Description = reason
-			if out.ReferenceID == "" {
-				out.ReferenceID = "reversal:" + uuid.UUID(entryID).String()
-			}
-		}
-		return out, nil
+	if s.application == nil {
+		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+	return s.application.ReverseEntry(ctx, companyID, entryID, reason)
 }
 
 type defaultReportingService struct {
@@ -337,19 +285,21 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 }
 
 type defaultEventService struct {
-	store            storage.CoreLedgerStore
-	router           *events.Router
-	postingEngine    *posting.Engine
-	masterService    *masterdata.Service
-	publicMasterData publicmasterdata.Store
-	mu               sync.Mutex
-	keys             map[string]ledger.JournalEntry
-	inflight         map[string]struct{}
+	store             storage.CoreLedgerStore
+	router            *events.Router
+	publicMasterData  publicmasterdata.Store
+	ledgerApplication storage.LedgerApplication
+	mu                sync.Mutex
+	keys              map[string]ledger.JournalEntry
+	inflight          map[string]struct{}
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
-	if s.store == nil && s.postingEngine == nil {
+	if s.store == nil {
 		return ledger.JournalEntry{}, errors.New("core ledger store not configured")
+	}
+	if s.ledgerApplication == nil {
+		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
 	if strings.TrimSpace(event.EventType) == "" {
 		return ledger.JournalEntry{}, errors.New("event type is required")
@@ -557,16 +507,17 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 }
 
 func (s *defaultEventService) postEventEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
-	if s.postingEngine != nil {
-		ledgerSvc := &defaultLedgerService{store: s.store, postingEngine: s.postingEngine}
-		return ledgerSvc.PostEntry(ctx, entry)
+	if s.ledgerApplication != nil {
+		return s.ledgerApplication.PostEntry(ctx, entry)
 	}
 	return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 }
 
 func (s *defaultEventService) fetchPostedEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	ledgerSvc := &defaultLedgerService{store: s.store, postingEngine: s.postingEngine}
-	return ledgerSvc.GetEntry(ctx, companyID, entryID)
+	if s.ledgerApplication == nil {
+		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+	}
+	return s.ledgerApplication.GetEntry(ctx, companyID, entryID)
 }
 
 func (s *defaultEventService) constructEventEntry(ctx context.Context, rule events.PostingRule, event events.AccountingEvent) (ledger.JournalEntry, error) {
@@ -574,10 +525,10 @@ func (s *defaultEventService) constructEventEntry(ctx context.Context, rule even
 	if amt.Currency() == "" {
 		return ledger.JournalEntry{}, errors.New("event amount currency is required")
 	}
-	if s.masterService == nil {
+	if s.publicMasterData == nil {
 		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	company, err := s.masterService.GetCompanyByIDContext(ctx, uuid.UUID(event.CompanyID))
+	company, err := s.publicMasterData.GetCompany(ctx, event.CompanyID)
 	if err != nil {
 		return ledger.JournalEntry{}, err
 	}
@@ -692,12 +643,12 @@ func (s *defaultEventService) resolveRuleAccount(ctx context.Context, companyID 
 	if code == "" {
 		return types.AccountID{}, errors.New("account code is required")
 	}
-	if s.masterService != nil {
-		acc, err := s.masterService.GetAccountByCodeForCompanyContext(ctx, uuid.UUID(companyID), code)
+	if s.publicMasterData != nil {
+		acc, err := s.publicMasterData.GetAccountByCode(ctx, companyID, code)
 		if err != nil {
 			return types.AccountID{}, err
 		}
-		return types.AccountID(acc.ID), nil
+		return acc.ID, nil
 	}
 	// Fallback: try core store lookup by code if it exposes internal-style repo? no direct API.
 	// Without masterdata we cannot safely resolve account codes; fail explicitly (P0-3).
