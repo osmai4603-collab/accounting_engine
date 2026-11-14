@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 )
 
 func TestHTTPHandlersReturnBadRequestForInvalidInput(t *testing.T) {
@@ -134,15 +136,73 @@ func TestPostingMetricsReflectSuccessfulAndFailedRequests(t *testing.T) {
 	}
 }
 
+func TestHTTPEventHandlerPassesTransportMetadataToIngestion(t *testing.T) {
+	captured := &capturingEventService{}
+	server := newHTTPServer(Config{}, &serviceTestEngine{events: captured})
+	body, err := json.Marshal(events.AccountingEvent{
+		EventID: "event-1", EventType: "sale", CompanyID: types.NewCompanyID(),
+		EffectiveDate:  time.Date(2026, time.November, 14, 0, 0, 0, 0, time.UTC),
+		IdempotencyKey: "body-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/events",
+		strings.NewReader(string(body)))
+	request.Header.Set("X-Correlation-ID", "http-correlation")
+	request.Header.Set("X-Source-System", "billing")
+	request.Header.Set("Idempotency-Key", "header-key")
+	response := httptest.NewRecorder()
+
+	server.Handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body)
+	}
+	metadata, ok := publicapplication.RequestMetadataFromContext(captured.ctx)
+	if !ok {
+		t.Fatal("event handler did not propagate request metadata")
+	}
+	if metadata.CorrelationID != "http-correlation" ||
+		metadata.IdempotencyKey != "header-key" ||
+		metadata.SourceSystem != "billing" {
+		t.Fatalf("request metadata = %#v", metadata)
+	}
+	if captured.event.EventID != "event-1" || captured.event.EventType != "sale" {
+		t.Fatalf("event handler changed event payload: %#v", captured.event)
+	}
+}
+
+func TestHTTPMapsApplicationErrorsWithoutLeakingCauses(t *testing.T) {
+	response := httptest.NewRecorder()
+	cause := errors.New("database password=secret")
+	writeApplicationError(response, publicapplication.NewError(publicapplication.ErrValidation, "invalid journal entry", cause))
+	if response.Code != http.StatusBadRequest || strings.TrimSpace(response.Body.String()) != "invalid journal entry" {
+		t.Fatalf("validation response = %d %q", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	writeApplicationError(response, cause)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("internal error leaked details: %d %q", response.Code, response.Body.String())
+	}
+}
+
 type serviceTestEngine struct {
 	ledger sdk.LedgerService
+	events sdk.EventIngestionService
 }
 
 func (e *serviceTestEngine) Ledger() sdk.LedgerService         { return e.ledger }
 func (e *serviceTestEngine) Reporting() sdk.ReportingService   { return serviceTestReporting{} }
 func (e *serviceTestEngine) Governance() sdk.GovernanceService { return serviceTestGovernance{} }
-func (e *serviceTestEngine) Events() sdk.EventIngestionService { return serviceTestEvents{} }
-func (e *serviceTestEngine) Close() error                      { return nil }
+func (e *serviceTestEngine) Events() sdk.EventIngestionService {
+	if e.events != nil {
+		return e.events
+	}
+	return serviceTestEvents{}
+}
+func (e *serviceTestEngine) Close() error { return nil }
 
 type serviceTestLedger struct {
 	err error
@@ -186,6 +246,17 @@ type serviceTestEvents struct{}
 
 func (serviceTestEvents) ProcessEvent(context.Context, events.AccountingEvent) (ledger.JournalEntry, error) {
 	return ledger.JournalEntry{}, nil
+}
+
+type capturingEventService struct {
+	ctx   context.Context
+	event events.AccountingEvent
+}
+
+func (s *capturingEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
+	s.ctx = ctx
+	s.event = event
+	return ledger.JournalEntry{ID: types.NewJournalEntryID(), Status: ledger.EntryPosted}, nil
 }
 
 func TestHTTPHandlersRejectOversizedRequestBody(t *testing.T) {

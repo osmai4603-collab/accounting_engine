@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -9,12 +10,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
-	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	accountingv1 "github.com/osmai4603-collab/accounting_engine/proto/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
@@ -96,22 +98,7 @@ func newGRPCServer(engine sdk.Engine) *grpc.Server {
 }
 
 func (s *GRPCServer) PostEntry(ctx context.Context, request *accountingv1.PostEntryRequest) (*accountingv1.PostEntryResponse, error) {
-	companyID, err := parseCompanyID(request.GetCompanyId())
-	if err != nil {
-		return nil, err
-	}
-	entry, err := s.engine.Ledger().PostEntry(ctx, ledger.JournalEntry{
-		ID:          types.NewJournalEntryID(),
-		CompanyID:   companyID,
-		Description: request.GetDescription(),
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "post entry: %v", err)
-	}
-	return &accountingv1.PostEntryResponse{
-		EntryId: uuid.UUID(entry.ID).String(),
-		Status:  string(entry.Status),
-	}, nil
+	return nil, status.Error(codes.InvalidArgument, "PostEntry requires a complete journal entry; this request only supplies company_id and description")
 }
 
 func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntryRequest) (*accountingv1.GetEntryResponse, error) {
@@ -125,7 +112,7 @@ func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntr
 	}
 	entry, err := s.engine.Ledger().GetEntry(ctx, companyID, entryID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get entry: %v", err)
+		return nil, grpcApplicationError(err)
 	}
 	return &accountingv1.GetEntryResponse{
 		EntryId: uuid.UUID(entry.ID).String(),
@@ -211,33 +198,93 @@ func (s *GRPCServer) ProcessEvent(ctx context.Context, request *accountingv1.Pro
 	if err != nil {
 		return nil, err
 	}
+	if request.GetEffectiveDate() == "" {
+		return nil, status.Error(codes.InvalidArgument, "effective_date is required")
+	}
 	effectiveDate, err := parseDate(request.GetEffectiveDate())
 	if err != nil {
 		return nil, err
 	}
 	currency := request.GetCurrency()
 	if currency == "" {
-		currency = "USD"
+		return nil, status.Error(codes.InvalidArgument, "currency is required")
 	}
 	amount, err := types.NewMoneyFromString(request.GetAmount(), currency)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid amount: %v", err)
 	}
+	requestMetadata := grpcRequestMetadata(ctx, "accounting-service")
+	requestMetadata.IdempotencyKey = firstNonEmpty(request.GetIdempotencyKey(), requestMetadata.IdempotencyKey)
+	ctx = publicapplication.WithRequestMetadata(ctx, requestMetadata)
 	entry, err := s.engine.Events().ProcessEvent(ctx, events.AccountingEvent{
 		EventID:        request.GetEventId(),
 		EventType:      request.GetEventType(),
 		CompanyID:      companyID,
 		EffectiveDate:  effectiveDate,
 		Amount:         amount,
-		IdempotencyKey: request.GetIdempotencyKey(),
+		IdempotencyKey: requestMetadata.IdempotencyKey,
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "process event: %v", err)
+		return nil, grpcApplicationError(err)
 	}
 	return &accountingv1.ProcessEventResponse{
 		EntryId: uuid.UUID(entry.ID).String(),
 		Status:  string(entry.Status),
 	}, nil
+}
+
+func grpcRequestMetadata(ctx context.Context, fallbackSource string) publicapplication.RequestMetadata {
+	incoming, _ := metadata.FromIncomingContext(ctx)
+	first := func(key string) string {
+		values := incoming.Get(key)
+		if len(values) == 0 {
+			return ""
+		}
+		return values[0]
+	}
+	return publicapplication.RequestMetadata{
+		CorrelationID:  first("x-correlation-id"),
+		IdempotencyKey: first("idempotency-key"),
+		SourceSystem:   headerOrDefault(first("x-source-system"), fallbackSource),
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func grpcApplicationError(err error) error {
+	message := "internal error"
+	var classified interface {
+		PublicMessage() string
+	}
+	if !errors.As(err, &classified) {
+		return status.Error(codes.Internal, message)
+	}
+	message = classified.PublicMessage()
+	switch {
+	case errors.Is(err, publicapplication.ErrValidation):
+		return status.Error(codes.InvalidArgument, message)
+	case errors.Is(err, publicapplication.ErrUnauthorized):
+		return status.Error(codes.Unauthenticated, message)
+	case errors.Is(err, publicapplication.ErrForbidden):
+		return status.Error(codes.PermissionDenied, message)
+	case errors.Is(err, publicapplication.ErrNotFound):
+		return status.Error(codes.NotFound, message)
+	case errors.Is(err, publicapplication.ErrConflict):
+		return status.Error(codes.Aborted, message)
+	case errors.Is(err, publicapplication.ErrDuplicateRequest):
+		return status.Error(codes.AlreadyExists, message)
+	case errors.Is(err, publicapplication.ErrDependencyUnavailable):
+		return status.Error(codes.Unavailable, message)
+	default:
+		return status.Error(codes.Internal, message)
+	}
 }
 
 func parseCompanyID(value string) (types.CompanyID, error) {

@@ -35,6 +35,19 @@ type ContextAtomicReversalRepository interface {
 	PostReversalAtomicContext(ctx context.Context, original, reversal JournalEntry) (JournalEntry, error)
 }
 
+// AtomicReversalCreationRepository creates and posts a reversal without
+// exposing an intermediate draft. Implementations must atomically link the
+// original and reversal and enforce idempotency when the key is non-empty.
+type AtomicReversalCreationRepository interface {
+	CreateAndPostReversalAtomicContext(ctx context.Context, original, reversal JournalEntry) (JournalEntry, error)
+}
+
+// IdempotentReversalReader finds a previously completed reversal by its
+// company-scoped idempotency key.
+type IdempotentReversalReader interface {
+	FindReversalByIdempotencyKeyContext(ctx context.Context, companyID uuid.UUID, key string) (JournalEntry, bool, error)
+}
+
 type AtomicPostingRepository interface {
 	PostAndSequence(JournalEntry) (JournalEntry, error)
 }

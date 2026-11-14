@@ -15,6 +15,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
@@ -31,7 +32,8 @@ import (
 //     builds the application layer from public ports and never asks the adapter
 //     to construct application services.
 //   - WithCoreStorage: the deprecated monolithic store path, kept for
-//     compatibility until the next MAJOR release.
+//     compatibility until the next MAJOR release. The store must expose the
+//     capabilities needed to build the same application layer as WithStoragePorts.
 //
 // Mixing both sources is rejected during preflight.
 type EngineBuilder struct {
@@ -40,7 +42,10 @@ type EngineBuilder struct {
 	portsConfigured bool
 	reportingStore  storage.ReportingStore
 	governanceStore storage.GovernanceStore
+	authorizer      publicapplication.Authorizer
 	standards       []standards.StandardModule
+	postingConfig   PostingConfig
+	postingCaps     storage.PostingCapabilities
 	optsErrs        []error
 }
 
@@ -59,9 +64,9 @@ func WithStoragePorts(ports storage.Ports) Option {
 // WithCoreStorage configures the engine from the legacy monolithic store.
 //
 // Deprecated: use WithStoragePorts with the adapter's Ports() entry point.
-// WithCoreStorage requires the adapter to implement
-// legacy.LedgerApplicationProvider and to expose master data through an
-// additional type assertion. It will be removed in the next MAJOR release.
+// WithCoreStorage requires the adapter to expose the posting and master-data
+// capabilities needed by the SDK-built application layer. It will be removed
+// in the next MAJOR release.
 func WithCoreStorage(store legacy.CoreLedgerStore) Option {
 	return func(b *EngineBuilder) error {
 		if store == nil {
@@ -93,6 +98,33 @@ func WithGovernance(store storage.GovernanceStore) Option {
 			return errors.New("governance store is nil")
 		}
 		b.governanceStore = store
+		return nil
+	}
+}
+
+func WithAuthorizer(authorizer publicapplication.Authorizer) Option {
+	return func(b *EngineBuilder) error {
+		if authorizer == nil {
+			return errors.New("authorizer is nil")
+		}
+		b.authorizer = authorizer
+		return nil
+	}
+}
+
+// WithPostingConfig declares posting controls that must be available before
+// the engine can be built.
+func WithPostingConfig(config PostingConfig) Option {
+	return func(b *EngineBuilder) error {
+		b.postingConfig = config
+		return nil
+	}
+}
+
+// WithPostingCapabilities supplies optional controls used by PostingConfig.
+func WithPostingCapabilities(capabilities storage.PostingCapabilities) Option {
+	return func(b *EngineBuilder) error {
+		b.postingCaps = capabilities
 		return nil
 	}
 }
@@ -131,32 +163,29 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 
 	router := events.NewRouter()
 	var publicMasterData publicmasterdata.Store
-	var ledgerApplication legacy.LedgerApplication
+	var useCases publicapplication.Service
 
 	if b.portsConfigured {
-		application, err := sdkapplication.NewApplicationFromPorts(b.ports)
+		app, err := sdkapplication.NewApplicationFromPortsWithPostingCapabilities(
+			b.ports, b.postingConfig.internal(), b.postingCaps,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("application layer: %w", err)
 		}
-		ledgerApplication = application
+		useCases = sdkapplication.NewPublicService(app, b.authorizer)
 	} else {
+		app, err := sdkapplication.NewApplicationFromCoreWithPostingCapabilities(
+			b.coreStore, b.postingConfig.internal(), b.postingCaps,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("application layer: %w", err)
+		}
+		useCases = sdkapplication.NewPublicService(app, b.authorizer)
 		if provider, ok := b.coreStore.(interface {
 			MasterDataStore() publicmasterdata.Store
 		}); ok {
 			publicMasterData = provider.MasterDataStore()
 		}
-		provider, ok := b.coreStore.(legacy.LedgerApplicationProvider)
-		if !ok {
-			return nil, fmt.Errorf("ledger application: %w", types.ErrCapabilityNotImplemented)
-		}
-		application, err := provider.NewLedgerApplication()
-		if err != nil {
-			return nil, fmt.Errorf("create ledger application: %w", err)
-		}
-		if application == nil {
-			return nil, fmt.Errorf("create ledger application: %w", types.ErrCapabilityNotImplemented)
-		}
-		ledgerApplication = application
 	}
 
 	moduleErrs := b.initializeStandards(ctx, router)
@@ -165,21 +194,23 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	}
 
 	inst := &engineInstance{
-		coreStore:         b.coreStore,
-		reportingStore:    b.reportingStore,
-		governanceStore:   b.governanceStore,
-		standards:         b.standards,
-		eventRouter:       router,
-		eventService:      &defaultEventService{}, // initialized below
-		publicMasterData:  publicMasterData,
-		ledgerApplication: ledgerApplication,
+		coreStore:        b.coreStore,
+		reportingStore:   b.reportingStore,
+		governanceStore:  b.governanceStore,
+		standards:        b.standards,
+		eventRouter:      router,
+		eventService:     &defaultEventService{}, // initialized below
+		publicMasterData: publicMasterData,
+		useCases:         useCases,
+		requirePrincipal: b.authorizer != nil,
 	}
 
 	inst.eventService = &defaultEventService{
-		store:             b.coreStore,
-		router:            router,
-		publicMasterData:  inst.publicMasterData,
-		ledgerApplication: inst.ledgerApplication,
+		store:            b.coreStore,
+		router:           router,
+		publicMasterData: inst.publicMasterData,
+		useCases:         inst.useCases,
+		requirePrincipal: inst.requirePrincipal,
 	}
 
 	return inst, nil
@@ -258,19 +289,21 @@ func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.
 }
 
 type engineInstance struct {
-	coreStore         legacy.CoreLedgerStore
-	reportingStore    storage.ReportingStore
-	governanceStore   storage.GovernanceStore
-	standards         []standards.StandardModule
-	eventRouter       *events.Router
-	eventService      *defaultEventService
-	publicMasterData  publicmasterdata.Store
-	ledgerApplication legacy.LedgerApplication
+	coreStore        legacy.CoreLedgerStore
+	reportingStore   storage.ReportingStore
+	governanceStore  storage.GovernanceStore
+	standards        []standards.StandardModule
+	eventRouter      *events.Router
+	eventService     *defaultEventService
+	publicMasterData publicmasterdata.Store
+	useCases         publicapplication.Service
+	requirePrincipal bool
 }
 
 func (e *engineInstance) Ledger() LedgerService {
 	return &defaultLedgerService{
-		application: e.ledgerApplication,
+		useCases:         e.useCases,
+		requirePrincipal: e.requirePrincipal,
 	}
 }
 
@@ -300,28 +333,59 @@ func (e *engineInstance) Close() error {
 }
 
 type defaultLedgerService struct {
-	application legacy.LedgerApplication
+	useCases         publicapplication.Service
+	requirePrincipal bool
 }
 
 func (s *defaultLedgerService) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
-	if s.application == nil {
+	if s.useCases == nil {
 		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	return s.application.PostEntry(ctx, entry)
+	if err := validatePostingEntry(entry); err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	command := createDraftCommand(entry, commandContext(ctx, entry.CompanyID, "sdk", "sdk", s.requirePrincipal))
+	created, err := createDraftUseCase(ctx, s.useCases, command, entry.ID)
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	posted, err := s.useCases.Post(ctx, publicapplication.PostEntryCommand{
+		Context:   command.Context,
+		CompanyID: entry.CompanyID,
+		EntryID:   created.Entry.ID,
+	})
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	return posted.Entry, nil
 }
 
 func (s *defaultLedgerService) GetEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	if s.application == nil {
+	if s.useCases == nil {
 		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	return s.application.GetEntry(ctx, companyID, entryID)
+	return s.useCases.GetEntry(ctx, publicapplication.GetEntryQuery{
+		Context:   commandContext(ctx, companyID, "sdk", "sdk", s.requirePrincipal),
+		CompanyID: companyID,
+		EntryID:   entryID,
+	})
 }
 
 func (s *defaultLedgerService) ReverseEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID, reason string) (ledger.JournalEntry, error) {
-	if s.application == nil {
+	if s.useCases == nil {
 		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
 	}
-	return s.application.ReverseEntry(ctx, companyID, entryID, reason)
+	reversed, err := s.useCases.Reverse(ctx, publicapplication.ReverseEntryCommand{
+		Context:       commandContext(ctx, companyID, "sdk", "sdk", s.requirePrincipal),
+		CompanyID:     companyID,
+		EntryID:       entryID,
+		Reason:        reason,
+		EffectiveDate: time.Now().UTC(),
+	})
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	return reversed.Entry, nil
 }
 
 type defaultReportingService struct {
@@ -375,33 +439,47 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 }
 
 type defaultEventService struct {
-	store             legacy.CoreLedgerStore
-	router            *events.Router
-	publicMasterData  publicmasterdata.Store
-	ledgerApplication legacy.LedgerApplication
-	mu                sync.Mutex
-	keys              map[string]ledger.JournalEntry
-	inflight          map[string]struct{}
+	store            legacy.CoreLedgerStore
+	router           *events.Router
+	publicMasterData publicmasterdata.Store
+	useCases         publicapplication.Service
+	requirePrincipal bool
+	mu               sync.Mutex
+	keys             map[string]ledger.JournalEntry
+	inflight         map[string]struct{}
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
-	if s.ledgerApplication == nil {
-		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+	if s.useCases == nil {
+		return ledger.JournalEntry{}, publicapplication.NewError(
+			publicapplication.ErrDependencyUnavailable, "event ingestion application is unavailable", types.ErrCapabilityNotImplemented,
+		)
 	}
 	if strings.TrimSpace(event.EventType) == "" {
-		return ledger.JournalEntry{}, errors.New("event type is required")
+		return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "event type is required", nil)
+	}
+	if uuid.UUID(event.CompanyID) == uuid.Nil {
+		return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "event company id is required", nil)
+	}
+	if strings.TrimSpace(event.EventID) == "" {
+		return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "event id is required", nil)
 	}
 	if event.JournalDraft == nil && (event.Amount.IsNegative() || event.Amount.IsZero()) {
-		return ledger.JournalEntry{}, errors.New("event amount must be positive")
+		return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "event amount must be positive", nil)
 	}
 	if len(event.Dimensions) > 0 {
-		return ledger.JournalEntry{}, ErrEventDimensionsUnsupported
+		return ledger.JournalEntry{}, wrapEventError(publicapplication.ErrValidation, ErrEventDimensionsUnsupported.Error(), ErrEventDimensionsUnsupported)
 	}
 	if event.JournalDraft != nil && len(event.Payload) > 0 {
-		return ledger.JournalEntry{}, ErrEventPayloadUnsupported
+		return ledger.JournalEntry{}, wrapEventError(publicapplication.ErrValidation, ErrEventPayloadUnsupported.Error(), ErrEventPayloadUnsupported)
+	}
+	if event.EffectiveDate.IsZero() && (event.JournalDraft == nil ||
+		(event.JournalDraft.EffectiveDate.IsZero() && event.JournalDraft.PostingDate.IsZero())) {
+		return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "event effective date is required", nil)
 	}
 
-	key := strings.TrimSpace(event.IdempotencyKey)
+	requestContext := eventCommandContext(ctx, event, s.requirePrincipal)
+	key := requestContext.IdempotencyKey
 	companyUUID := uuid.UUID(event.CompanyID)
 	idemStore, _ := s.store.(PublicEventIdempotencyStore)
 	mapStore, _ := s.store.(PublicEventMappingStore)
@@ -420,13 +498,24 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 			draft.CompanyID = event.CompanyID
 		}
 		if draft.CompanyID != event.CompanyID {
-			return ledger.JournalEntry{}, errors.New("journal draft company mismatch")
+			return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrValidation, "journal draft company mismatch", nil)
 		}
 		if strings.TrimSpace(draft.SourceModule) == "" {
 			draft.SourceModule = event.EventType
 		}
 		if strings.TrimSpace(draft.ReferenceID) == "" {
 			draft.ReferenceID = event.EventID
+		}
+		if draft.EffectiveDate.IsZero() {
+			draft.EffectiveDate = event.EffectiveDate
+		}
+		if draft.PostingDate.IsZero() {
+			draft.PostingDate = draft.EffectiveDate
+		}
+		if draft.Status != "" && draft.Status != ledger.EntryDraft {
+			return ledger.JournalEntry{}, publicapplication.NewError(
+				publicapplication.ErrValidation, "event journal draft must be in draft status", nil,
+			)
 		}
 		normalizeLedgerEntryIDs(&draft)
 		entry = draft
@@ -464,10 +553,19 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 		}
 		entry, err = s.constructEventEntry(ctx, ruleUsed, event)
 		if err != nil {
+			if errors.Is(err, ErrEventPayloadUnsupported) {
+				return ledger.JournalEntry{}, wrapEventError(publicapplication.ErrValidation, ErrEventPayloadUnsupported.Error(), ErrEventPayloadUnsupported)
+			}
+			if errors.Is(err, ErrExchangeRateUnavailable) {
+				return ledger.JournalEntry{}, wrapEventError(publicapplication.ErrDependencyUnavailable, ErrExchangeRateUnavailable.Error(), ErrExchangeRateUnavailable)
+			}
 			return ledger.JournalEntry{}, err
 		}
 	}
 	normalizeLedgerEntryIDs(&entry)
+	if err := validatePostingEntry(entry); err != nil {
+		return ledger.JournalEntry{}, err
+	}
 
 	fp, err := publicEventFingerprint(event, ruleUsed)
 	if err != nil {
@@ -488,7 +586,7 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 			if uuid.UUID(existing.Entry.ID) != uuid.Nil {
 				entry = existing.Entry
 			} else if existing.EntryID != uuid.UUID(entry.ID) {
-				recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID))
+				recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
 				if gErr != nil {
 					return ledger.JournalEntry{}, fmt.Errorf("load event idempotency retry entry: %w", gErr)
 				}
@@ -498,40 +596,53 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 		if !claimed {
 			if existing.Status == "processed" && existing.EntryID != uuid.Nil {
 				if existing.PayloadHash != "" && existing.PayloadHash != fp {
-					return ledger.JournalEntry{}, ErrIdempotencyKeyConflict
+					return ledger.JournalEntry{}, publicapplication.NewError(
+						publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
+					)
 				}
-				if uuid.UUID(existing.Entry.ID) != uuid.Nil || len(existing.Entry.Lines) > 0 {
-					return existing.Entry, nil
+				posted, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
+				if gErr != nil {
+					return ledger.JournalEntry{}, fmt.Errorf("load completed event idempotency result: %w", gErr)
 				}
-				// Fetch posted entry by id if snapshot missing.
-				if posted, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID)); gErr == nil {
-					return posted, nil
+				if posted.Status != ledger.EntryPosted {
+					return ledger.JournalEntry{}, publicapplication.NewError(
+						publicapplication.ErrConflict, "completed event entry is not posted", ErrIdempotencyInProgress,
+					)
 				}
-				return ledger.JournalEntry{}, ErrIdempotencyInProgress
+				return posted, nil
 			}
 			if existing.PayloadHash != "" && existing.PayloadHash != fp {
-				return ledger.JournalEntry{}, ErrIdempotencyKeyConflict
+				return ledger.JournalEntry{}, publicapplication.NewError(
+					publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
+				)
 			}
 			if existing.Status == "processing" {
 				recoveryEntry := existing.Entry
 				if uuid.UUID(recoveryEntry.ID) == uuid.Nil && existing.EntryID != uuid.Nil {
-					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID))
+					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
 					if gErr != nil {
 						return ledger.JournalEntry{}, errors.Join(ErrIdempotencyInProgress, gErr)
 					}
 					if recovered.Status != ledger.EntryPosted {
-						return ledger.JournalEntry{}, ErrIdempotencyInProgress
+						return ledger.JournalEntry{}, publicapplication.NewError(
+							publicapplication.ErrConflict, "event ingestion is still in progress", ErrIdempotencyInProgress,
+						)
 					}
 					recoveryEntry = recovered
 				}
 				if uuid.UUID(recoveryEntry.ID) == uuid.Nil {
-					return ledger.JournalEntry{}, ErrIdempotencyInProgress
+					return ledger.JournalEntry{}, publicapplication.NewError(
+						publicapplication.ErrConflict, "event ingestion is still in progress", ErrIdempotencyInProgress,
+					)
 				}
-				posted, pErr := s.postEventEntry(ctx, recoveryEntry)
+				posted, pErr := s.postEventEntry(ctx, recoveryEntry, requestContext)
 				if pErr != nil {
-					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(recoveryEntry.ID))
+					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(recoveryEntry.ID), requestContext)
 					if gErr != nil || recovered.Status != ledger.EntryPosted {
-						return ledger.JournalEntry{}, errors.Join(ErrIdempotencyInProgress, pErr, gErr)
+						return ledger.JournalEntry{}, publicapplication.NewError(
+							publicapplication.ErrConflict, "event ingestion is still in progress",
+							errors.Join(ErrIdempotencyInProgress, pErr, gErr),
+						)
 					}
 					posted = recovered
 				}
@@ -540,9 +651,9 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 				}
 				return posted, nil
 			}
-			return ledger.JournalEntry{}, errors.New("idempotency key is in an invalid state")
+			return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrConflict, "idempotency key is in an invalid state", nil)
 		}
-		posted, pErr := s.postEventEntry(ctx, entry)
+		posted, pErr := s.postEventEntry(ctx, entry, requestContext)
 		if pErr != nil {
 			if failErr := idemStore.FailPublicEventIngestion(ctx, companyUUID, key, pErr.Error()); failErr != nil {
 				return ledger.JournalEntry{}, errors.Join(pErr, fmt.Errorf("mark event idempotency record failed: %w", failErr))
@@ -581,7 +692,7 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 		}()
 	}
 
-	posted, err := s.postEventEntry(ctx, entry)
+	posted, err := s.postEventEntry(ctx, entry, requestContext)
 	if err != nil {
 		return ledger.JournalEntry{}, err
 	}
@@ -593,18 +704,161 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 	return posted, nil
 }
 
-func (s *defaultEventService) postEventEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
-	if s.ledgerApplication != nil {
-		return s.ledgerApplication.PostEntry(ctx, entry)
-	}
-	return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+func wrapEventError(kind error, message string, cause error) error {
+	return fmt.Errorf("%w: %w", publicapplication.NewError(kind, message, nil), cause)
 }
 
-func (s *defaultEventService) fetchPostedEntry(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
-	if s.ledgerApplication == nil {
-		return ledger.JournalEntry{}, types.ErrCapabilityNotImplemented
+func validatePostingEntry(entry ledger.JournalEntry) error {
+	switch {
+	case uuid.UUID(entry.CompanyID) == uuid.Nil:
+		return publicapplication.NewError(publicapplication.ErrValidation, "company id is required", nil)
+	case uuid.UUID(entry.JournalID) == uuid.Nil:
+		return publicapplication.NewError(publicapplication.ErrValidation, "journal id is required", nil)
+	case len(entry.Lines) < 2:
+		return publicapplication.NewError(publicapplication.ErrValidation, "at least two journal lines are required", nil)
+	case entry.EffectiveDate.IsZero() && entry.PostingDate.IsZero():
+		return publicapplication.NewError(publicapplication.ErrValidation, "effective or posting date is required", nil)
+	default:
+		return nil
 	}
-	return s.ledgerApplication.GetEntry(ctx, companyID, entryID)
+}
+
+func (s *defaultEventService) postEventEntry(
+	ctx context.Context,
+	entry ledger.JournalEntry,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	command := createDraftCommand(entry, requestContext)
+	created, err := createDraftUseCase(ctx, s.useCases, command, entry.ID)
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	posted, err := s.useCases.Post(ctx, publicapplication.PostEntryCommand{
+		Context:   command.Context,
+		CompanyID: entry.CompanyID,
+		EntryID:   created.Entry.ID,
+	})
+	if err != nil {
+		return ledger.JournalEntry{}, err
+	}
+	return posted.Entry, nil
+}
+
+func (s *defaultEventService) fetchPostedEntry(
+	ctx context.Context,
+	companyID types.CompanyID,
+	entryID types.JournalEntryID,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	return s.useCases.GetEntry(ctx, publicapplication.GetEntryQuery{
+		Context:   requestContext,
+		CompanyID: companyID,
+		EntryID:   entryID,
+	})
+}
+
+func eventCommandContext(ctx context.Context, event events.AccountingEvent, requirePrincipal bool) publicapplication.Context {
+	principal, hasPrincipal := publicapplication.PrincipalFromContext(ctx)
+	if !hasPrincipal && !requirePrincipal {
+		principal = publicapplication.Principal{
+			ActorID:    "event-ingestion",
+			CompanyIDs: []types.CompanyID{event.CompanyID},
+		}
+	}
+	metadata, _ := publicapplication.RequestMetadataFromContext(ctx)
+	correlationID := strings.TrimSpace(metadata.CorrelationID)
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(event.CorrelationID)
+	}
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(event.EventID)
+	}
+	idempotencyKey := strings.TrimSpace(event.IdempotencyKey)
+	if idempotencyKey == "" {
+		idempotencyKey = strings.TrimSpace(metadata.IdempotencyKey)
+	}
+	sourceSystem := strings.TrimSpace(metadata.SourceSystem)
+	if sourceSystem == "" {
+		sourceSystem = strings.TrimSpace(event.SourceSystem)
+	}
+	if sourceSystem == "" {
+		sourceSystem = "event"
+	}
+	return publicapplication.Context{
+		Principal:      principal,
+		CorrelationID:  correlationID,
+		IdempotencyKey: idempotencyKey,
+		SourceSystem:   sourceSystem,
+	}
+}
+
+func commandContext(ctx context.Context, companyID types.CompanyID, fallbackActor, sourceSystem string, requirePrincipal bool) publicapplication.Context {
+	metadata, _ := publicapplication.RequestMetadataFromContext(ctx)
+	if principal, ok := publicapplication.PrincipalFromContext(ctx); ok {
+		return publicapplication.Context{
+			Principal: principal, CorrelationID: metadata.CorrelationID,
+			IdempotencyKey: metadata.IdempotencyKey, SourceSystem: metadataSource(metadata, sourceSystem),
+		}
+	}
+	if requirePrincipal {
+		return publicapplication.Context{
+			CorrelationID: metadata.CorrelationID, IdempotencyKey: metadata.IdempotencyKey,
+			SourceSystem: metadataSource(metadata, sourceSystem),
+		}
+	}
+	return publicapplication.Context{
+		Principal: publicapplication.Principal{
+			ActorID:    fallbackActor,
+			CompanyIDs: []types.CompanyID{companyID},
+		},
+		CorrelationID: metadata.CorrelationID, IdempotencyKey: metadata.IdempotencyKey,
+		SourceSystem: metadataSource(metadata, sourceSystem),
+	}
+}
+
+func metadataSource(metadata publicapplication.RequestMetadata, fallback string) string {
+	if source := strings.TrimSpace(metadata.SourceSystem); source != "" {
+		return source
+	}
+	return fallback
+}
+
+func createDraftCommand(entry ledger.JournalEntry, requestContext publicapplication.Context) publicapplication.CreateDraftCommand {
+	exchangeRate := ""
+	if !entry.ExchangeRate.IsZero() {
+		exchangeRate = entry.ExchangeRate.String()
+	}
+	return publicapplication.CreateDraftCommand{
+		Context:             requestContext,
+		CompanyID:           entry.CompanyID,
+		JournalID:           entry.JournalID,
+		FiscalPeriodID:      entry.FiscalPeriodID,
+		EffectiveDate:       entry.EffectiveDate,
+		PostingDate:         entry.PostingDate,
+		Description:         entry.Description,
+		SourceModule:        entry.SourceModule,
+		ReferenceID:         entry.ReferenceID,
+		TransactionCurrency: entry.TransactionCurrency,
+		ExchangeRate:        exchangeRate,
+		Classification:      entry.Classification,
+		Lines:               entry.Lines,
+	}
+}
+
+func createDraftUseCase(
+	ctx context.Context,
+	service publicapplication.Service,
+	command publicapplication.CreateDraftCommand,
+	entryID types.JournalEntryID,
+) (publicapplication.EntryResult, error) {
+	if entryID != (types.JournalEntryID{}) {
+		if creator, ok := service.(interface {
+			CreateDraftWithID(context.Context, publicapplication.CreateDraftCommand, types.JournalEntryID) (publicapplication.EntryResult, error)
+		}); ok {
+			return creator.CreateDraftWithID(ctx, command, entryID)
+		}
+	}
+	return service.CreateDraft(ctx, command)
 }
 
 func resolveDefaultJournalIDForStore(ctx context.Context, masterData publicmasterdata.Store, companyID types.CompanyID, journalCode string) (types.JournalID, error) {
@@ -668,7 +922,9 @@ func (s *defaultEventService) constructEventEntry(ctx context.Context, rule even
 		return ledger.JournalEntry{}, err
 	}
 	if len(event.Payload) > 0 && !strings.Contains(rule.DescriptionTemplate, ".Payload") {
-		return ledger.JournalEntry{}, ErrEventPayloadUnsupported
+		return ledger.JournalEntry{}, publicapplication.NewError(
+			publicapplication.ErrValidation, ErrEventPayloadUnsupported.Error(), ErrEventPayloadUnsupported,
+		)
 	}
 	zeroAmt, err := types.NewMoney(amt.Amount().Sub(amt.Amount()), amt.Currency())
 	if err != nil {

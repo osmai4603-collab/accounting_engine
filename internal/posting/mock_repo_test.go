@@ -181,3 +181,70 @@ func (r *MockRepository) PostReversalAtomicContext(ctx context.Context, original
 	}
 	return r.PostReversalAtomic(original, reversal)
 }
+
+func (r *MockRepository) FindReversalByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (JournalEntry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.entries {
+		if entry.CompanyID == companyID && entry.Status == EntryPosted &&
+			entry.Classification == EntryClassReversing &&
+			entry.IdempotencyKey == key {
+			return cloneEntry(entry), true, nil
+		}
+	}
+	return JournalEntry{}, false, nil
+}
+
+func (r *MockRepository) CreateAndPostReversalAtomicContext(
+	ctx context.Context,
+	original, reversal JournalEntry,
+) (JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return JournalEntry{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reversal.IdempotencyKey != "" {
+		for _, existing := range r.entries {
+			if existing.CompanyID != reversal.CompanyID || existing.Status != EntryPosted ||
+				existing.IdempotencyKey != reversal.IdempotencyKey ||
+				existing.Classification != EntryClassReversing {
+				continue
+			}
+			if existing.IdempotencyPayloadHash != reversal.IdempotencyPayloadHash {
+				return JournalEntry{}, ErrIdempotencyConflict
+			}
+			return cloneEntry(existing), nil
+		}
+	}
+	currentOriginal, ok := r.entries[original.ID]
+	if !ok {
+		return JournalEntry{}, ErrEntryNotFound
+	}
+	if currentOriginal.Status != EntryPosted || currentOriginal.ReversedEntryID != nil {
+		return JournalEntry{}, ErrEntryAlreadyReversed
+	}
+	if currentOriginal.CompanyID != uuid.Nil {
+		if err := ValidateReversalLines(currentOriginal, reversal); err != nil {
+			return JournalEntry{}, err
+		}
+	}
+	r.sequences[reversal.JournalID]++
+	reversal.SequenceNumber = r.sequences[reversal.JournalID]
+	reversal.Status = EntryPosted
+	reversal = cloneEntry(reversal)
+	reversalID := reversal.ID
+	currentOriginal.ReversedEntryID = &reversalID
+	currentOriginal.Status = EntryReversed
+	currentOriginal.UpdatedAt = time.Now().UTC()
+	r.entries[reversal.ID] = reversal
+	r.entries[original.ID] = cloneEntry(currentOriginal)
+	return cloneEntry(reversal), nil
+}

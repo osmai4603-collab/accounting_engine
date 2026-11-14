@@ -53,10 +53,12 @@ func ClassifyError(err error) (apperrors.Code, apperrors.Category) {
 		return apperrors.CodeValidation, apperrors.Validation
 	case errors.Is(err, financialtypes.ErrMoveAlreadyPosted),
 		errors.Is(err, ErrEntryAlreadyReversed),
+		errors.Is(err, ErrIdempotencyConflict),
 		errors.Is(err, financialtypes.ErrCannotModifyPostedMove),
 		errors.Is(err, ErrEntryNotDraft):
 		return apperrors.CodeConflict, apperrors.Conflict
 	case errors.Is(err, ErrAtomicPostingOpenLineRequired),
+		errors.Is(err, ErrAtomicReversalRequired),
 		errors.Is(err, ErrUnsupportedMutationBackend):
 		return apperrors.CodeAtomicityViolation, apperrors.Invariant
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

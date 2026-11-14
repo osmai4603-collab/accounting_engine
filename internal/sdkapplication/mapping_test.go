@@ -30,6 +30,10 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	createdAt := now.Add(-24 * time.Hour)
+	updatedAt := now.Add(-time.Hour)
+	approvedAt := now.Add(-30 * time.Minute)
+	postedAt := now.Add(30 * time.Minute)
 
 	zero, err := types.NewMoney(decimal.Zero, "USD")
 	if err != nil {
@@ -52,9 +56,15 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 		TransactionCurrency: "USD",
 		ExchangeRate:        decimal.NewFromInt(1),
 		CreatedBy:           "creator",
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
 		ApprovedBy:          "approver",
+		ApprovedAt:          &approvedAt,
+		PostedBy:            "poster",
+		PostedAt:            &postedAt,
 		ApprovalFingerprint: "approval-hash",
 		ReversalOfID:        &reversalID,
+		ReversalReason:      "duplicate invoice",
 		Lines: []ledger.EntryLine{{
 			ID:                  lineID,
 			AccountID:           accountID,
@@ -96,11 +106,17 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	}
 	if got.TransactionCurrency != entry.TransactionCurrency || !got.ExchangeRate.Equal(entry.ExchangeRate) ||
 		got.CreatedBy != entry.CreatedBy || got.ApprovedBy != entry.ApprovedBy ||
-		got.ApprovalFingerprint != entry.ApprovalFingerprint {
+		got.PostedBy != entry.PostedBy || got.ApprovalFingerprint != entry.ApprovalFingerprint ||
+		!got.CreatedAt.Equal(entry.CreatedAt) || !got.UpdatedAt.Equal(entry.UpdatedAt) ||
+		got.ApprovedAt == nil || !got.ApprovedAt.Equal(*entry.ApprovedAt) ||
+		got.PostedAt == nil || !got.PostedAt.Equal(*entry.PostedAt) {
 		t.Fatalf("entry metadata changed during mapping: got %+v", got)
 	}
 	if got.ReversalOfID == nil || *got.ReversalOfID != reversalID {
 		t.Fatalf("reversal identifier changed during mapping: got %v", got.ReversalOfID)
+	}
+	if got.ReversalReason != entry.ReversalReason {
+		t.Fatalf("reversal reason changed during mapping: got %q", got.ReversalReason)
 	}
 	if len(got.Lines) != 1 {
 		t.Fatalf("expected one line, got %d", len(got.Lines))
@@ -126,7 +142,8 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 
 func TestFromInternalEntryUsesSequenceForEntryNumber(t *testing.T) {
 	entry, err := fromInternalEntry(posting.JournalEntry{
-		JournalID: uuid.New(), SequenceNumber: 42,
+		CompanyID: uuid.New(), ID: uuid.New(), JournalID: uuid.New(), PeriodID: uuid.New(),
+		SequenceNumber: 42,
 	})
 	if err != nil {
 		t.Fatal(err)

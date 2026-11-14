@@ -18,8 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 	"github.com/osmai4603-collab/accounting_engine/internal/ifrsautomation"
-	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/legacyengine"
 )
 
 func main() {
@@ -79,10 +78,11 @@ func runIFRS(args []string) error {
 	}
 	defer driver.Close()
 
-	masterData := masterdata.NewService(masterdata.NewRepositoryAdapter(driver))
-	postingEngine := posting.NewEngine(driver, masterData)
-	postingEngine.SetFinancialDimensionsEngine(posting.NewFinancialDimensionsEngine(driver))
-	runner, err := ifrsautomation.NewRunner(postingEngine, driver, "agy-cli")
+	accountingEngine, err := legacyengine.New(driver, legacyengine.DefaultConfig())
+	if err != nil {
+		return fmt.Errorf("compose accounting application: %w", err)
+	}
+	runner, err := ifrsautomation.NewRunner(accountingEngine.Posting, driver, "agy-cli")
 	if err != nil {
 		return fmt.Errorf("initialize ifrs automation runner: %w", err)
 	}

@@ -462,6 +462,165 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	return reversal, nil
 }
 
+func (d *Driver) FindReversalByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	var data []byte
+	found := false
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT entry FROM account_moves
+			 WHERE company_id=$1 AND status='posted' AND classification=$2 AND entry->>'idempotency_key'=$3`,
+			companyID, posting.EntryClassReversing, key,
+		).Scan(&data)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	if !found {
+		return posting.JournalEntry{}, false, nil
+	}
+	var entry posting.JournalEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+func (d *Driver) CreateAndPostReversalAtomicContext(
+	ctx context.Context,
+	original, reversal posting.JournalEntry,
+) (result posting.JournalEntry, resultErr error) {
+	if original.CompanyID == uuid.Nil || original.CompanyID != reversal.CompanyID ||
+		reversal.OriginalEntryID == nil || *reversal.OriginalEntryID != original.ID {
+		return posting.JournalEntry{}, posting.ErrInvalidReversal
+	}
+	tx, err := d.beginCompanyTx(ctx, reversal.CompanyID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("rollback reversal transaction: %w", rollbackErr))
+		}
+	}()
+
+	if reversal.IdempotencyKey != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))`,
+			reversal.CompanyID.String(), reversal.IdempotencyKey); err != nil {
+			return posting.JournalEntry{}, err
+		}
+		var existingData []byte
+		err := tx.QueryRow(ctx,
+			`SELECT entry FROM account_moves
+			 WHERE company_id=$1 AND status='posted' AND classification=$2 AND entry->>'idempotency_key'=$3`,
+			reversal.CompanyID, posting.EntryClassReversing, reversal.IdempotencyKey,
+		).Scan(&existingData)
+		if err == nil {
+			var existing posting.JournalEntry
+			if err := json.Unmarshal(existingData, &existing); err != nil {
+				return posting.JournalEntry{}, err
+			}
+			if existing.IdempotencyPayloadHash != reversal.IdempotencyPayloadHash {
+				return posting.JournalEntry{}, posting.ErrIdempotencyConflict
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return posting.JournalEntry{}, err
+			}
+			return existing, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return posting.JournalEntry{}, err
+		}
+	}
+
+	var originalData []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT entry FROM account_moves WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		original.CompanyID, original.ID).Scan(&originalData); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return posting.JournalEntry{}, posting.ErrEntryNotFound
+		}
+		return posting.JournalEntry{}, err
+	}
+	var currentOriginal posting.JournalEntry
+	if err := json.Unmarshal(originalData, &currentOriginal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if currentOriginal.Status != posting.EntryPosted || currentOriginal.ReversedEntryID != nil {
+		return posting.JournalEntry{}, posting.ErrEntryAlreadyReversed
+	}
+	if err := posting.ValidateReversalLines(currentOriginal, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	reversal.Classification = posting.EntryClassReversing
+	date := reversal.EntryDate
+	if date.IsZero() {
+		date = reversal.Date
+	}
+	if reversal.PeriodID == uuid.Nil {
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM fiscal_periods
+			 WHERE company_id=$1 AND start_date <= $2 AND end_date >= $2 AND period_type=$3
+			 ORDER BY period_number ASC LIMIT 1`,
+			reversal.CompanyID, date, masterdata.FiscalPeriodTypeNormal,
+		).Scan(&reversal.PeriodID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return posting.JournalEntry{}, masterdata.ErrFiscalPeriodNotFound
+			}
+			return posting.JournalEntry{}, err
+		}
+	}
+	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	var sequence int64
+	if err := tx.QueryRow(ctx,
+		`SELECT current_sequence FROM journals WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		reversal.CompanyID, reversal.JournalID).Scan(&sequence); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	sequence++
+	if _, err := tx.Exec(ctx,
+		`UPDATE journals SET current_sequence=$3 WHERE company_id=$1 AND id=$2`,
+		reversal.CompanyID, reversal.JournalID, sequence); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	reversal.SequenceNumber = sequence
+	draft := reversal
+	draft.Status = posting.EntryDraft
+	draft.PostedBy = ""
+	draft.PostedAt = nil
+	if err := d.saveEntryTx(ctx, tx, draft); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := d.saveEntryTx(ctx, tx, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	reversalID := reversal.ID
+	currentOriginal.ReversedEntryID = &reversalID
+	currentOriginal.Status = posting.EntryReversed
+	currentOriginal.UpdatedAt = time.Now().UTC()
+	if err := d.saveEntryTx(ctx, tx, currentOriginal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return reversal, nil
+}
+
 func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.JournalEntry) error {
 	if entry.ID == uuid.Nil || entry.CompanyID == uuid.Nil || entry.JournalID == uuid.Nil {
 		return posting.ErrInvalidEntry

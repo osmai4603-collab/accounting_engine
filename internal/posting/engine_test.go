@@ -1,6 +1,7 @@
 package posting
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -364,6 +365,151 @@ func TestReversal(t *testing.T) {
 		*reversal.OriginalEntryID != entry.ID {
 		t.Fatalf("invalid reversal: %#v", reversal)
 	}
+	if reversal.CreatedBy != "checker" || reversal.PostedBy != "checker" || reversal.PostedAt == nil {
+		t.Fatalf("reversal actor/timestamp not persisted: %#v", reversal)
+	}
+}
+
+func TestReversalIdempotencyPersistsReasonAndActor(t *testing.T) {
+	repo := NewMockRepository()
+	engine := NewEngine(repo, nil)
+	entry := balancedEntry(t, "maker")
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(entry.CompanyID, entry.ID, "poster"); err != nil {
+		t.Fatal(err)
+	}
+	request := ReversalRequest{
+		ActorID: "reverser", Reason: "duplicate invoice",
+		EffectiveDate: utcDate(t, 2026, 2, 1), Reference: "case-42",
+		SourceSystem: "billing", IdempotencyKey: "reverse-42",
+	}
+	first, replay, err := engine.ReverseWithRequestResultContext(
+		context.Background(), entry.CompanyID, entry.ID, request, request.ActorID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay {
+		t.Fatal("first request was marked as a replay")
+	}
+	stored, err := repo.GetEntryByID(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CreatedBy != request.ActorID || stored.PostedBy != request.ActorID ||
+		stored.ReversalReason != request.Reason || stored.IdempotencyKey != request.IdempotencyKey ||
+		stored.ReversalReference != request.Reference || stored.SourceModule != request.SourceSystem ||
+		stored.PostedAt == nil {
+		t.Fatalf("reversal metadata not persisted: %#v", stored)
+	}
+
+	second, replay, err := engine.ReverseWithRequestResultContext(
+		context.Background(), entry.CompanyID, entry.ID, request, request.ActorID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay || second.ID != first.ID {
+		t.Fatalf("same request replay = (%s, %v), want original %s and replay=true", second.ID, replay, first.ID)
+	}
+	request.Reason = "different reason"
+	if _, _, err := engine.ReverseWithRequestResultContext(
+		context.Background(), entry.CompanyID, entry.ID, request, request.ActorID,
+	); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("same key with different payload error = %v, want conflict", err)
+	}
+}
+
+func TestConcurrentReversalsCreateOnlyOneActiveReversal(t *testing.T) {
+	repo := NewMockRepository()
+	engine := NewEngine(repo, nil)
+	entry := balancedEntry(t, "maker")
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(entry.CompanyID, entry.ID, "poster"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, key := range []string{"concurrent-a", "concurrent-b"} {
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			<-start
+			_, err := engine.ReverseWithRequestContext(context.Background(), entry.CompanyID, entry.ID,
+				ReversalRequest{ActorID: "reverser", Reason: "correction", IdempotencyKey: key}, "reverser")
+			errs <- err
+		}(key)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	successes, rejected := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrEntryAlreadyReversed):
+			rejected++
+		default:
+			t.Fatalf("unexpected concurrent reversal error: %v", err)
+		}
+	}
+	if successes != 1 || rejected != 1 {
+		t.Fatalf("concurrent reversal outcomes = %d success, %d rejected; want exactly one each", successes, rejected)
+	}
+	count := 0
+	repo.mu.Lock()
+	for _, stored := range repo.entries {
+		if stored.OriginalEntryID != nil && *stored.OriginalEntryID == entry.ID {
+			count++
+		}
+	}
+	repo.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("created %d reversals for original, want one", count)
+	}
+}
+
+type failingReversalRepository struct {
+	*MockRepository
+	err error
+}
+
+func (r *failingReversalRepository) CreateAndPostReversalAtomicContext(
+	context.Context,
+	JournalEntry,
+	JournalEntry,
+) (JournalEntry, error) {
+	return JournalEntry{}, r.err
+}
+
+func TestReversalRepositoryFailureLeavesNoDraftOrOriginalMutation(t *testing.T) {
+	repo := &failingReversalRepository{MockRepository: NewMockRepository(), err: errors.New("injected atomic write failure")}
+	engine := NewEngine(repo, nil)
+	entry := balancedEntry(t, "maker")
+	if err := engine.CreateDraft(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Post(entry.CompanyID, entry.ID, "poster"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.ReverseWithReasonContext(
+		context.Background(), entry.CompanyID, entry.ID, "reverser", "reverser", "correction", utcDate(t, 2026, 2, 1),
+	); !errors.Is(err, repo.err) {
+		t.Fatalf("reverse error = %v, want injected failure", err)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.entries) != 1 || repo.entries[entry.ID].Status != EntryPosted ||
+		repo.entries[entry.ID].ReversedEntryID != nil {
+		t.Fatalf("failed reversal left committed state: %#v", repo.entries)
+	}
 }
 
 func TestMultiCurrencyEntryWithFunctionalBalance(t *testing.T) {
@@ -457,12 +603,8 @@ func TestReversalWithMakerCheckerThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reversal should succeed because Reverse creates the entry with system-reversal as creator, posted by checker
-	reversal, err := engine.Reverse(entry.CompanyID, entry.ID, "checker")
-	if err != nil {
-		t.Fatalf("reversal failed under maker-checker: %v", err)
-	}
-	if reversal.Status != EntryPosted {
-		t.Fatalf("expected posted reversal, got %s", reversal.Status)
+	// A reversal cannot disguise the verified actor to bypass maker-checker.
+	if _, err := engine.Reverse(entry.CompanyID, entry.ID, "checker"); !errors.Is(err, financialtypes.ErrMakerCheckerViolation) {
+		t.Fatalf("reversal error = %v, want maker-checker violation", err)
 	}
 }

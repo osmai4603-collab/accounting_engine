@@ -27,6 +27,30 @@ type mockCoreStore struct {
 	postCalls int
 }
 
+type legacyOnlyCoreStore struct {
+	*mockCoreStore
+	providerCalls int
+}
+
+func (s *legacyOnlyCoreStore) NewLedgerApplication() (legacy.LedgerApplication, error) {
+	s.providerCalls++
+	return legacyOnlyLedgerApplication{}, nil
+}
+
+type legacyOnlyLedgerApplication struct{}
+
+func (legacyOnlyLedgerApplication) PostEntry(context.Context, ledger.JournalEntry) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+
+func (legacyOnlyLedgerApplication) GetEntry(context.Context, types.CompanyID, types.JournalEntryID) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+
+func (legacyOnlyLedgerApplication) ReverseEntry(context.Context, types.CompanyID, types.JournalEntryID, string) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+
 type mockPostingCoreStore struct {
 	*mockCoreStore
 	posting.BulkRepository
@@ -103,6 +127,17 @@ func TestBuilder_RejectsStoreWithoutPostingCapabilities(t *testing.T) {
 	_, err := NewBuilder(WithCoreStorage(&mockCoreStore{})).Build(context.Background())
 	if !errors.Is(err, types.ErrCapabilityNotImplemented) {
 		t.Fatalf("Build error = %v, want %v", err, types.ErrCapabilityNotImplemented)
+	}
+}
+
+func TestBuilderRejectsLegacyApplicationThatBypassesUseCases(t *testing.T) {
+	store := &legacyOnlyCoreStore{mockCoreStore: &mockCoreStore{}}
+	_, err := NewBuilder(WithCoreStorage(store)).Build(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "application layer") {
+		t.Fatalf("Build error = %v, want unsupported application-layer error", err)
+	}
+	if store.providerCalls != 0 {
+		t.Fatalf("legacy application provider was called %d times", store.providerCalls)
 	}
 }
 

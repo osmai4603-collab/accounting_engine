@@ -317,6 +317,102 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	return d.PostReversalAtomic(original, reversal)
 }
 
+func (d *Driver) FindReversalByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, entry := range d.entries {
+		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted &&
+			entry.Classification == posting.EntryClassReversing &&
+			entry.IdempotencyKey == key {
+			return cloneEntry(entry), true, nil
+		}
+	}
+	return posting.JournalEntry{}, false, nil
+}
+
+func (d *Driver) CreateAndPostReversalAtomicContext(
+	ctx context.Context,
+	original, reversal posting.JournalEntry,
+) (posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if original.CompanyID == uuid.Nil || original.CompanyID != reversal.CompanyID ||
+		reversal.OriginalEntryID == nil || *reversal.OriginalEntryID != original.ID {
+		return posting.JournalEntry{}, posting.ErrInvalidReversal
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if reversal.IdempotencyKey != "" {
+		for _, existing := range d.entries {
+			if existing.CompanyID != reversal.CompanyID || existing.Status != posting.EntryPosted ||
+				existing.Classification != posting.EntryClassReversing ||
+				existing.IdempotencyKey != reversal.IdempotencyKey {
+				continue
+			}
+			if existing.IdempotencyPayloadHash != reversal.IdempotencyPayloadHash {
+				return posting.JournalEntry{}, posting.ErrIdempotencyConflict
+			}
+			return cloneEntry(existing), nil
+		}
+	}
+	currentOriginal, ok := d.entries[original.ID]
+	if !ok || currentOriginal.CompanyID != original.CompanyID {
+		return posting.JournalEntry{}, posting.ErrEntryNotFound
+	}
+	if currentOriginal.Status != posting.EntryPosted || currentOriginal.ReversedEntryID != nil {
+		return posting.JournalEntry{}, posting.ErrEntryAlreadyReversed
+	}
+	if _, exists := d.entries[reversal.ID]; exists {
+		return posting.JournalEntry{}, posting.ErrInvalidReversal
+	}
+	if reversal.PeriodID == uuid.Nil && reversal.CompanyID != uuid.Nil {
+		date := reversal.EntryDate
+		if date.IsZero() {
+			date = reversal.Date
+		}
+		for _, period := range d.periods {
+			if period.CompanyID == reversal.CompanyID &&
+				period.Type == masterdata.FiscalPeriodTypeNormal && period.Contains(date) {
+				reversal.PeriodID = period.ID
+				break
+			}
+		}
+		if reversal.PeriodID == uuid.Nil {
+			return posting.JournalEntry{}, masterdata.ErrFiscalPeriodNotFound
+		}
+	}
+	reversal.Classification = posting.EntryClassReversing
+	reversal.Status = posting.EntryPosted
+	if err := posting.ValidateReversalLines(currentOriginal, reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := reversal.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := d.updateAccountBalancesLocked(reversal); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	key := sequenceKey(reversal.CompanyID, reversal.JournalID)
+	d.journalSeq[key]++
+	reversal.SequenceNumber = d.journalSeq[key]
+	reversal = cloneEntry(reversal)
+	reversalID := reversal.ID
+	currentOriginal.ReversedEntryID = &reversalID
+	currentOriginal.Status = posting.EntryReversed
+	currentOriginal.UpdatedAt = time.Now().UTC()
+	d.entries[reversal.ID] = reversal
+	d.entries[original.ID] = cloneEntry(currentOriginal)
+	return cloneEntry(reversal), nil
+}
+
 func (d *Driver) SaveOpenLineFromAttachment(ctx context.Context, attachment posting.OpenLineAttachment, entry posting.JournalEntry) error {
 	account, ok := d.accounts[attachment.ControlAccountID]
 	if !ok || account.CompanyID != entry.CompanyID {

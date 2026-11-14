@@ -120,6 +120,42 @@ func (r *Repository) PostReversalAtomicContext(ctx context.Context, original, re
 	return ToInternalEntry(result, EntryOptions{})
 }
 
+type atomicReversalPostingPort interface {
+	FindReversalByIdempotencyKeyContext(
+		context.Context,
+		uuid.UUID,
+		string,
+	) (posting.JournalEntry, bool, error)
+	CreateAndPostReversalAtomicContext(
+		context.Context,
+		posting.JournalEntry,
+		posting.JournalEntry,
+	) (posting.JournalEntry, error)
+}
+
+func (r *Repository) FindReversalByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	port, ok := r.Ports.Posting.(atomicReversalPostingPort)
+	if !ok {
+		return posting.JournalEntry{}, false, posting.ErrAtomicReversalRequired
+	}
+	return port.FindReversalByIdempotencyKeyContext(ctx, companyID, key)
+}
+
+func (r *Repository) CreateAndPostReversalAtomicContext(
+	ctx context.Context,
+	original, reversal posting.JournalEntry,
+) (posting.JournalEntry, error) {
+	port, ok := r.Ports.Posting.(atomicReversalPostingPort)
+	if !ok {
+		return posting.JournalEntry{}, posting.ErrAtomicReversalRequired
+	}
+	return port.CreateAndPostReversalAtomicContext(ctx, original, reversal)
+}
+
 // Ensure the adapter never silently accepts a legacy core store contract.
 var _ = ledger.EntryPosted
 

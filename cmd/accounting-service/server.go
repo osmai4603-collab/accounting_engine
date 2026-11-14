@@ -19,6 +19,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 
 	"github.com/google/uuid"
 )
@@ -147,11 +148,12 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now()
 	s.metrics.IncPostingAttempts()
-	posted, err := s.engine.Ledger().PostEntry(r.Context(), entry)
+	ctx := publicapplication.WithRequestMetadata(r.Context(), requestMetadataFromHTTP(r, "http"))
+	posted, err := s.engine.Ledger().PostEntry(ctx, entry)
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
 		s.metrics.IncPostingFailure("service")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeApplicationError(w, err)
 		return
 	}
 	s.metrics.IncPostedEntries()
@@ -197,17 +199,59 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now()
 	s.metrics.IncPostingAttempts()
-	entry, err := s.engine.Events().ProcessEvent(r.Context(), ev)
+	ctx := publicapplication.WithRequestMetadata(r.Context(), requestMetadataFromHTTP(r, "accounting-service"))
+	entry, err := s.engine.Events().ProcessEvent(ctx, ev)
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
 		s.metrics.IncPostingFailure("service")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeApplicationError(w, err)
 		return
 	}
 	s.metrics.IncPostedEntries()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(entry)
+}
+
+func requestMetadataFromHTTP(r *http.Request, fallbackSource string) publicapplication.RequestMetadata {
+	return publicapplication.RequestMetadata{
+		CorrelationID:  r.Header.Get("X-Correlation-ID"),
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		SourceSystem:   headerOrDefault(r.Header.Get("X-Source-System"), fallbackSource),
+	}
+}
+
+func headerOrDefault(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func writeApplicationError(w http.ResponseWriter, err error) {
+	statusCode := http.StatusInternalServerError
+	message := "internal error"
+	var classified interface {
+		PublicMessage() string
+	}
+	if errors.As(err, &classified) {
+		message = classified.PublicMessage()
+		switch {
+		case errors.Is(err, publicapplication.ErrValidation):
+			statusCode = http.StatusBadRequest
+		case errors.Is(err, publicapplication.ErrUnauthorized):
+			statusCode = http.StatusUnauthorized
+		case errors.Is(err, publicapplication.ErrForbidden):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, publicapplication.ErrNotFound):
+			statusCode = http.StatusNotFound
+		case errors.Is(err, publicapplication.ErrConflict), errors.Is(err, publicapplication.ErrDuplicateRequest):
+			statusCode = http.StatusConflict
+		case errors.Is(err, publicapplication.ErrDependencyUnavailable):
+			statusCode = http.StatusServiceUnavailable
+		}
+	}
+	http.Error(w, message, statusCode)
 }
 
 func decodeRequestJSON(w http.ResponseWriter, r *http.Request, destination any) error {

@@ -19,6 +19,7 @@ var (
 	ErrEntryNotPosted             = errors.New("journal entry is not posted")
 	ErrEntryAlreadyReversed       = errors.New("journal entry already reversed")
 	ErrInvalidReversal            = errors.New("invalid reversal entry")
+	ErrIdempotencyConflict        = errors.New("idempotency key was reused with a different reversal request")
 	ErrMissingTransactionCurrency = errors.New("transaction currency is required")
 	ErrMissingFunctionalCurrency  = errors.New("functional currency is required")
 	ErrInvalidExchangeRate        = errors.New("exchange rate must be strictly positive")
@@ -147,36 +148,39 @@ func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) 
 }
 
 type JournalEntry struct {
-	CompanyID            uuid.UUID
-	ID                   uuid.UUID
-	SequenceNumber       int64
-	LegalNumber          string
-	JournalID            uuid.UUID
-	PeriodID             uuid.UUID
-	EntryDate            time.Time
-	Date                 time.Time
-	Status               EntryStatus
-	SourceModule         string
-	DocumentReference    string
-	Reference            string
-	TransactionCurrency  string
-	ExchangeRate         decimal.Decimal
-	ApprovalFingerprint  string
-	CreatedBy            string
-	ApprovedBy           string
-	ApprovedAt           *time.Time
-	PostedBy             string
-	PostedAt             *time.Time
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	ReversedEntryID      *uuid.UUID
-	OriginalEntryID      *uuid.UUID
-	SourceEventID        *uuid.UUID
-	TargetPeriodNumber   int
-	AdjustmentAuthorized bool
-	Classification       EntryClassification
-	ReversalReason       string
-	Lines                []JournalEntryLine
+	CompanyID              uuid.UUID
+	ID                     uuid.UUID
+	SequenceNumber         int64
+	LegalNumber            string
+	JournalID              uuid.UUID
+	PeriodID               uuid.UUID
+	EntryDate              time.Time
+	Date                   time.Time
+	Status                 EntryStatus
+	SourceModule           string
+	DocumentReference      string
+	Reference              string
+	TransactionCurrency    string
+	ExchangeRate           decimal.Decimal
+	ApprovalFingerprint    string
+	CreatedBy              string
+	ApprovedBy             string
+	ApprovedAt             *time.Time
+	PostedBy               string
+	PostedAt               *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ReversedEntryID        *uuid.UUID
+	OriginalEntryID        *uuid.UUID
+	SourceEventID          *uuid.UUID
+	TargetPeriodNumber     int
+	AdjustmentAuthorized   bool
+	Classification         EntryClassification
+	ReversalReason         string
+	ReversalReference      string `json:"reversal_reference,omitempty"`
+	IdempotencyKey         string `json:"idempotency_key,omitempty"`
+	IdempotencyPayloadHash string `json:"idempotency_payload_hash,omitempty"`
+	Lines                  []JournalEntryLine
 }
 
 type AccountPeriodBalance struct {

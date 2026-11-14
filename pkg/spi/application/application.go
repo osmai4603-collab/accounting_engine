@@ -11,6 +11,8 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 )
 
+var ErrCapabilityNotImplemented = types.ErrCapabilityNotImplemented
+
 // Principal is a verified caller identity supplied by the host application or
 // transport. The engine never trusts a bare CompanyID from request payloads.
 type Principal struct {
@@ -56,6 +58,34 @@ type Context struct {
 	CorrelationID  string
 	IdempotencyKey string
 	SourceSystem   string
+}
+
+type principalContextKey struct{}
+type requestMetadataContextKey struct{}
+
+// RequestMetadata carries transport-neutral tracing and source information.
+type RequestMetadata struct {
+	CorrelationID  string
+	IdempotencyKey string
+	SourceSystem   string
+}
+
+func WithPrincipal(ctx context.Context, principal Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, principal)
+}
+
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
+	return principal, ok
+}
+
+func WithRequestMetadata(ctx context.Context, metadata RequestMetadata) context.Context {
+	return context.WithValue(ctx, requestMetadataContextKey{}, metadata)
+}
+
+func RequestMetadataFromContext(ctx context.Context) (RequestMetadata, bool) {
+	metadata, ok := ctx.Value(requestMetadataContextKey{}).(RequestMetadata)
+	return metadata, ok
 }
 
 // CreateDraftCommand creates a draft entry after validating master data and

@@ -29,6 +29,22 @@ type ledgerApplication struct {
 }
 
 func New(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) {
+	return NewApplicationFromCore(core)
+}
+
+func NewApplicationFromCore(core legacy.CoreLedgerStore) (*Application, error) {
+	return NewApplicationFromCoreWithPostingConfig(core, PostingConfig{})
+}
+
+func NewApplicationFromCoreWithPostingConfig(core legacy.CoreLedgerStore, config PostingConfig) (*Application, error) {
+	return NewApplicationFromCoreWithPostingCapabilities(core, config, storage.PostingCapabilities{})
+}
+
+func NewApplicationFromCoreWithPostingCapabilities(
+	core legacy.CoreLedgerStore,
+	config PostingConfig,
+	publicCapabilities storage.PostingCapabilities,
+) (*Application, error) {
 	postingRepository, ok := core.(posting.Repository)
 	if !ok {
 		return nil, types.ErrCapabilityNotImplemented
@@ -42,7 +58,16 @@ func New(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) {
 	if provider, ok := core.(interface{ MasterDataStore() publicmasterdata.Store }); ok {
 		publicMasterData = provider.MasterDataStore()
 	}
-	return &ledgerApplication{engine: posting.NewEngine(postingRepository, masterService), publicMasterData: publicMasterData}, nil
+	capabilities := capabilitiesFromCore(core, config)
+	capabilities = mergeCapabilities(capabilities, capabilitiesFromPublic(publicCapabilities))
+	engine, err := createPostingEngine(postingRepository, masterService, config, capabilities)
+	if err != nil {
+		return nil, err
+	}
+	return &Application{
+		engine:           engine,
+		publicMasterData: publicMasterData,
+	}, nil
 }
 
 // NewLegacy builds the legacy adapter surface from a core store.
@@ -57,10 +82,31 @@ type Application struct {
 
 // NewApplicationFromPorts builds the application from public storage ports.
 func NewApplicationFromPorts(ports storage.Ports) (*Application, error) {
+	return NewApplicationFromPortsWithPostingConfig(ports, PostingConfig{})
+}
+
+func NewApplicationFromPortsWithPostingConfig(ports storage.Ports, config PostingConfig) (*Application, error) {
+	return NewApplicationFromPortsWithPostingCapabilities(ports, config, storage.PostingCapabilities{})
+}
+
+func NewApplicationFromPortsWithPostingCapabilities(
+	ports storage.Ports,
+	config PostingConfig,
+	publicCapabilities storage.PostingCapabilities,
+) (*Application, error) {
 	if err := ports.Validate(); err != nil {
 		return nil, err
 	}
-	return &Application{engine: posting.NewEngine(&portbridge.Repository{Ports: ports}, portbridge.NewMasterDataService(ports))}, nil
+	capabilities := posting.Capabilities{}
+	if supplied, ok := ports.Private[PostingCapabilitiesExtension].(posting.Capabilities); ok {
+		capabilities = supplied
+	}
+	capabilities = mergeCapabilities(capabilities, capabilitiesFromPublic(publicCapabilities))
+	engine, err := createPostingEngine(&portbridge.Repository{Ports: ports}, portbridge.NewMasterDataService(ports), config, capabilities)
+	if err != nil {
+		return nil, err
+	}
+	return &Application{engine: engine}, nil
 }
 
 // NewApplicationWithEngine wraps an already configured engine. It is used only

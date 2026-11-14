@@ -24,6 +24,8 @@ type Driver interface {
 	GetEntryByIDForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (posting.JournalEntry, error)
 	PostAtomicContext(context.Context, posting.JournalEntry) error
 	PostReversalAtomicContext(context.Context, posting.JournalEntry, posting.JournalEntry) (posting.JournalEntry, error)
+	FindReversalByIdempotencyKeyContext(context.Context, uuid.UUID, string) (posting.JournalEntry, bool, error)
+	CreateAndPostReversalAtomicContext(context.Context, posting.JournalEntry, posting.JournalEntry) (posting.JournalEntry, error)
 	GetNextSequenceForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (int64, error)
 
 	GetCompanyByIDContext(context.Context, uuid.UUID) (masterdata.Company, error)
@@ -101,6 +103,21 @@ func (p *postingPort) CommitPosting(ctx context.Context, commit storage.PostingC
 	default:
 		return ledger.JournalEntry{}, fmt.Errorf("portbridge: unsupported posting operation %q", commit.Operation)
 	}
+}
+
+func (p *postingPort) FindReversalByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	return p.driver.FindReversalByIdempotencyKeyContext(ctx, companyID, key)
+}
+
+func (p *postingPort) CreateAndPostReversalAtomicContext(
+	ctx context.Context,
+	original, reversal posting.JournalEntry,
+) (posting.JournalEntry, error) {
+	return p.driver.CreateAndPostReversalAtomicContext(ctx, original, reversal)
 }
 
 type sequencePort struct{ driver Driver }

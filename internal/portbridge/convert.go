@@ -1,14 +1,13 @@
 // Package portbridge translates between the stable public DTOs and the
 // internal domain models. All conversions are explicit: no money, identifier or
-// timestamp error is swallowed and no synthetic journal/entry identity is
-// fabricated to compensate for missing data.
+// timestamp error is swallowed. Only explicit draft creation may generate
+// entry and line IDs; missing journal IDs are never fabricated.
 package portbridge
 
 import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +17,6 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
-	"github.com/shopspring/decimal"
 )
 
 var (
@@ -30,16 +28,19 @@ var (
 	ErrMissingAccountID      = errors.New("account id is required")
 	ErrMissingCreatedAt      = errors.New("created timestamp is required")
 	ErrMissingEffectiveDate  = errors.New("effective date is required")
+	ErrMissingClock          = errors.New("clock is required to generate created timestamp")
+	ErrMissingMoneyCurrency  = errors.New("money currency is required")
 	ErrInvalidEntryStatus    = errors.New("invalid journal entry status")
 	ErrInvalidClassification = errors.New("invalid journal entry classification")
 )
 
 // EntryOptions controls identity assignment during conversion.
 type EntryOptions struct {
-	// GenerateMissingIDs assigns server-side IDs for a new draft. It must be
-	// false when converting an existing entry for posting or reading.
+	// GenerateMissingIDs assigns entry and line IDs for a new draft. A missing
+	// fiscal period remains missing; this must be false for existing entries.
 	GenerateMissingIDs bool
-	// Now supplies the clock used only when GenerateMissingIDs is true.
+	// Now supplies the clock used to assign a missing created timestamp in
+	// draft-creation mode.
 	Now func() time.Time
 }
 
@@ -59,10 +60,6 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 	if e.EffectiveDate.IsZero() {
 		return posting.JournalEntry{}, ErrMissingEffectiveDate
 	}
-	postingDate := e.PostingDate
-	if postingDate.IsZero() {
-		postingDate = e.EffectiveDate
-	}
 	entryID := uuid.UUID(e.ID)
 	if entryID == uuid.Nil {
 		if !opts.GenerateMissingIDs {
@@ -75,11 +72,10 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 		if !opts.GenerateMissingIDs {
 			return posting.JournalEntry{}, ErrMissingCreatedAt
 		}
+		if opts.Now == nil {
+			return posting.JournalEntry{}, ErrMissingClock
+		}
 		createdAt = opts.Now().UTC()
-	}
-	updatedAt := e.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = createdAt
 	}
 
 	status := posting.EntryStatus(e.Status)
@@ -124,34 +120,7 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 		if err != nil {
 			return posting.JournalEntry{}, fmt.Errorf("line %d transaction amount: %w", i, err)
 		}
-		currency := strings.TrimSpace(l.TransactionCurrency)
-		if currency == "" {
-			currency = ta.Currency()
-		}
-		if currency == "" {
-			currency = fd.Currency()
-		}
-		if currency == "" {
-			currency = fc.Currency()
-		}
-		if ta.Currency() == "" && currency != "" {
-			ta, err = financialtypes.NewMoney(decimal.Zero, currency)
-			if err != nil {
-				return posting.JournalEntry{}, err
-			}
-		}
-		if fd.Currency() == "" && currency != "" {
-			fd, err = financialtypes.NewMoney(decimal.Zero, currency)
-			if err != nil {
-				return posting.JournalEntry{}, err
-			}
-		}
-		if fc.Currency() == "" && currency != "" {
-			fc, err = financialtypes.NewMoney(decimal.Zero, currency)
-			if err != nil {
-				return posting.JournalEntry{}, err
-			}
-		}
+		currency := l.TransactionCurrency
 
 		lines[i] = posting.JournalEntryLine{
 			CompanyID:           uuid.UUID(e.CompanyID),
@@ -178,7 +147,7 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 		JournalID:           uuid.UUID(e.JournalID),
 		PeriodID:            uuid.UUID(e.FiscalPeriodID),
 		EntryDate:           e.EffectiveDate.UTC(),
-		Date:                postingDate.UTC(),
+		Date:                e.PostingDate.UTC(),
 		Status:              status,
 		SourceModule:        e.SourceModule,
 		DocumentReference:   e.ReferenceID,
@@ -192,7 +161,7 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 		PostedBy:            e.PostedBy,
 		PostedAt:            e.PostedAt,
 		CreatedAt:           createdAt,
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           e.UpdatedAt,
 		Classification:      classification,
 		LegalNumber:         e.EntryNumber,
 		SequenceNumber:      e.SequenceNumber,
@@ -207,8 +176,26 @@ func ToInternalEntry(e ledger.JournalEntry, opts EntryOptions) (posting.JournalE
 // ToPublicEntry converts an internal entry into the stable public DTO.
 // Money conversion errors are returned, never replaced with zero values.
 func ToPublicEntry(e posting.JournalEntry) (ledger.JournalEntry, error) {
+	if e.CompanyID == uuid.Nil {
+		return ledger.JournalEntry{}, ErrMissingCompanyID
+	}
+	if e.ID == uuid.Nil {
+		return ledger.JournalEntry{}, ErrMissingEntryID
+	}
+	if e.JournalID == uuid.Nil {
+		return ledger.JournalEntry{}, ErrMissingJournalID
+	}
+	if e.PeriodID == uuid.Nil {
+		return ledger.JournalEntry{}, ErrMissingPeriodID
+	}
 	lines := make([]ledger.EntryLine, len(e.Lines))
 	for i, l := range e.Lines {
+		if l.ID == uuid.Nil {
+			return ledger.JournalEntry{}, fmt.Errorf("%w: line %d", ErrMissingLineID, i)
+		}
+		if l.AccountID == uuid.Nil {
+			return ledger.JournalEntry{}, fmt.Errorf("%w: line %d", ErrMissingAccountID, i)
+		}
 		ta, err := toPublicMoney(l.TransactionAmount)
 		if err != nil {
 			return ledger.JournalEntry{}, fmt.Errorf("line %d transaction amount: %w", i, err)
@@ -276,20 +263,14 @@ func ToPublicEntry(e posting.JournalEntry) (ledger.JournalEntry, error) {
 
 func toInternalMoney(m types.Money) (financialtypes.Money, error) {
 	if m.Currency() == "" {
-		if !m.Amount().IsZero() {
-			return financialtypes.Money{}, fmt.Errorf("money amount %s has no currency", m.Amount())
-		}
-		return financialtypes.Money{}, nil
+		return financialtypes.Money{}, ErrMissingMoneyCurrency
 	}
 	return financialtypes.NewMoney(m.Amount(), m.Currency())
 }
 
 func toPublicMoney(m financialtypes.Money) (types.Money, error) {
 	if m.Currency() == "" {
-		if !m.Amount().IsZero() {
-			return types.Money{}, fmt.Errorf("money amount %s has no currency", m.Amount())
-		}
-		return types.Money{}, nil
+		return types.Money{}, ErrMissingMoneyCurrency
 	}
 	return types.NewMoney(m.Amount(), m.Currency())
 }

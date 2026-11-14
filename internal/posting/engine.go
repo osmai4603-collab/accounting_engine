@@ -53,7 +53,8 @@ type MakerCheckerPolicy interface {
 }
 
 func NewEngine(repo Repository, masterData *masterdata.Service) *Engine {
-	return &Engine{repo: repo, masterdata: masterData}
+	engine, _ := NewConfiguredEngine(repo, masterData, Config{}, Capabilities{})
+	return engine
 }
 
 func (e *Engine) SetFinancialDimensionsEngine(engine *FinancialDimensionsEngine) {

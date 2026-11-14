@@ -13,6 +13,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/shopspring/decimal"
 )
 
@@ -47,6 +48,12 @@ func TestInfrastructureIndependence(t *testing.T) {
 	if err := store.CreateFiscalYear(ctx, year); err != nil {
 		t.Fatalf("setup fiscal year: %v", err)
 	}
+	journal := publicmasterdata.Journal{
+		ID: publicmasterdata.NewJournalID(), CompanyID: companyID, Code: "GENERAL", Name: "General Journal",
+	}
+	if err := store.MasterDataStore().CreateJournal(ctx, journal); err != nil {
+		t.Fatalf("setup journal: %v", err)
+	}
 	cashID := uuid.New()
 	revenueID := uuid.New()
 	for _, acc := range []masterdata.Account{
@@ -71,6 +78,7 @@ func TestInfrastructureIndependence(t *testing.T) {
 			entry := ledger.JournalEntry{
 				ID:            types.NewJournalEntryID(),
 				CompanyID:     companyID,
+				JournalID:     types.JournalID(journal.ID),
 				EffectiveDate: now,
 				Description:   "Concurrent memory store test",
 				CreatedBy:     "tester",
