@@ -1,7 +1,9 @@
 package postgres_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,8 +15,19 @@ import (
 )
 
 func TestP405ReconciliationExceptionLifecycleIsAtomicAndCompanyScoped(t *testing.T) {
-	ctx, driver, _, _, companyID, _, _, _ := setupPostgresPostingEnv(t)
-	t.Cleanup(driver.Close)
+	ctx := context.Background()
+	driver, err := newIsolatedPostgresDriver(t, ctx)
+	if err != nil {
+		t.Skipf("isolated PostgreSQL schema unavailable: %v", err)
+	}
+	companyID := uuid.New()
+	if err := driver.CreateCompany(ctx, masterdata.Company{
+		ID: companyID, Code: fmt.Sprintf("P405-%s", companyID.String()[:8]),
+		LegalName: "Reconciliation Test Co", FunctionalCurrency: "USD",
+		PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	accountID := uuid.New()
 	if err := driver.CreateAccount(ctx, masterdata.Account{

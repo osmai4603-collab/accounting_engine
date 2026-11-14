@@ -142,15 +142,41 @@ func TestDraftRejectsJournalAndPeriodOutsideCompany(t *testing.T) {
 	wrongJournal := entry
 	wrongJournal.ID = uuid.New()
 	wrongJournal.JournalID = uuid.New()
+	foreignCompanyID := uuid.New()
+	fixture.driver.journals[wrongJournal.JournalID] = journalRecord{
+		ID: wrongJournal.JournalID, CompanyID: foreignCompanyID,
+	}
 	if err := fixture.driver.SaveDraft(wrongJournal); !errors.Is(err, masterdata.ErrJournalNotFound) {
-		t.Fatalf("SaveDraft() with unknown journal error = %v, want ErrJournalNotFound", err)
+		t.Fatalf("SaveDraft() with another company's journal error = %v, want ErrJournalNotFound", err)
 	}
 
 	wrongPeriod := entry
 	wrongPeriod.ID = uuid.New()
 	wrongPeriod.PeriodID = uuid.New()
+	fixture.driver.periods[wrongPeriod.PeriodID] = masterdata.FiscalPeriod{
+		ID: wrongPeriod.PeriodID, CompanyID: foreignCompanyID,
+	}
 	if err := fixture.driver.SaveDraft(wrongPeriod); !errors.Is(err, masterdata.ErrFiscalPeriodNotFound) {
-		t.Fatalf("SaveDraft() with unknown period error = %v, want ErrFiscalPeriodNotFound", err)
+		t.Fatalf("SaveDraft() with another company's period error = %v, want ErrFiscalPeriodNotFound", err)
+	}
+
+	foreignAccountID := uuid.New()
+	fixture.driver.accounts[foreignAccountID] = masterdata.Account{
+		ID: foreignAccountID, CompanyID: foreignCompanyID,
+	}
+	wrongAccount := entry
+	wrongAccount.ID = uuid.New()
+	wrongAccount.Lines = append([]posting.JournalEntryLine(nil), entry.Lines...)
+	wrongAccount.Lines[0].AccountID = foreignAccountID
+	if err := fixture.driver.SaveDraft(wrongAccount); !errors.Is(err, masterdata.ErrAccountNotFound) {
+		t.Fatalf("SaveDraft() with another company's account error = %v, want ErrAccountNotFound", err)
+	}
+
+	wrongCompany := entry
+	wrongCompany.ID = uuid.New()
+	wrongCompany.CompanyID = foreignCompanyID
+	if err := fixture.driver.SaveDraft(wrongCompany); !errors.Is(err, masterdata.ErrInvalidCompany) {
+		t.Fatalf("SaveDraft() with unknown company error = %v, want ErrInvalidCompany", err)
 	}
 }
 

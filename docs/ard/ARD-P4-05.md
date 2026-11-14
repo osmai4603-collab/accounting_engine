@@ -44,4 +44,6 @@ Run:
 go test ./internal/subledgers ./internal/adapters/memory ./internal/adapters/postgres
 ```
 
-PostgreSQL-specific exception lifecycle behavior should also be exercised against an available PostgreSQL test database; the unit suite does not claim that a database integration run occurred.
+`TestP405ReconciliationExceptionLifecycleIsAtomicAndCompanyScoped` and
+`TestEveryFinancialTableHasForcedRLS` passed against isolated PostgreSQL test
+schemas.

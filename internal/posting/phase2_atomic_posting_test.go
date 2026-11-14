@@ -11,6 +11,8 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 )
 
 type dummyAttachment struct {
@@ -49,6 +51,12 @@ func setupTestEngine(t *testing.T) (*posting.Engine, *memory.Driver, uuid.UUID, 
 	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: "TEST-CO", LegalName: "Test Co",
 		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.MasterDataStore().CreateJournal(ctx, publicmasterdata.Journal{
+		ID: publicmasterdata.JournalID(journalID), CompanyID: types.CompanyID(companyID),
+		Code: "GEN", Name: "General",
 	}); err != nil {
 		t.Fatal(err)
 	}
