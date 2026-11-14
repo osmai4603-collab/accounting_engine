@@ -56,30 +56,27 @@ func TestModuleDependencies(t *testing.T) {
 
 func TestRegisterRules(t *testing.T) {
 	module := &Module{}
-	if err := module.RegisterRules(nil); err == nil || err.Error() != "rule registrar is required" {
-		t.Fatalf("RegisterRules(nil) error = %v, want rule registrar error", err)
+	if err := module.RegisterRules(nil); err != nil {
+		t.Fatalf("RegisterRules(nil): %v", err)
 	}
 
 	router := events.NewRouter()
 	if err := module.RegisterRules(router); err != nil {
 		t.Fatalf("RegisterRules(router): %v", err)
 	}
+	for _, eventType := range []string{"IAS12_DEFERRED_TAX", "IFRS9_ECL_PROVISION"} {
+		if got := router.GetRules(eventType); len(got) != 0 {
+			t.Errorf("unexpected hard-coded posting rules for %s: %+v", eventType, got)
+		}
+	}
 
-	got := router.GetRules("IAS12_DEFERRED_TAX")
-	want := []events.PostingRule{{
-		RuleID:              "ias12-tax",
-		EventType:           "IAS12_DEFERRED_TAX",
-		DebitAccountCode:    "5400",
-		CreditAccountCode:   "2400",
-		DescriptionTemplate: "IAS 12 Deferred Tax Accounting",
-	}}
-	if len(got) != len(want) {
-		t.Fatalf("registered rule count = %d, want %d", len(got), len(want))
+	descriptor := module.Descriptor()
+	if err := descriptor.Profile.Validate(); err != nil {
+		t.Fatalf("invalid standard profile: %v", err)
 	}
-	if got[0] != want[0] {
-		t.Errorf("registered IAS 12 rule = %+v, want %+v", got[0], want[0])
-	}
-	if got := router.GetRules("IFRS9_ECL_PROVISION"); len(got) != 0 {
-		t.Errorf("unexpected rules registered for unrelated event: %+v", got)
+	for _, workflow := range descriptor.Workflows {
+		if err := workflow.Validate(*descriptor.Profile); err != nil {
+			t.Errorf("invalid workflow %q: %v", workflow.ID, err)
+		}
 	}
 }

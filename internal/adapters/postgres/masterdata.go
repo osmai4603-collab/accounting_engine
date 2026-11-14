@@ -69,7 +69,10 @@ func scanAccount(row pgx.Row) (masterdata.Account, error) {
 
 func scanJournal(row pgx.Row) (masterdata.Journal, error) {
 	var journal masterdata.Journal
-	err := row.Scan(&journal.ID, &journal.CompanyID, &journal.Code, &journal.Name, &journal.LastNumber)
+	err := row.Scan(
+		&journal.ID, &journal.CompanyID, &journal.Code, &journal.Name, &journal.LastNumber,
+		&journal.Active, &journal.AllowedCurrencies, &journal.NumberingPolicy,
+	)
 	return journal, err
 }
 
@@ -151,7 +154,8 @@ func (d *Driver) GetJournalByCodeForCompany(ctx context.Context, companyID uuid.
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		var scanErr error
 		journal, scanErr = scanJournal(tx.QueryRow(ctx,
-			`SELECT id, company_id, code, name, current_sequence
+			`SELECT id, company_id, code, name, current_sequence,
+			 is_active,allowed_currencies,numbering_policy
 			 FROM journals WHERE company_id=$1 AND lower(code)=lower($2)`, companyID, code))
 		if errors.Is(scanErr, pgx.ErrNoRows) {
 			return masterdata.ErrJournalNotFound
@@ -159,6 +163,89 @@ func (d *Driver) GetJournalByCodeForCompany(ctx context.Context, companyID uuid.
 		return scanErr
 	})
 	return journal, err
+}
+
+// UpdateJournalSettingsContext changes activation or journal-scoped currency
+// and numbering rules. Rule changes are frozen once drafts or posted entries
+// exist; callers may still deactivate a used journal.
+func (d *Driver) UpdateJournalSettingsContext(
+	ctx context.Context,
+	companyID, journalID uuid.UUID,
+	active bool,
+	allowedCurrencies []string,
+	numberingPolicy masterdata.JournalNumberingPolicy,
+) error {
+	journal := masterdata.Journal{
+		Type: masterdata.JournalTypeGeneral, Active: active,
+		AllowedCurrencies: append([]string(nil), allowedCurrencies...),
+		NumberingPolicy:   numberingPolicy,
+	}
+	for i := range journal.AllowedCurrencies {
+		journal.AllowedCurrencies[i] = strings.ToUpper(strings.TrimSpace(journal.AllowedCurrencies[i]))
+	}
+	if journal.NumberingPolicy == "" {
+		journal.NumberingPolicy = masterdata.JournalNumberingPerJournal
+	}
+	if err := journal.Validate(); err != nil {
+		return err
+	}
+	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var currentCurrencies []string
+		var currentPolicy masterdata.JournalNumberingPolicy
+		var currentActive bool
+		err := tx.QueryRow(ctx, `SELECT is_active,allowed_currencies,numbering_policy
+			FROM journals WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+			companyID, journalID).Scan(&currentActive, &currentCurrencies, &currentPolicy)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrJournalNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var hasEntries bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM account_moves WHERE company_id=$1 AND journal_id=$2
+		)`, companyID, journalID).Scan(&hasEntries); err != nil {
+			return err
+		}
+		if hasEntries && (currentPolicy != journal.NumberingPolicy ||
+			!equalStringSet(currentCurrencies, journal.AllowedCurrencies)) {
+			return masterdata.ErrJournalSettingsInUse
+		}
+		if _, err := tx.Exec(ctx, `UPDATE journals
+			SET is_active=$3,allowed_currencies=$4,numbering_policy=$5
+			WHERE company_id=$1 AND id=$2`,
+			companyID, journalID, active, journal.AllowedCurrencies, journal.NumberingPolicy); err != nil {
+			return err
+		}
+		return appendEntityAuditTx(ctx, tx, companyID, "journal", journalID, "JOURNAL_SETTINGS_CHANGED", uuid.Nil,
+			map[string]any{
+				"is_active": currentActive, "allowed_currencies": currentCurrencies,
+				"numbering_policy": currentPolicy,
+			},
+			map[string]any{
+				"is_active": active, "allowed_currencies": journal.AllowedCurrencies,
+				"numbering_policy": journal.NumberingPolicy,
+			})
+	})
+}
+
+func equalStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	set := make(map[string]int, len(left))
+	for _, value := range left {
+		set[strings.ToUpper(strings.TrimSpace(value))]++
+	}
+	for _, value := range right {
+		key := strings.ToUpper(strings.TrimSpace(value))
+		if set[key] == 0 {
+			return false
+		}
+		set[key]--
+	}
+	return true
 }
 
 func (d *Driver) GetAccountByCode(ctx context.Context, code string) (masterdata.Account, error) {
@@ -334,7 +421,8 @@ func (d *Driver) GetFiscalYearForCompany(ctx context.Context, companyID, fiscalY
 		}
 		year.CompanyID, year.State = companyID, state
 		rows, err := tx.Query(ctx, `SELECT id,company_id,year_id,COALESCE(period_number,0),COALESCE(name,''),
-			start_date,end_date,state,period_type FROM fiscal_periods
+			start_date,end_date,state,period_type,COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
+			COALESCE(last_state_reason,''),last_state_at FROM fiscal_periods
 			WHERE company_id=$1 AND year_id=$2 ORDER BY period_number`, companyID, fiscalYearID)
 		if err != nil {
 			return err
@@ -344,7 +432,8 @@ func (d *Driver) GetFiscalYearForCompany(ctx context.Context, companyID, fiscalY
 		for rows.Next() {
 			var period masterdata.FiscalPeriod
 			if err := rows.Scan(&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number,
-				&period.Name, &period.StartDate, &period.EndDate, &period.State, &period.Type); err != nil {
+				&period.Name, &period.StartDate, &period.EndDate, &period.State, &period.Type,
+				&period.LastStateActorID, &period.LastStateReason, &period.LastStateAt); err != nil {
 				return err
 			}
 			periods = append(periods, period)
@@ -403,14 +492,17 @@ func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.U
 	var period masterdata.FiscalPeriod
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx,
-			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type
+			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type,
+			 COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
+			 COALESCE(last_state_reason,''),last_state_at
 		 FROM fiscal_periods
 		 WHERE company_id=$1 AND start_date <= $2 AND end_date >= $2
 		   AND period_type = $3
 		 ORDER BY period_number ASC LIMIT 1`,
 			companyID, date, masterdata.FiscalPeriodTypeNormal).Scan(
 			&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number, &period.Name,
-			&period.StartDate, &period.EndDate, &period.State, &period.Type,
+			&period.StartDate, &period.EndDate, &period.State, &period.Type, &period.LastStateActorID,
+			&period.LastStateReason, &period.LastStateAt,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.ErrFiscalPeriodNotFound
@@ -424,11 +516,14 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 	var period masterdata.FiscalPeriod
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx,
-			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type
+			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type,
+			 COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
+			 COALESCE(last_state_reason,''),last_state_at
 		 FROM fiscal_periods WHERE company_id=$1 AND year_id=$2 AND period_number=$3`,
 			companyID, fiscalYearID, number).Scan(
 			&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number, &period.Name,
-			&period.StartDate, &period.EndDate, &period.State, &period.Type,
+			&period.StartDate, &period.EndDate, &period.State, &period.Type, &period.LastStateActorID,
+			&period.LastStateReason, &period.LastStateAt,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.ErrFiscalPeriodNotFound
@@ -439,6 +534,48 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 }
 
 func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
+	return d.transitionPeriodState(ctx, companyID, id, state, uuid.Nil, "", false, false)
+}
+
+func (d *Driver) TransitionPeriodStateContext(
+	ctx context.Context,
+	companyID, id uuid.UUID,
+	state masterdata.PeriodState,
+	actorID uuid.UUID,
+	reason string,
+) error {
+	return d.transitionPeriodState(ctx, companyID, id, state, actorID, reason, true, false)
+}
+
+func (d *Driver) ReopenPeriodContext(
+	ctx context.Context,
+	companyID, id, actorID uuid.UUID,
+	reason string,
+) error {
+	return d.transitionPeriodState(ctx, companyID, id, masterdata.PeriodOpen, actorID, reason, true, true)
+}
+
+func (d *Driver) transitionPeriodState(
+	ctx context.Context,
+	companyID, id uuid.UUID,
+	state masterdata.PeriodState,
+	actorID uuid.UUID,
+	reason string,
+	requireAudit, reopening bool,
+) error {
+	reason = strings.TrimSpace(reason)
+	if requireAudit && (actorID == uuid.Nil || reason == "") {
+		if reopening {
+			return masterdata.ErrPeriodReopenRequiresAudit
+		}
+		return masterdata.ErrPeriodTransitionNeedsAudit
+	}
+	if reopening && state != masterdata.PeriodOpen {
+		return masterdata.ErrInvalidPeriodTransition
+	}
+	if !reopening && state == masterdata.PeriodOpen {
+		return masterdata.ErrInvalidPeriodTransition
+	}
 	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		var current masterdata.PeriodState
 		err := tx.QueryRow(ctx, `SELECT state FROM fiscal_periods
@@ -449,20 +586,36 @@ func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID,
 		if err != nil {
 			return err
 		}
-		if err := masterdata.ValidatePeriodTransition(current, state); err != nil {
+		if reopening {
+			if err := masterdata.ValidatePeriodReopen(current, state, actorID, reason); err != nil {
+				return err
+			}
+		} else if err := masterdata.ValidatePeriodTransition(current, state); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE fiscal_periods
-			SET state=$3,closed_at=CASE WHEN $3::varchar='open' THEN NULL ELSE COALESCE(closed_at,NOW()) END
-			WHERE company_id=$1 AND id=$2`, companyID, id, state); err != nil {
+		var changedAt time.Time
+		if err := tx.QueryRow(ctx, `UPDATE fiscal_periods
+			SET state=$3,
+			    closed_at=CASE WHEN $3::varchar='open' THEN NULL ELSE COALESCE(closed_at,NOW()) END,
+			    closed_by=CASE WHEN $3::varchar='open' THEN closed_by ELSE NULLIF($4::uuid,'00000000-0000-0000-0000-000000000000'::uuid) END,
+			    last_state_actor_id=NULLIF($4::uuid,'00000000-0000-0000-0000-000000000000'::uuid),
+			    last_state_reason=NULLIF($5,''),
+			    last_state_at=NOW()
+			WHERE company_id=$1 AND id=$2
+			RETURNING last_state_at`, companyID, id, state, actorID, reason).Scan(&changedAt); err != nil {
 			return err
 		}
 		action := "FISCAL_PERIOD_STATE_CHANGED"
 		if state == masterdata.PeriodHardClosed {
 			action = "FISCAL_PERIOD_CLOSED"
 		}
-		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_period", id, action, uuid.Nil,
-			map[string]any{"state": current}, map[string]any{"state": state})
+		if reopening {
+			action = "FISCAL_PERIOD_REOPENED"
+		}
+		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_period", id, action, actorID,
+			map[string]any{"state": current}, map[string]any{
+				"state": state, "actor_id": actorID, "reason": reason, "timestamp": changedAt,
+			})
 	})
 }
 

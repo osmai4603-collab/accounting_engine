@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
@@ -31,30 +32,42 @@ func makeTestPostingEntry(
 	if err != nil {
 		return ledger.JournalEntry{}, err
 	}
+	now := time.Now().UTC()
+	effDate := time.Date(2026, time.January, 15, 0, 0, 0, 0, time.UTC)
 	entryID := types.NewJournalEntryID()
+
 	return ledger.JournalEntry{
-		ID:            entryID,
-		CompanyID:     types.CompanyID(companyID),
-		JournalID:     types.JournalID(journalID),
-		PeriodID:      types.PeriodID(periodID),
-		EffectiveDate: time.Date(2026, time.January, 15, 0, 0, 0, 0, time.UTC),
-		Description:   "P3-06 Atomicity Verification Entry",
-		Currency:      "USD",
-		Status:        ledger.StatusPosted,
-		Lines: []ledger.JournalEntryLine{
+		ID:                  entryID,
+		CompanyID:           types.CompanyID(companyID),
+		JournalID:           types.JournalID(journalID),
+		FiscalPeriodID:      types.FiscalPeriodID(periodID),
+		EffectiveDate:       effDate,
+		PostingDate:         effDate,
+		CreatedAt:           now,
+		CreatedBy:           "p3-06-tester",
+		Description:         "P3-06 Atomicity Verification Entry",
+		TransactionCurrency: "USD",
+		ExchangeRate:        decimal.NewFromInt(1),
+		Status:              ledger.EntryPosted,
+		Classification:      ledger.EntryClassRegular,
+		Lines: []ledger.EntryLine{
 			{
-				ID:        types.NewLineID(),
-				CompanyID: types.CompanyID(companyID),
-				AccountID: types.AccountID(debitAccID),
-				Debit:     amt,
-				Credit:    zero,
+				ID:                  types.JournalEntryLineID(uuid.New()),
+				AccountID:           types.AccountID(debitAccID),
+				TransactionAmount:   amt,
+				TransactionCurrency: "USD",
+				ExchangeRate:        decimal.NewFromInt(1),
+				FunctionalDebit:     amt,
+				FunctionalCredit:    zero,
 			},
 			{
-				ID:        types.NewLineID(),
-				CompanyID: types.CompanyID(companyID),
-				AccountID: types.AccountID(creditAccID),
-				Debit:     zero,
-				Credit:    amt,
+				ID:                  types.JournalEntryLineID(uuid.New()),
+				AccountID:           types.AccountID(creditAccID),
+				TransactionAmount:   amt,
+				TransactionCurrency: "USD",
+				ExchangeRate:        decimal.NewFromInt(1),
+				FunctionalDebit:     zero,
+				FunctionalCredit:    amt,
 			},
 		},
 	}, nil
@@ -103,7 +116,7 @@ func TestP3_06_FailureInjectionRollbackStages(t *testing.T) {
 			execErr := env.Driver.Ports().UOWRunner.Execute(txCtx, func(c context.Context, uow storage.UnitOfWork) error {
 				// Stage 1: Draft
 				draftEntry := entry
-				draftEntry.Status = ledger.StatusDraft
+				draftEntry.Status = ledger.EntryDraft
 				if err := uow.Drafts().SaveDraft(c, draftEntry); err != nil {
 					return fmt.Errorf("save draft: %w", err)
 				}
@@ -153,14 +166,15 @@ func TestP3_06_FailureInjectionRollbackStages(t *testing.T) {
 				}
 
 				// Stage 5: Complete & Audit
-				if err := uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID); err != nil {
+				if err := uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID, []byte("null")); err != nil {
 					return fmt.Errorf("complete idempotency: %w", err)
 				}
-				if err := uow.Audit().Record(c, storage.AuditRecord{
-					CompanyID: types.CompanyID(env.CompanyID),
-					ActorID:   "p3-06-test-actor",
-					Action:    "post_entry",
-					TargetID:  entry.ID.String(),
+				if err := uow.Audit().AppendAudit(c, storage.AuditRecord{
+					CompanyID:  types.CompanyID(env.CompanyID),
+					EntityType: "journal_entry",
+					EntityID:   uuid.UUID(entry.ID).String(),
+					ActorID:    "p3-06-test-actor",
+					Action:     "post_entry",
 				}); err != nil {
 					return fmt.Errorf("record audit: %w", err)
 				}
@@ -190,12 +204,12 @@ func TestP3_06_FailureInjectionRollbackStages(t *testing.T) {
 
 				// 2. No lines exist
 				var lineCount int
-				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM move_lines WHERE company_id=$1 AND move_id=$2`,
+				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM account_move_lines WHERE company_id=$1 AND move_id=$2`,
 					env.CompanyID, uuid.UUID(entry.ID)).Scan(&lineCount); err != nil {
 					return err
 				}
 				if lineCount != 0 {
-					return fmt.Errorf("move_lines row count = %d, want 0 after rollback", lineCount)
+					return fmt.Errorf("account_move_lines row count = %d, want 0 after rollback", lineCount)
 				}
 
 				// 3. Sequence was not permanently consumed
@@ -289,12 +303,18 @@ func TestP3_06_ConcurrentSameIdempotencyKey(t *testing.T) {
 					return errors.New("concurrently in flight")
 				}
 
-				// The winning worker posts
+				// The winning worker saves draft, allocates sequence, and commits
+				workerEntry := entry
+				draft := workerEntry
+				draft.Status = ledger.EntryDraft
+				if err := uow.Drafts().SaveDraft(c, draft); err != nil {
+					return err
+				}
+
 				seq, err := uow.Sequences().NextSequence(c, types.CompanyID(env.CompanyID), types.JournalID(env.JournalID))
 				if err != nil {
 					return err
 				}
-				workerEntry := entry
 				workerEntry.SequenceNumber = seq
 
 				posted, err := uow.Posting().CommitPosting(c, storage.PostingCommit{
@@ -306,7 +326,7 @@ func TestP3_06_ConcurrentSameIdempotencyKey(t *testing.T) {
 					return err
 				}
 
-				return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID)
+				return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID, []byte("null"))
 			})
 
 			mu.Lock()
@@ -402,6 +422,13 @@ func TestP3_06_ConcurrentPostingConflictingPayloads(t *testing.T) {
 		if err != nil || !claimed {
 			return fmt.Errorf("claim A: claimed=%t err=%w", claimed, err)
 		}
+
+		draft := entryA
+		draft.Status = ledger.EntryDraft
+		if err := uow.Drafts().SaveDraft(c, draft); err != nil {
+			return err
+		}
+
 		seq, err := uow.Sequences().NextSequence(c, types.CompanyID(env.CompanyID), types.JournalID(env.JournalID))
 		if err != nil {
 			return err
@@ -415,7 +442,7 @@ func TestP3_06_ConcurrentPostingConflictingPayloads(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return uow.Idempotency().Complete(c, recordA.CompanyID, recordA.Key, recordA.PayloadHash, posted.ID)
+		return uow.Idempotency().Complete(c, recordA.CompanyID, recordA.Key, recordA.PayloadHash, posted.ID, []byte("null"))
 	})
 	if err != nil {
 		t.Fatalf("post A: %v", err)
@@ -430,20 +457,17 @@ func TestP3_06_ConcurrentPostingConflictingPayloads(t *testing.T) {
 	}
 
 	err = env.Driver.Ports().UOWRunner.Execute(txCtx, func(c context.Context, uow storage.UnitOfWork) error {
-		rec, claimed, err := uow.Idempotency().Claim(c, recordB)
+		_, claimed, err := uow.Idempotency().Claim(c, recordB)
 		if err != nil {
 			return err
 		}
 		if claimed {
 			return errors.New("claimed conflicting payload; should have been rejected")
 		}
-		if rec.PayloadHash != recordB.PayloadHash {
-			return storage.ErrIdempotencyKeyConflict
-		}
 		return nil
 	})
-	if !errors.Is(err, storage.ErrIdempotencyKeyConflict) {
-		t.Fatalf("expected ErrIdempotencyKeyConflict, got: %v", err)
+	if !errors.Is(err, storage.ErrUniqueConstraint) {
+		t.Fatalf("expected ErrUniqueConstraint on conflicting payload, got: %v", err)
 	}
 
 	// Balances remain 100.00
@@ -515,6 +539,12 @@ func TestP3_06_ConcurrentSharedJournalAndAccounts(t *testing.T) {
 					return errors.New("expected unique key to be claimed")
 				}
 
+				draft := workerEntry
+				draft.Status = ledger.EntryDraft
+				if err := uow.Drafts().SaveDraft(c, draft); err != nil {
+					return err
+				}
+
 				seq, err := uow.Sequences().NextSequence(c, types.CompanyID(env.CompanyID), types.JournalID(env.JournalID))
 				if err != nil {
 					return err
@@ -530,7 +560,7 @@ func TestP3_06_ConcurrentSharedJournalAndAccounts(t *testing.T) {
 					return err
 				}
 
-				return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID)
+				return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID, []byte("null"))
 			})
 
 			if err != nil {
@@ -648,6 +678,13 @@ func TestP3_06_DurabilityReconnectAfterCommit(t *testing.T) {
 		if err != nil || !claimed {
 			return fmt.Errorf("claim idempotency: %w", err)
 		}
+
+		draft := entry
+		draft.Status = ledger.EntryDraft
+		if err := uow.Drafts().SaveDraft(c, draft); err != nil {
+			return err
+		}
+
 		seq, err := uow.Sequences().NextSequence(c, types.CompanyID(env.CompanyID), types.JournalID(env.JournalID))
 		if err != nil {
 			return err
@@ -661,24 +698,39 @@ func TestP3_06_DurabilityReconnectAfterCommit(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID)
+		return uow.Idempotency().Complete(c, idemRecord.CompanyID, idemRecord.Key, idemRecord.PayloadHash, posted.ID, []byte("null"))
 	})
 	if err != nil {
 		t.Fatalf("commit posting: %v", err)
 	}
 
+	// Retrieve active isolated schema before teardown
+	var currentSchema string
+	if err := env.Driver.Pool().QueryRow(ctx, "SELECT current_schema()").Scan(&currentSchema); err != nil {
+		t.Fatalf("query current schema: %v", err)
+	}
+
 	// Tear down connection pool completely
 	env.Driver.Close()
 
-	// Re-open fresh driver against the same PostgreSQL database
-	reopenedDriver, err := postgres.New(ctx, getTestPostgresConn())
+	// Re-open fresh driver pool connecting to the exact same isolated PostgreSQL schema
+	cfg, err := pgxpool.ParseConfig(getTestPostgresConn())
+	if err != nil {
+		t.Fatalf("parse postgres config: %v", err)
+	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = currentSchema + ",public"
+	newPool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("reconnect to postgres: %v", err)
 	}
-	defer reopenedDriver.Close()
+	defer newPool.Close()
+	reopenedDriver := postgres.NewWithPool(newPool)
 
 	// Verify durability from fresh driver
-	readEntry, err := reopenedDriver.Ports().UOWRunner.ExecuteWithOptions(txCtx, storage.TxOptions{ReadOnly: true},
+	err = reopenedDriver.Ports().UOWRunner.ExecuteWithOptions(txCtx, storage.TxOptions{ReadOnly: true},
 		func(c context.Context, uow storage.UnitOfWork) error {
 			read, err := uow.Entries().GetEntry(c, types.CompanyID(env.CompanyID), entry.ID)
 			if err != nil {
@@ -693,7 +745,7 @@ func TestP3_06_DurabilityReconnectAfterCommit(t *testing.T) {
 			return nil
 		})
 	if err != nil {
-		t.Fatalf("verify read entry after reconnect: %v (entry=%+v)", err, readEntry)
+		t.Fatalf("verify read entry after reconnect: %v", err)
 	}
 
 	tb, err := reopenedDriver.GetTrialBalance(ctx, types.CompanyID(env.CompanyID), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), "USD")

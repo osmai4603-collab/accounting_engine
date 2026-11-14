@@ -2,6 +2,7 @@ package masterdata
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,9 @@ import (
 var (
 	ErrPeriodOutsideFiscalYear     = errors.New("period dates must be within the fiscal year")
 	ErrInvalidFiscalYearTransition = errors.New("invalid fiscal year transition")
+	ErrInvalidPeriodTransition     = errors.New("invalid fiscal period transition")
+	ErrPeriodTransitionNeedsAudit  = errors.New("fiscal period transition requires an actor and reason")
+	ErrPeriodReopenRequiresAudit   = errors.New("reopening a fiscal period requires an actor and reason")
 )
 
 type PeriodState string
@@ -42,15 +46,18 @@ type FiscalYear struct {
 }
 
 type FiscalPeriod struct {
-	CompanyID    uuid.UUID
-	ID           uuid.UUID
-	FiscalYearID uuid.UUID
-	Number       int
-	Name         string
-	StartDate    time.Time
-	EndDate      time.Time
-	State        PeriodState
-	Type         FiscalPeriodType
+	CompanyID        uuid.UUID
+	ID               uuid.UUID
+	FiscalYearID     uuid.UUID
+	Number           int
+	Name             string
+	StartDate        time.Time
+	EndDate          time.Time
+	State            PeriodState
+	Type             FiscalPeriodType
+	LastStateActorID uuid.UUID
+	LastStateReason  string
+	LastStateAt      time.Time
 }
 
 type FiscalPeriodType string
@@ -104,7 +111,19 @@ func ValidatePeriodTransition(from, to PeriodState) error {
 	case from == PeriodOpen && to == PeriodSoftClosed:
 	case from == PeriodSoftClosed && to == PeriodHardClosed:
 	default:
-		return errors.New("invalid fiscal period transition")
+		return ErrInvalidPeriodTransition
+	}
+	return nil
+}
+
+// ValidatePeriodReopen validates the exceptional, audited transition back to
+// open. Normal period transitions never reopen a closed period.
+func ValidatePeriodReopen(from, to PeriodState, actorID uuid.UUID, reason string) error {
+	if to != PeriodOpen || (from != PeriodSoftClosed && from != PeriodHardClosed) {
+		return ErrInvalidPeriodTransition
+	}
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return ErrPeriodReopenRequiresAudit
 	}
 	return nil
 }

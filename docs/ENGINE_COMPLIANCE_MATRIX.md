@@ -155,12 +155,38 @@
 
 | ID | المعيار | الحالة | الأولوية | مواضع التنفيذ / الدليل | المطلوب |
 | --- | --- | --- | --- | --- | --- |
-| IFRS-09 | IFRS 9 – ECL | جزئي | P1 | `internal/ifrs9/ecl.go`, `ecl_test.go` | توثيق نطاق المنهج المبسط، وإكمال المدخلات المستقبلية والسيناريوهات والنماذج اللازمة بحسب نوع الأداة. |
-| IFRS-15 | IFRS 15 – Revenue | جزئي | P1 | `internal/ifrs15/revenue.go`, `revenue_test.go`; migration `202611100008` | تغطية المقابل المتغير وتعديلات العقود والتمويل الجوهري وطرق قياس التقدم والحالات الاستثنائية. |
-| IFRS-16 | IFRS 16 – Leases | جزئي | P1 | `internal/ifrs16/lease.go`, `entries.go`, tests | توثيق convention معدل الخصم، ودعم تواريخ التدفقات الفعلية وإعادة القياس والتعديلات والاستثناءات. |
-| IAS-12 | IAS 12 – Income Taxes | جزئي | P1 | `internal/ias12/ias12.go`, `journal.go`, tests | إضافة حالات الفروق المؤقتة المعقدة وتغير المعدلات والاعتراف والعرض والإفصاح. |
+| IFRS-09 | IFRS 9 – ECL | جزئي ومحدود صراحةً | P1 | `modules/ifrs9/module.go`؛ `internal/ifrs9/ecl.go:Calculate`; `internal/ifrs9/ecl_test.go:TestCalculateProvisionMatrixAndAllowanceAdjustment` | النطاق الحالي مصفوفة مخصص مبسطة للذمم فقط. النماذج الشاملة للأدوات المالية والتكامل الإنتاجي للترحيل غير منفذة. |
+| IFRS-15 | IFRS 15 – Revenue | جزئي ومحدود صراحةً | P1 | `modules/ifrs15/module.go`؛ `internal/ifrs15/revenue.go:NewContract`, `Contract.Schedule`; `internal/ifrs15/revenue_test.go` | النطاق الحالي تخصيص السعر ببيوع الأسعار المستقلة وجداول الاعتراف؛ المقابل المتغير والتعديلات والتمويل الجوهري غير منفذة. لا يوجد ترحيل معياري تلقائي. |
+| IFRS-16 | IFRS 16 – Leases | جزئي ومحدود صراحةً | P1 | `modules/ifrs16/module.go`؛ `internal/ifrs16/lease.go:NewLeaseContract`, `LeaseContract.AmortizationSchedule`; `internal/ifrs16/lease_test.go` | النطاق الحالي قياس أولي وجدول مستأجر للمدخلات المقدمة؛ دورة العقود الشاملة والإعادة الكاملة للقياس والتكامل الإنتاجي للترحيل غير مثبتة. |
+| IAS-12 | IAS 12 – Income Taxes | جزئي ومحدود صراحةً | P1 | `modules/ias12/module.go`؛ `internal/ias12/ias12.go:Measure`; `internal/ias12/ias12_test.go:TestMeasureDTAAndDTLSignsAndRates` | النطاق الحالي قياس الضريبة المؤجلة للفروق المقدمة؛ المعالجة الكاملة للضريبة الجارية والعرض والإفصاح غير منفذة. |
 | IFRS-10 | IFRS 10 – Consolidation | جزئي | P1 | `internal/consolidation/`, `consolidated_bundle.go` | اختبار تحديد السيطرة وتغير نسب الملكية وNCI وفقدان السيطرة وربط الاستحواذ مع IFRS 3. |
 | IFRS-AUTO | أتمتة تشغيل وظائف IFRS | جزئي / غير مكتمل في CLI | P1 | `internal/ifrsautomation/jobs.go`, `service.go`; `cmd/agy/main.go` | التحقق من تسجيل Jobs فعلياً في CLI، وعدم تجاهل أخطاء `RunPeriod()` في Daemon. |
+
+### حدود وحدات المعايير
+
+تعلن وحدات `modules/ifrs15` و`modules/ifrs16` و`modules/ifrs9` و`modules/ias12` ملفات نطاق وإصدارات وسير عمل قابلة للاكتشاف عبر `pkg/spi/standards`. الإصدار والتعديلات وتاريخ النفاذ والولاية القضائية ظاهرة كـ **غير مهيأة** حتى يحددها النظام المضيف؛ لا تمثل قيماً افتراضية أو اعتماداً معيارياً، وتظل قدرات المعيار معطلة في Registry حتى تهيئتها. ترتبط المتطلبات المدعومة بمرجع تنفيذ ودليل اختبار، وتُذكر الاستثناءات صراحة.
+
+| الوحدة | Requirement ID | الحالة | التنفيذ | دليل الاختبار |
+| --- | --- | --- | --- | --- |
+| IFRS 15 | `IFRS15-ALLOC-01` | محدود | `internal/ifrs15/revenue.go:NewContract` | `TestRelativeSSPWeightedAllocation` |
+| IFRS 15 | `IFRS15-SCHEDULE-01` | محدود | `internal/ifrs15/revenue.go:Contract.Schedule` | `TestDailyAndMonthlyRecognitionSchedules` |
+| IFRS 15 | `IFRS15-VARIABLE-CONSIDERATION` | غير منفذ | — | — |
+| IFRS 15 | `IFRS15-CONTRACT-MODIFICATION` | غير منفذ | — | — |
+| IFRS 15 | `IFRS15-POSTING-WORKFLOW` | غير منفذ | — | — |
+| IFRS 16 | `IFRS16-INITIAL-01` | محدود | `internal/ifrs16/lease.go:NewLeaseContract` | `internal/ifrs16/lease_test.go` |
+| IFRS 16 | `IFRS16-SCHEDULE-01` | محدود | `internal/ifrs16/lease.go:LeaseContract.AmortizationSchedule` | `internal/ifrs16/lease_test.go` |
+| IFRS 16 | `IFRS16-LESSOR-ACCOUNTING` | غير منفذ | — | — |
+| IFRS 16 | `IFRS16-POSTING-WORKFLOW` | غير منفذ | — | — |
+| IFRS 9 | `IFRS9-ECL-SIMPLIFIED-01` | محدود | `internal/ifrs9/ecl.go:Calculate` | `TestCalculateProvisionMatrixAndAllowanceAdjustment` |
+| IFRS 9 | `IFRS9-CLASSIFICATION-MEASUREMENT` | غير منفذ | — | — |
+| IFRS 9 | `IFRS9-GENERAL-ECL-WORKFLOW` | غير منفذ | — | — |
+| IFRS 9 | `IFRS9-POSTING-WORKFLOW` | غير منفذ | — | — |
+| IAS 12 | `IAS12-DEFERRED-MEASUREMENT-01` | محدود | `internal/ias12/ias12.go:Measure` | `TestMeasureDTAAndDTLSignsAndRates` |
+| IAS 12 | `IAS12-CURRENT-TAX-WORKFLOW` | غير منفذ | — | — |
+| IAS 12 | `IAS12-PRESENTATION-DISCLOSURE` | غير منفذ | — | — |
+| IAS 12 | `IAS12-POSTING-WORKFLOW` | غير منفذ | — | — |
+
+تصف الـ Workflows الحالية القياس والمخرجات المحدودة ولا تنتج قيوداً. أزيل تسجيل قواعد الحسابات الثابتة، لذلك لا تنشئ هذه الوحدات قيوداً إلا بعد إضافة Workflow يمر عبر عقد التطبيق العام وMapping دفتر يومية حقيقي. نجاح تسجيل الوحدة أو اختبارها لا يعني امتثالاً كاملاً للمعيار.
 
 ## I. الاختبارات والتحقق
 

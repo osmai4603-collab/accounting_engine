@@ -19,18 +19,21 @@ var (
 
 	// ErrVersionConflict is returned when a required version constraint is not met.
 	ErrVersionConflict = errors.New("standards: module version conflict")
+
+	// ErrInvalidMetadata is returned when a described standard scope or workflow is incomplete.
+	ErrInvalidMetadata = errors.New("standards: invalid module metadata")
 )
 
 // Registry manages standard modules, capability resolution, dependency ordering,
 // and runtime module diagnostics.
 type Registry struct {
-	modules             map[ModuleID]StandardModule
-	descriptors         map[ModuleID]ModuleDescriptor
-	capabilities        map[Capability]ModuleID
-	registeredOrder     []ModuleID
-	resolvedOrder       []ModuleID
-	resolved            bool
-	disabledReasons     map[string]string
+	modules         map[ModuleID]StandardModule
+	descriptors     map[ModuleID]ModuleDescriptor
+	capabilities    map[Capability]ModuleID
+	registeredOrder []ModuleID
+	resolvedOrder   []ModuleID
+	resolved        bool
+	disabledReasons map[string]string
 }
 
 // NewRegistry creates a new, empty module registry.
@@ -74,6 +77,23 @@ func (r *Registry) Register(mod StandardModule) error {
 	if desc.ID == "" {
 		desc.ID = canonicalModuleID(desc.Name)
 	}
+	profileConfigured := false
+	if desc.Profile != nil {
+		if err := desc.Profile.Validate(); err != nil {
+			return fmt.Errorf("%w for module %q: %v", ErrInvalidMetadata, desc.ID, err)
+		}
+		profileConfigured = desc.Profile.IsConfigured()
+		if len(desc.Workflows) == 0 {
+			return fmt.Errorf("%w for module %q: standard profile has no workflows", ErrInvalidMetadata, desc.ID)
+		}
+		for _, workflow := range desc.Workflows {
+			if err := workflow.Validate(*desc.Profile); err != nil {
+				return fmt.Errorf("%w for module %q: %v", ErrInvalidMetadata, desc.ID, err)
+			}
+		}
+	} else if len(desc.Workflows) > 0 {
+		return fmt.Errorf("%w for module %q: workflows require a standard profile", ErrInvalidMetadata, desc.ID)
+	}
 
 	if _, exists := r.modules[desc.ID]; exists {
 		return fmt.Errorf("%w: module ID %q (name: %q)", ErrDuplicateModule, desc.ID, desc.Name)
@@ -85,7 +105,17 @@ func (r *Registry) Register(mod StandardModule) error {
 
 	for _, cap := range desc.Provides {
 		if cap != "" {
+			if desc.Profile != nil && !profileConfigured {
+				if _, active := r.capabilities[cap]; !active {
+					r.disabledReasons["capability:"+string(cap)] = fmt.Sprintf(
+						"standard profile for module %q requires host configuration of edition, amendments, effective date, and jurisdiction",
+						desc.ID,
+					)
+				}
+				continue
+			}
 			r.capabilities[cap] = desc.ID
+			delete(r.disabledReasons, "capability:"+string(cap))
 		}
 	}
 
@@ -360,4 +390,3 @@ func compareSemVer(v1, v2 string) int {
 	}
 	return 0
 }
-

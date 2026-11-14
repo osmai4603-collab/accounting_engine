@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
@@ -147,11 +148,8 @@ func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.
 		return posting.ErrInvalidEntry
 	}
 
-	var sequence int64
-	if err := tx.QueryRow(ctx,
-		`SELECT current_sequence FROM journals
-		 WHERE company_id=$1 AND id=$2 FOR UPDATE`,
-		entry.CompanyID, entry.JournalID).Scan(&sequence); err != nil {
+	sequence, err := validateJournalPostingTx(ctx, tx, *entry)
+	if err != nil {
 		return err
 	}
 
@@ -179,6 +177,9 @@ func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.
 	}
 	if !posting.DraftContentMatches(current, *entry) {
 		return financialtypes.ErrCannotModifyPostedMove
+	}
+	if entry.PostingDate.IsZero() {
+		entry.PostingDate = calendarDateUTC(time.Now())
 	}
 	if err := validatePostingPeriodTx(ctx, tx, *entry); err != nil {
 		return err
@@ -222,11 +223,8 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	if entry.CompanyID == uuid.Nil || entry.JournalID == uuid.Nil {
 		return posting.JournalEntry{}, posting.ErrInvalidEntry
 	}
-	var sequence int64
-	if err := tx.QueryRow(ctx,
-		`SELECT current_sequence FROM journals
-		 WHERE company_id=$1 AND id=$2 FOR UPDATE`,
-		entry.CompanyID, entry.JournalID).Scan(&sequence); err != nil {
+	sequence, err := validateJournalPostingTx(ctx, tx, entry)
+	if err != nil {
 		return posting.JournalEntry{}, err
 	}
 	var status posting.EntryStatus
@@ -252,6 +250,9 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	}
 	if !posting.DraftContentMatches(current, entry) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+	}
+	if entry.PostingDate.IsZero() {
+		entry.PostingDate = calendarDateUTC(time.Now())
 	}
 	if err := validatePostingPeriodTx(ctx, tx, entry); err != nil {
 		return posting.JournalEntry{}, err
@@ -368,6 +369,50 @@ func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	return nil
 }
 
+func validateJournalPostingTx(ctx context.Context, tx pgx.Tx, entry posting.JournalEntry) (int64, error) {
+	var sequence int64
+	var active bool
+	var allowedCurrencies []string
+	var numberingPolicy masterdata.JournalNumberingPolicy
+	err := tx.QueryRow(ctx, `SELECT current_sequence,is_active,allowed_currencies,numbering_policy
+		FROM journals WHERE company_id=$1 AND id=$2 FOR UPDATE`,
+		entry.CompanyID, entry.JournalID).Scan(&sequence, &active, &allowedCurrencies, &numberingPolicy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, masterdata.ErrJournalNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !active {
+		return 0, masterdata.ErrJournalInactive
+	}
+	if numberingPolicy != masterdata.JournalNumberingPerJournal {
+		return 0, masterdata.ErrInvalidJournalNumberingPolicy
+	}
+	if len(allowedCurrencies) > 0 {
+		allowed := make(map[string]struct{}, len(allowedCurrencies))
+		for _, currency := range allowedCurrencies {
+			allowed[strings.ToUpper(currency)] = struct{}{}
+		}
+		for _, line := range entry.Lines {
+			normalized, err := posting.NormalizeLineCurrencies(line)
+			if err != nil {
+				return 0, err
+			}
+			currency := strings.ToUpper(normalized.TransactionCurrency)
+			if _, ok := allowed[currency]; !ok {
+				return 0, masterdata.ErrJournalCurrencyNotAllowed
+			}
+		}
+	}
+	return sequence, nil
+}
+
+func calendarDateUTC(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 func (d *Driver) PostReversalAtomic(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {
 	return d.PostReversalAtomicContext(ctx, original, reversal)
 }
@@ -429,14 +474,12 @@ func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, revers
 	if !posting.DraftContentMatches(currentReversal, reversal) {
 		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
 	}
-	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
+	sequence, err := validateJournalPostingTx(ctx, tx, reversal)
+	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-
-	var sequence int64
-	if err := tx.QueryRow(ctx,
-		`SELECT current_sequence FROM journals WHERE company_id=$1 AND id=$2 FOR UPDATE`,
-		reversal.CompanyID, reversal.JournalID).Scan(&sequence); err != nil {
+	reversal.PostingDate = calendarDateUTC(time.Now())
+	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	sequence++
@@ -582,13 +625,14 @@ func (d *Driver) CreateAndPostReversalAtomicContext(
 			return posting.JournalEntry{}, err
 		}
 	}
-	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
+	if reversal.PostingDate.IsZero() {
+		reversal.PostingDate = calendarDateUTC(time.Now())
+	}
+	sequence, err := validateJournalPostingTx(ctx, tx, reversal)
+	if err != nil {
 		return posting.JournalEntry{}, err
 	}
-	var sequence int64
-	if err := tx.QueryRow(ctx,
-		`SELECT current_sequence FROM journals WHERE company_id=$1 AND id=$2 FOR UPDATE`,
-		reversal.CompanyID, reversal.JournalID).Scan(&sequence); err != nil {
+	if err := validatePostingPeriodTx(ctx, tx, reversal); err != nil {
 		return posting.JournalEntry{}, err
 	}
 	sequence++
@@ -654,6 +698,13 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 			return err
 		}
 	}
+	if entry.Status == posting.EntryPosted && entry.PostingDate.IsZero() {
+		entry.PostingDate = calendarDateUTC(time.Now())
+	}
+	var postingDate any
+	if !entry.PostingDate.IsZero() {
+		postingDate = calendarDateUTC(entry.PostingDate)
+	}
 	var companyFunctionalCurrency string
 	if err := tx.QueryRow(ctx,
 		`SELECT functional_currency FROM companies WHERE id=$1`, entry.CompanyID,
@@ -678,10 +729,10 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 			expectedStatus = posting.EntryPosted
 		}
 		result, err := tx.Exec(ctx,
-			`UPDATE account_moves SET journal_id=$3,period_id=$4,entry_date=$5,entry_number=$6,
-			 status=$7,classification=$8,reversed_move_id=$9,entry=$10,source_event_id=$11
-			 WHERE id=$1 AND company_id=$2 AND status=$12`,
-			entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
+			`UPDATE account_moves SET journal_id=$3,period_id=$4,entry_date=$5,posting_date=$6,entry_number=$7,
+			 status=$8,classification=$9,reversed_move_id=$10,entry=$11,source_event_id=$12
+			 WHERE id=$1 AND company_id=$2 AND status=$13`,
+			entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, postingDate, entry.SequenceNumber,
 			entry.Status, classification, entry.ReversedEntryID, data, entry.SourceEventID, expectedStatus)
 		if err != nil {
 			return err
@@ -698,13 +749,13 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 	if entry.Status != posting.EntryDraft {
 		return posting.ErrInvalidEntry
 	}
-	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,entry_number,status,classification,reversed_move_id,entry,source_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+	result, err := tx.Exec(ctx, `INSERT INTO account_moves(id,company_id,journal_id,period_id,entry_date,posting_date,entry_number,status,classification,reversed_move_id,entry,source_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	 ON CONFLICT(id) DO UPDATE SET journal_id=EXCLUDED.journal_id,period_id=EXCLUDED.period_id,
-	 entry_date=EXCLUDED.entry_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
+	 entry_date=EXCLUDED.entry_date,posting_date=EXCLUDED.posting_date,entry_number=EXCLUDED.entry_number,status=EXCLUDED.status,
 	 classification=EXCLUDED.classification,reversed_move_id=EXCLUDED.reversed_move_id,entry=EXCLUDED.entry,
 	 source_event_id=EXCLUDED.source_event_id
 	 WHERE account_moves.status='draft'`,
-		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, entry.SequenceNumber,
+		entry.ID, entry.CompanyID, entry.JournalID, entry.PeriodID, date, postingDate, entry.SequenceNumber,
 		entry.Status, classification, entry.ReversedEntryID, data, entry.SourceEventID)
 	if err != nil {
 		return err
@@ -831,6 +882,14 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 		}
 		entries[i].PeriodID = period.ID
 	}
+	for i := range entries {
+		if entries[i].Status != posting.EntryPosted {
+			continue
+		}
+		if entries[i].PostingDate.IsZero() {
+			entries[i].PostingDate = calendarDateUTC(time.Now())
+		}
+	}
 
 	posted := make([]int, 0, len(entries))
 	journalGroups := make(map[uuid.UUID][]int)
@@ -853,6 +912,11 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 	})
 	for _, journalID := range journalOrder {
 		indexes := journalGroups[journalID]
+		for _, idx := range indexes {
+			if _, err := validateJournalPostingTx(ctx, tx, entries[idx]); err != nil {
+				return &posting.BulkPostError{Index: idx, EntryID: entries[idx].ID, Err: err}
+			}
+		}
 		var first int64
 		if err := tx.QueryRow(ctx,
 			`UPDATE journals
@@ -867,6 +931,11 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 		}
 		for offset, idx := range indexes {
 			entries[idx].SequenceNumber = first + int64(offset)
+		}
+	}
+	for _, idx := range posted {
+		if err := validatePostingPeriodTx(ctx, tx, entries[idx]); err != nil {
+			return &posting.BulkPostError{Index: idx, EntryID: entries[idx].ID, Err: err}
 		}
 	}
 
@@ -905,7 +974,7 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 			}
 			records[k] = bulkMoveRecord{
 				ID: entry.ID, JournalID: entry.JournalID, PeriodID: entry.PeriodID,
-				EntryDate: date, EntryNumber: entry.SequenceNumber, Status: entry.Status,
+				EntryDate: date, PostingDate: entry.PostingDate, EntryNumber: entry.SequenceNumber, Status: entry.Status,
 				Classification: classification, ReversedMoveID: entry.ReversedEntryID,
 				Entry: entry,
 			}
@@ -915,11 +984,11 @@ func (d *Driver) PostBulk(ctx context.Context, entries []posting.JournalEntry) (
 			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE account_moves m
-			SET journal_id = v.journal_id, period_id = v.period_id, entry_date = v.entry_date,
+			SET journal_id = v.journal_id, period_id = v.period_id, entry_date = v.entry_date, posting_date = v.posting_date,
 				entry_number = v.entry_number, status = v.status, classification = v.classification,
 				reversed_move_id = v.reversed_move_id, entry = v.entry
 			FROM jsonb_to_recordset($1::jsonb) AS v(
-				id uuid, journal_id uuid, period_id uuid, entry_date date, entry_number bigint,
+				id uuid, journal_id uuid, period_id uuid, entry_date date, posting_date date, entry_number bigint,
 				status varchar, classification varchar, reversed_move_id uuid, entry jsonb)
 			WHERE m.id = v.id AND m.company_id = $2 AND m.status = 'draft'`,
 			string(payload), companyID)
@@ -989,6 +1058,7 @@ type bulkMoveRecord struct {
 	JournalID      uuid.UUID                   `json:"journal_id"`
 	PeriodID       uuid.UUID                   `json:"period_id"`
 	EntryDate      time.Time                   `json:"entry_date"`
+	PostingDate    time.Time                   `json:"posting_date"`
 	EntryNumber    int64                       `json:"entry_number"`
 	Status         posting.EntryStatus         `json:"status"`
 	Classification posting.EntryClassification `json:"classification"`

@@ -19,6 +19,64 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
 }
 
+// PeriodLifecycleRepository is implemented by stores that persist audited
+// close and reopen transitions.
+type PeriodLifecycleRepository interface {
+	TransitionPeriodStateContext(context.Context, uuid.UUID, uuid.UUID, PeriodState, uuid.UUID, string) error
+	ReopenPeriodContext(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) error
+}
+
+// TransitionPeriodStateContext applies a close transition with an identified
+// actor and reason. Reopening must use ReopenPeriodContext explicitly.
+func (s *Service) TransitionPeriodStateContext(
+	ctx context.Context,
+	companyID, periodID uuid.UUID,
+	state PeriodState,
+	actorID uuid.UUID,
+	reason string,
+) error {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return errors.New("fiscal period context is required")
+		}
+		return ctx.Err()
+	}
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return ErrPeriodTransitionNeedsAudit
+	}
+	if state == PeriodOpen {
+		return ErrInvalidPeriodTransition
+	}
+	repository, ok := s.repo.(PeriodLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.TransitionPeriodStateContext(ctx, companyID, periodID, state, actorID, strings.TrimSpace(reason))
+}
+
+// ReopenPeriodContext is the only service operation that can reopen a period;
+// it requires an actor and a non-blank reason and is audited by the store.
+func (s *Service) ReopenPeriodContext(
+	ctx context.Context,
+	companyID, periodID, actorID uuid.UUID,
+	reason string,
+) error {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return errors.New("fiscal period context is required")
+		}
+		return ctx.Err()
+	}
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return ErrPeriodReopenRequiresAudit
+	}
+	repository, ok := s.repo.(PeriodLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.ReopenPeriodContext(ctx, companyID, periodID, actorID, strings.TrimSpace(reason))
+}
+
 // Deprecated: use RegisterAccountContext.
 func (s *Service) RegisterAccount(account Account) error {
 	return s.RegisterAccountContext(context.Background(), account)

@@ -155,6 +155,7 @@ type JournalEntry struct {
 	JournalID              uuid.UUID
 	PeriodID               uuid.UUID
 	EntryDate              time.Time
+	PostingDate            time.Time
 	Date                   time.Time
 	Status                 EntryStatus
 	SourceModule           string

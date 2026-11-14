@@ -21,8 +21,38 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 		ID:          "ias12",
 		Name:        "IAS 12",
 		Version:     "1.0.0",
-		Provides:    []standards.Capability{"deferred_tax"},
-		Description: "IAS 12 Income Taxes",
+		Provides:    []standards.Capability{standards.CapDeferredTax},
+		Description: "Limited-scope deferred-tax measurement; not a claim of IAS 12 compliance.",
+		Profile: &standards.StandardProfile{
+			Standard:      "IAS 12",
+			Edition:       "Not configured; host must select the applicable issued edition",
+			Amendments:    []string{"Not configured; host must select applicable amendments"},
+			EffectiveDate: "Not configured; host must supply the applicable effective date",
+			Jurisdiction:  "Not configured; host must identify its reporting jurisdiction",
+			Scope:         "Limited: deferred-tax measurement for supplied temporary differences using enacted rates and explicit DTA probability evidence.",
+			SupportedRequirements: []standards.StandardRequirement{
+				{ID: "IAS12-DEFERRED-MEASUREMENT-01", Summary: "Measure deferred tax on temporary differences using enacted rates and the supplied probability assessment for deductible differences.", Status: standards.RequirementLimited, Implementation: "internal/ias12/ias12.go:Measure", TestEvidence: "internal/ias12/ias12_test.go:TestMeasureDTAAndDTLSignsAndRates"},
+			},
+			UnimplementedRequirements: []standards.StandardRequirement{
+				{ID: "IAS12-CURRENT-TAX-WORKFLOW", Summary: "End-to-end current-tax measurement workflow.", Status: standards.RequirementNotImplemented},
+				{ID: "IAS12-PRESENTATION-DISCLOSURE", Summary: "Tax presentation and disclosure workflows.", Status: standards.RequirementNotImplemented},
+				{ID: "IAS12-POSTING-WORKFLOW", Summary: "Persistent tax workflow with configured journal mapping and application-layer posting.", Status: standards.RequirementNotImplemented},
+			},
+			Exclusions: []string{
+				"Complete current-tax, uncertain-tax, offsetting, presentation, and disclosure workflows.",
+				"Production journal mapping, persistence, and posting through the application service.",
+			},
+		},
+		Workflows: []standards.WorkflowDescriptor{
+			{
+				ID: "deferred-tax-measurement", Name: "Deferred-tax measurement",
+				Summary:        "Measure deferred-tax assets and liabilities from supplied carrying amounts, tax bases, enacted rates, and probability evidence.",
+				Inputs:         []string{"measurement period", "tax balances and tax bases", "enacted tax rates", "future taxable-profit probability evidence"},
+				Steps:          []string{"validate balances, currencies, and enacted rates", "classify temporary differences", "measure DTA and DTL"},
+				Outputs:        []string{"per-balance temporary differences", "deferred-tax assets and liabilities"},
+				RequirementIDs: []string{"IAS12-DEFERRED-MEASUREMENT-01"},
+			},
+		},
 	}
 }
 
@@ -50,16 +80,7 @@ func (m *Module) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) e
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
-	if registrar == nil {
-		return errors.New("rule registrar is required")
-	}
-	registrar.RegisterRule(events.PostingRule{
-		RuleID:              "ias12-tax",
-		EventType:           "IAS12_DEFERRED_TAX",
-		DebitAccountCode:    "5400", // Income Tax Expense
-		CreditAccountCode:   "2400", // Deferred Tax Liability
-		DescriptionTemplate: "IAS 12 Deferred Tax Accounting",
-	})
+	// Posting rules require a configured workflow and journal mapping.
 	return nil
 }
 

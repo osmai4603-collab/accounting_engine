@@ -10,9 +10,12 @@
 // policy validation.
 //
 // A configured policy unit selects currency and posting rules as of the
-// entry's effective date. It checks allowed currencies, ISO minor-unit
-// rounding, backdating, closed periods, and configured analytic assignments
-// before the atomic repository write. Hard-closed periods are never bypassed;
+// entry's effective date (`EntryDate`/`Date`). `PostingDate` is the server-set
+// UTC calendar date on which the posting transaction succeeds; backdating
+// compares these dates, and the fiscal period is selected from the effective
+// date. It checks allowed currencies, ISO minor-unit rounding, backdating,
+// closed periods, and configured analytic assignments before the atomic
+// repository write. Hard-closed periods are never bypassed;
 // soft-close and backdating exceptions require their respective authorizers.
 //
 // Repository and policy interfaces keep persistence and company-level rules

@@ -19,4 +19,10 @@
 // GetPeriodForCompanyDateContext deliberately returns a period regardless of
 // close state for policy checks; posting should otherwise use an open-period
 // lookup.
+//
+// Periods close only through open -> soft_closed -> hard_closed transitions.
+// Reopening is a separate, audited operation that requires an actor and a
+// non-blank reason; it never occurs as a side effect of a posting rollback.
+// Journal numbering is per journal within a company, and currency restrictions
+// are optional (an empty allow-list means unrestricted).
 package masterdata

@@ -21,8 +21,38 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 		ID:          "ifrs9",
 		Name:        "IFRS 9",
 		Version:     "1.0.0",
-		Provides:    []standards.Capability{"financial_instruments"},
-		Description: "IFRS 9 Financial Instruments",
+		Provides:    []standards.Capability{standards.CapFinancialInstruments},
+		Description: "Limited-scope expected credit loss measurement; not a claim of IFRS 9 compliance.",
+		Profile: &standards.StandardProfile{
+			Standard:      "IFRS 9",
+			Edition:       "Not configured; host must select the applicable issued edition",
+			Amendments:    []string{"Not configured; host must select applicable amendments"},
+			EffectiveDate: "Not configured; host must supply the applicable effective date",
+			Jurisdiction:  "Not configured; host must identify its reporting jurisdiction",
+			Scope:         "Limited: simplified provision-matrix ECL measurement for supplied trade-receivable exposures.",
+			SupportedRequirements: []standards.StandardRequirement{
+				{ID: "IFRS9-ECL-SIMPLIFIED-01", Summary: "Calculate a simplified ECL allowance for receivables using supplied aging-bucket rates and existing allowance.", Status: standards.RequirementLimited, Implementation: "internal/ifrs9/ecl.go:Calculate", TestEvidence: "internal/ifrs9/ecl_test.go:TestCalculateProvisionMatrixAndAllowanceAdjustment"},
+			},
+			UnimplementedRequirements: []standards.StandardRequirement{
+				{ID: "IFRS9-CLASSIFICATION-MEASUREMENT", Summary: "End-to-end classification and measurement workflows for financial instruments.", Status: standards.RequirementNotImplemented},
+				{ID: "IFRS9-GENERAL-ECL-WORKFLOW", Summary: "Complete general expected-credit-loss workflow across the financial-asset population.", Status: standards.RequirementNotImplemented},
+				{ID: "IFRS9-POSTING-WORKFLOW", Summary: "Persistent ECL workflow with configured journal mapping and application-layer posting.", Status: standards.RequirementNotImplemented},
+			},
+			Exclusions: []string{
+				"Financial-asset classification and measurement, derecognition, hedge accounting, and complete general ECL model coverage.",
+				"Production journal mapping, persistence, and posting through the application service.",
+			},
+		},
+		Workflows: []standards.WorkflowDescriptor{
+			{
+				ID: "receivables-ecl-measurement", Name: "Receivables ECL measurement",
+				Summary:        "Measure a simplified receivables allowance from host-supplied exposures, matrix rates, and existing allowance.",
+				Inputs:         []string{"measurement date", "receivable exposures and aging", "provision matrix rates", "existing allowance"},
+				Steps:          []string{"validate configuration and measurement date", "classify exposures by aging bucket", "calculate required allowance and adjustment"},
+				Outputs:        []string{"per-receivable ECL results", "required allowance", "allowance adjustment"},
+				RequirementIDs: []string{"IFRS9-ECL-SIMPLIFIED-01"},
+			},
+		},
 	}
 }
 
@@ -50,16 +80,7 @@ func (m *Module) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) e
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {
-	if registrar == nil {
-		return errors.New("rule registrar is required")
-	}
-	registrar.RegisterRule(events.PostingRule{
-		RuleID:              "ifrs9-ecl",
-		EventType:           "IFRS9_ECL_PROVISION",
-		DebitAccountCode:    "5300",
-		CreditAccountCode:   "1290",
-		DescriptionTemplate: "IFRS 9 Expected Credit Loss Provision",
-	})
+	// Posting rules require a configured workflow and journal mapping.
 	return nil
 }
 

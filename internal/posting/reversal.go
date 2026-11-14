@@ -139,9 +139,10 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	if err := reversal.Validate(); err != nil {
 		return JournalEntry{}, false, err
 	}
-	if err := e.prepareForPosting(ctx, &reversal, reversal.PostedBy); err != nil {
+	if err := e.prepareForPosting(ctx, &reversal, reversal.PostedBy, now); err != nil {
 		return JournalEntry{}, false, err
 	}
+	reversal.PostingDate = calendarDate(now)
 	reversal.Status = EntryPosted
 	reversal.PostedAt = &now
 	reversal.UpdatedAt = now

@@ -86,14 +86,15 @@ func (e *Engine) postBulkAtomic(ctx context.Context, repository BulkRepository, 
 		copy(entries, originals)
 	}
 
+	now := time.Now().UTC()
 	for i := range entries {
-		if err := e.prepareForPosting(ctx, &entries[i], posterID); err != nil {
+		if err := e.prepareForPosting(ctx, &entries[i], posterID, now); err != nil {
 			restore()
 			return &BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
 		}
 	}
-	now := time.Now().UTC()
 	for i := range entries {
+		entries[i].PostingDate = calendarDate(now)
 		entries[i].PostedBy = posterID
 		entries[i].PostedAt = &now
 		entries[i].Status = EntryPosted

@@ -100,6 +100,32 @@ func (r contextRepositoryAdapter) UpdatePeriodState(uuid.UUID, PeriodState) erro
 	return ErrCompanyScopeRequired
 }
 
+func (r contextRepositoryAdapter) TransitionPeriodStateContext(
+	ctx context.Context,
+	companyID, periodID uuid.UUID,
+	state PeriodState,
+	actorID uuid.UUID,
+	reason string,
+) error {
+	repository, ok := r.repository.(PeriodLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.TransitionPeriodStateContext(ctx, companyID, periodID, state, actorID, reason)
+}
+
+func (r contextRepositoryAdapter) ReopenPeriodContext(
+	ctx context.Context,
+	companyID, periodID, actorID uuid.UUID,
+	reason string,
+) error {
+	repository, ok := r.repository.(PeriodLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.ReopenPeriodContext(ctx, companyID, periodID, actorID, reason)
+}
+
 func (r contextRepositoryAdapter) GetNextSequenceWithLock(uuid.UUID) (int64, error) {
 	return 0, ErrCompanyScopeRequired
 }

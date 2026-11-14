@@ -202,13 +202,15 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		}
 		return ErrEntryNotDraft
 	}
-	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
+	postingDate := time.Now().UTC()
+	if err = e.prepareForPosting(ctx, entry, posterID, postingDate); err != nil {
 		return err
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	now := time.Now().UTC()
+	now := postingDate
+	entry.PostingDate = calendarDate(now)
 	entry.PostedBy = posterID
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
@@ -219,6 +221,7 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 			entry.Status = EntryDraft
 			entry.PostedBy = ""
 			entry.PostedAt = nil
+			entry.PostingDate = time.Time{}
 			return postErr
 		}
 		*entry = posted
@@ -229,6 +232,7 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		entry.Status = EntryDraft
 		entry.PostedBy = ""
 		entry.PostedAt = nil
+		entry.PostingDate = time.Time{}
 		return sequenceErr
 	}
 	entry.SequenceNumber = sequence
@@ -237,6 +241,7 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		entry.PostedBy = ""
 		entry.PostedAt = nil
 		entry.SequenceNumber = 0
+		entry.PostingDate = time.Time{}
 		return postErr
 	}
 	return nil
@@ -325,7 +330,8 @@ func (e *Engine) postEntryWithAttachmentContext(
 			}
 		}
 	}
-	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
+	now := time.Now().UTC()
+	if err = e.prepareForPosting(ctx, entry, posterID, now); err != nil {
 		return err
 	}
 
@@ -333,7 +339,7 @@ func (e *Engine) postEntryWithAttachmentContext(
 	defer e.mu.Unlock()
 
 	original := *entry
-	now := time.Now().UTC()
+	entry.PostingDate = calendarDate(now)
 	entry.PostedBy = posterID
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
@@ -401,13 +407,14 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	if !ok {
 		return ErrAtomicPostingOpenLineRequired
 	}
-	if err = e.prepareForPosting(ctx, entry, posterID); err != nil {
+	now := time.Now().UTC()
+	if err = e.prepareForPosting(ctx, entry, posterID, now); err != nil {
 		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	original := *entry
-	now := time.Now().UTC()
+	entry.PostingDate = calendarDate(now)
 	entry.PostedBy = posterID
 	entry.PostedAt = &now
 	entry.Status = EntryPosted
@@ -421,7 +428,7 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	return nil
 }
 
-func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, posterID string) error {
+func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, posterID string, postingDate time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -473,7 +480,7 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 		if err := validateCurrencyPolicyAmounts(*entry, *currencyPolicy); err != nil {
 			return err
 		}
-		if backdatingDays := policy.BackdatingDays(date, time.Now().UTC()); backdatingDays > postingCurrency.MaxBackdatingDays {
+		if backdatingDays := policy.BackdatingDays(date, postingDate); backdatingDays > postingCurrency.MaxBackdatingDays {
 			approved := false
 			if postingCurrency.AllowBackdatingException {
 				approved, err = e.policyUnit.AuthorizeBackdatingException(ctx, entry.CompanyID, entry.ID, posterID)
@@ -656,6 +663,11 @@ func effectiveDate(entry *JournalEntry) time.Time {
 		return entry.EntryDate
 	}
 	return entry.Date
+}
+
+func calendarDate(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func (e *Engine) checkMakerChecker(ctx context.Context, entry *JournalEntry, posterID string) error {
