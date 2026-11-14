@@ -40,6 +40,16 @@ var rlsProtectedTables = []string{
 	"subledger_reconciliation_exception_events",
 	"subledger_reconciliation_logs",
 	"subledger_reconciliation_certificates",
+	"governance_policies",
+	"ifrs15_revenue_contracts",
+	"public_event_ingestions",
+	"public_event_account_mappings",
+	"accounting_policy_versions",
+	"accounting_policy_audit_logs",
+	"financial_statement_notes",
+	"reporting_taxonomies",
+	"reporting_taxonomy_nodes",
+	"reporting_account_tags",
 }
 
 // TestEveryFinancialTableHasForcedRLS is the continuous isolation guard

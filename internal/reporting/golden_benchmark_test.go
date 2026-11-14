@@ -128,6 +128,11 @@ func TestGoldenAccountingBenchmark(t *testing.T) {
 	createAccount("7000", "Income Tax Expense", masterdata.AccountTypeExpense, masterdata.SubClassIncomeTaxExpense, false, masterdata.CashFlowOperating, masterdata.IFRSCategoryIncomeTaxes)
 
 	journalID := uuid.New()
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatalf("CreateJournal: %v", err)
+	}
 	moneyVal := func(amount string) financialtypes.Money {
 		m, err := financialtypes.NewMoneyFromString(amount, "USD")
 		if err != nil {

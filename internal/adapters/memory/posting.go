@@ -927,6 +927,21 @@ func (d *Driver) ListEntriesForCompanyContext(ctx context.Context, companyID uui
 	return d.ListEntriesForCompany(companyID, start, end)
 }
 
+func (d *Driver) ListDraftEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]posting.JournalEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var drafts []posting.JournalEntry
+	for _, entry := range d.entries {
+		if entry.CompanyID == companyID && entry.Status == posting.EntryDraft {
+			drafts = append(drafts, cloneEntry(entry))
+		}
+	}
+	return drafts, nil
+}
+
 func (d *Driver) ReadAccountPeriodBalancesForCompanyContext(
 	ctx context.Context,
 	companyID uuid.UUID,

@@ -101,7 +101,13 @@ func TestFinancialStatementsReadMaterializedPeriodBalances(t *testing.T) {
 	capital, _ := financialtypes.NewMoneyFromString("80", "USD")
 	revenue, _ := financialtypes.NewMoneyFromString("20", "USD")
 	zero, _ := financialtypes.Zero("USD")
-	entry, err := posting.NewJournalEntry(uuid.New(), year.StartDate.Add(time.Hour), "test",
+	journalID := uuid.New()
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := posting.NewJournalEntry(journalID, year.StartDate.Add(time.Hour), "test",
 		[]posting.JournalEntryLine{
 			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts[0].ID, Debit: cash, Credit: zero},
 			{CompanyID: companyID, ID: uuid.New(), AccountID: accounts[1].ID, Debit: zero, Credit: capital},
@@ -822,7 +828,13 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	activity, err := posting.NewJournalEntry(uuid.New(), time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), "test",
+	journalID := uuid.New()
+	if err := repository.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activity, err := posting.NewJournalEntry(journalID, time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), "test",
 		[]posting.JournalEntryLine{
 			{CompanyID: companyID, AccountID: debitAccountID, Debit: reportMoney(t, "1", "USD"), Credit: reportMoney(t, "0", "USD")},
 			{CompanyID: companyID, AccountID: incomeAccountID, Debit: reportMoney(t, "0", "USD"), Credit: reportMoney(t, "1", "USD")},
@@ -851,7 +863,7 @@ func TestConfirmFiscalYearCloseRequiresPostedClosingAndClosesYear(t *testing.T) 
 	}
 	period13 := year.Periods[12]
 	entry, _, err := reporting.NewClosingEngine(repository).GenerateClosingMoveContext(
-		ctx, year, uuid.New(), retainedEarningsID, "USD",
+		ctx, year, journalID, retainedEarningsID, "USD",
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -487,6 +487,12 @@ func TestReversalMatchingNumberAndReconciledAmountLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	invalidReversal := reversal
+	invalidReversal.Lines = append([]posting.JournalEntryLine(nil), reversal.Lines...)
+	invalidReversal.Lines[0].ReconciledAmount = decimal.RequireFromString("1.00")
+	if err := posting.ValidateReversalLines(storedOriginal, invalidReversal); !errors.Is(err, posting.ErrInvalidReversal) {
+		t.Errorf("Reversal with a reconciled amount error = %v, want ErrInvalidReversal", err)
+	}
 	for i, line := range storedOriginal.Lines {
 		if line.MatchingNumber != "MATCH-CYCLE-2026" {
 			t.Errorf("Original line %d MatchingNumber mutated: %q", i, line.MatchingNumber)

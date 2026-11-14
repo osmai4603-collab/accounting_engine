@@ -30,6 +30,7 @@ func ValidateReversalLines(original, reversal JournalEntry) error {
 			if originalResolved.TransactionAmount.Equal(reversalResolved.TransactionAmount) &&
 				originalResolved.TransactionCurrency == reversalResolved.TransactionCurrency &&
 				originalResolved.ExchangeRate.Equal(reversalResolved.ExchangeRate) &&
+				reversalLine.ReconciledAmount.IsZero() &&
 				originalResolved.FunctionalDebit.Equal(reversalResolved.FunctionalCredit) &&
 				originalResolved.FunctionalCredit.Equal(reversalResolved.FunctionalDebit) {
 				matched[i] = true

@@ -232,6 +232,11 @@ func TestPhaseCParityMemoryAndPostgres(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := mem.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	postPair := func(d interface {
 		SaveDraftContext(context.Context, posting.JournalEntry) error

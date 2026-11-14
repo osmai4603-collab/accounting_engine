@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
@@ -126,7 +128,108 @@ func (s *GRPCServer) PostEntry(ctx context.Context, request *accountingv1.PostEn
 	if err := s.authorizeCompany(ctx, companyID); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.InvalidArgument, "PostEntry requires a complete journal entry; this request only supplies company_id and description")
+
+	if draftIDStr := request.GetDraftEntryId(); draftIDStr != "" {
+		draftID, err := parseEntryID(draftIDStr)
+		if err != nil {
+			return nil, err
+		}
+		entry, err := s.engine.Ledger().GetEntry(ctx, companyID, draftID)
+		if err != nil {
+			return nil, grpcApplicationError(err)
+		}
+		posted, err := s.engine.Ledger().PostEntry(ctx, entry)
+		if err != nil {
+			return nil, grpcApplicationError(err)
+		}
+		return &accountingv1.PostEntryResponse{
+			EntryId:     uuid.UUID(posted.ID).String(),
+			Status:      string(posted.Status),
+			EntryNumber: posted.EntryNumber,
+		}, nil
+	}
+
+	if len(request.GetLines()) == 0 || request.GetJournalId() == "" || request.GetFiscalPeriodId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "PostEntry requires complete entry details (journal_id, fiscal_period_id, lines) or draft_entry_id")
+	}
+
+	journalID, err := uuid.Parse(request.GetJournalId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid journal_id")
+	}
+	periodID, err := uuid.Parse(request.GetFiscalPeriodId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid fiscal_period_id")
+	}
+	effectiveDate, err := parseDate(request.GetEffectiveDate())
+	if err != nil {
+		return nil, err
+	}
+
+	lines := make([]ledger.EntryLine, len(request.GetLines()))
+	for i, l := range request.GetLines() {
+		accID, err := uuid.Parse(l.GetAccountId())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "line %d: invalid account_id", i)
+		}
+		curr := l.GetTransactionCurrency()
+		if curr == "" {
+			curr = request.GetTransactionCurrency()
+		}
+		if curr == "" {
+			curr = "USD"
+		}
+		txnAmt, err := types.NewMoneyFromString(l.GetTransactionAmount(), curr)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "line %d: invalid transaction_amount: %v", i, err)
+		}
+		debit, err := types.NewMoneyFromString(l.GetFunctionalDebit(), curr)
+		if err != nil {
+			debit, _ = types.Zero(curr)
+		}
+		credit, err := types.NewMoneyFromString(l.GetFunctionalCredit(), curr)
+		if err != nil {
+			credit, _ = types.Zero(curr)
+		}
+		lineID := uuid.New()
+		if l.GetLineId() != "" {
+			if parsedLineID, err := uuid.Parse(l.GetLineId()); err == nil {
+				lineID = parsedLineID
+			}
+		}
+		lines[i] = ledger.EntryLine{
+			ID:                  types.JournalEntryLineID(lineID),
+			AccountID:           types.AccountID(accID),
+			TransactionAmount:   txnAmt,
+			TransactionCurrency: curr,
+			FunctionalDebit:     debit,
+			FunctionalCredit:    credit,
+		}
+	}
+
+	entry := ledger.JournalEntry{
+		ID:                  types.JournalEntryID(uuid.New()),
+		CompanyID:           companyID,
+		JournalID:           types.JournalID(journalID),
+		FiscalPeriodID:      types.FiscalPeriodID(periodID),
+		EffectiveDate:       effectiveDate,
+		Description:         request.GetDescription(),
+		SourceModule:        request.GetSourceModule(),
+		ReferenceID:         request.GetReferenceId(),
+		TransactionCurrency: request.GetTransactionCurrency(),
+		Lines:               lines,
+		Status:              ledger.EntryDraft,
+	}
+
+	posted, err := s.engine.Ledger().PostEntry(ctx, entry)
+	if err != nil {
+		return nil, grpcApplicationError(err)
+	}
+	return &accountingv1.PostEntryResponse{
+		EntryId:     uuid.UUID(posted.ID).String(),
+		Status:      string(posted.Status),
+		EntryNumber: posted.EntryNumber,
+	}, nil
 }
 
 func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntryRequest) (*accountingv1.GetEntryResponse, error) {
@@ -145,9 +248,49 @@ func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntr
 	if err != nil {
 		return nil, grpcApplicationError(err)
 	}
+	protoLines := make([]*accountingv1.EntryLineProto, len(entry.Lines))
+	for i, l := range entry.Lines {
+		protoLines[i] = &accountingv1.EntryLineProto{
+			LineId:              uuid.UUID(l.ID).String(),
+			AccountId:           uuid.UUID(l.AccountID).String(),
+			TransactionAmount:   l.TransactionAmount.String(),
+			TransactionCurrency: l.TransactionCurrency,
+			FunctionalDebit:     l.FunctionalDebit.String(),
+			FunctionalCredit:    l.FunctionalCredit.String(),
+		}
+	}
 	return &accountingv1.GetEntryResponse{
-		EntryId: uuid.UUID(entry.ID).String(),
-		Status:  string(entry.Status),
+		EntryId:       uuid.UUID(entry.ID).String(),
+		CompanyId:     uuid.UUID(entry.CompanyID).String(),
+		JournalId:     uuid.UUID(entry.JournalID).String(),
+		EntryNumber:   entry.EntryNumber,
+		Status:        string(entry.Status),
+		EffectiveDate: entry.EffectiveDate.Format("2006-01-02"),
+		Description:   entry.Description,
+		Lines:         protoLines,
+	}, nil
+}
+
+func (s *GRPCServer) ReverseEntry(ctx context.Context, request *accountingv1.ReverseEntryRequest) (*accountingv1.ReverseEntryResponse, error) {
+	companyID, err := parseCompanyID(request.GetCompanyId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
+		return nil, err
+	}
+	entryID, err := parseEntryID(request.GetEntryId())
+	if err != nil {
+		return nil, err
+	}
+	reversed, err := s.engine.Ledger().ReverseEntry(ctx, companyID, entryID, request.GetReason())
+	if err != nil {
+		return nil, grpcApplicationError(err)
+	}
+	return &accountingv1.ReverseEntryResponse{
+		OriginalEntryId: uuid.UUID(entryID).String(),
+		ReversalEntryId: uuid.UUID(reversed.ID).String(),
+		Status:          string(reversed.Status),
 	}, nil
 }
 
@@ -169,11 +312,31 @@ func (s *GRPCServer) GetTrialBalance(ctx context.Context, request *accountingv1.
 	}
 	trialBalance, err := s.engine.Reporting().GetTrialBalance(ctx, companyID, asOf, currency)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get trial balance: %v", err)
+		return nil, grpcApplicationError(err)
+	}
+	lines := make([]*accountingv1.TrialBalanceLineProto, len(trialBalance.Lines))
+	for i, l := range trialBalance.Lines {
+		lines[i] = &accountingv1.TrialBalanceLineProto{
+			AccountId:     uuid.UUID(l.AccountID).String(),
+			AccountCode:   l.AccountCode,
+			AccountName:   l.AccountName,
+			AccountType:   l.AccountType,
+			OpeningDebit:  l.OpeningDebit.String(),
+			OpeningCredit: l.OpeningCredit.String(),
+			PeriodDebit:   l.PeriodDebit.String(),
+			PeriodCredit:  l.PeriodCredit.String(),
+			EndingDebit:   l.EndingDebit.String(),
+			EndingCredit:  l.EndingCredit.String(),
+		}
 	}
 	return &accountingv1.GetTrialBalanceResponse{
-		CompanyId:  uuid.UUID(trialBalance.CompanyID).String(),
-		IsBalanced: trialBalance.IsBalanced,
+		CompanyId:   uuid.UUID(trialBalance.CompanyID).String(),
+		AsOfDate:    trialBalance.AsOfDate.Format("2006-01-02"),
+		Currency:    trialBalance.Currency,
+		IsBalanced:  trialBalance.IsBalanced,
+		TotalDebit:  trialBalance.TotalDebit.String(),
+		TotalCredit: trialBalance.TotalCredit.String(),
+		Lines:       lines,
 	}, nil
 }
 
@@ -195,11 +358,36 @@ func (s *GRPCServer) GetBalanceSheet(ctx context.Context, request *accountingv1.
 	}
 	report, err := s.engine.Reporting().GetBalanceSheet(ctx, companyID, asOf, currency)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get balance sheet: %v", err)
+		return nil, grpcApplicationError(err)
 	}
+
+	mapSection := func(sec reporting.BalanceSheetSection) *accountingv1.ReportSectionProto {
+		lines := make([]*accountingv1.ReportLineProto, len(sec.Lines))
+		for i, l := range sec.Lines {
+			lines[i] = &accountingv1.ReportLineProto{
+				AccountId:   uuid.UUID(l.AccountID).String(),
+				AccountCode: l.AccountCode,
+				AccountName: l.AccountName,
+				Amount:      l.Amount.String(),
+			}
+		}
+		return &accountingv1.ReportSectionProto{
+			Title:       sec.Title,
+			TotalAmount: sec.TotalAmount.String(),
+			Lines:       lines,
+		}
+	}
+
 	return &accountingv1.GetBalanceSheetResponse{
-		CompanyId: uuid.UUID(report.CompanyID).String(),
-		Success:   true,
+		CompanyId:                 uuid.UUID(report.CompanyID).String(),
+		AsOfDate:                  report.AsOfDate.Format("2006-01-02"),
+		Currency:                  report.Currency,
+		IsBalanced:                report.IsBalanced,
+		TotalAssets:               report.TotalAssets.String(),
+		TotalLiabilitiesAndEquity: report.TotalLiabEquity.String(),
+		Assets:                    mapSection(report.Assets),
+		Liabilities:               mapSection(report.Liabilities),
+		Equity:                    mapSection(report.Equity),
 	}, nil
 }
 
@@ -225,11 +413,34 @@ func (s *GRPCServer) GetIncomeStatement(ctx context.Context, request *accounting
 	}
 	report, err := s.engine.Reporting().GetIncomeStatement(ctx, companyID, start, end, currency)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get income statement: %v", err)
+		return nil, grpcApplicationError(err)
 	}
+
+	mapSection := func(sec reporting.IncomeStatementSection) *accountingv1.ReportSectionProto {
+		lines := make([]*accountingv1.ReportLineProto, len(sec.Lines))
+		for i, l := range sec.Lines {
+			lines[i] = &accountingv1.ReportLineProto{
+				AccountId:   uuid.UUID(l.AccountID).String(),
+				AccountCode: l.AccountCode,
+				AccountName: l.AccountName,
+				Amount:      l.Amount.String(),
+			}
+		}
+		return &accountingv1.ReportSectionProto{
+			Title:       sec.Title,
+			TotalAmount: sec.TotalAmount.String(),
+			Lines:       lines,
+		}
+	}
+
 	return &accountingv1.GetIncomeStatementResponse{
 		CompanyId: uuid.UUID(report.CompanyID).String(),
-		Success:   true,
+		StartDate: report.StartDate.Format("2006-01-02"),
+		EndDate:   report.EndDate.Format("2006-01-02"),
+		Currency:  report.Currency,
+		NetIncome: report.NetIncome.String(),
+		Revenues:  mapSection(report.Revenues),
+		Expenses:  mapSection(report.Expenses),
 	}, nil
 }
 
@@ -301,8 +512,7 @@ func grpcRequestMetadata(ctx context.Context, fallbackSource string) publicappli
 		}
 		return values[0]
 	}
-	// Prefer metadata already injected by the authentication boundary and fill
-	// only missing fields so the boundary stays authoritative.
+
 	requestMetadata, _ := publicapplication.RequestMetadataFromContext(ctx)
 	if requestMetadata.CorrelationID == "" {
 		requestMetadata.CorrelationID = first("x-correlation-id")

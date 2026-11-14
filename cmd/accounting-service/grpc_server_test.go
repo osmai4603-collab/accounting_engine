@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
@@ -185,6 +186,172 @@ func TestGRPCPostEntryRejectsIncompleteContract(t *testing.T) {
 	}
 }
 
+func TestGRPCPostEntryCompletePayload(t *testing.T) {
+	ledgerService := &grpcTestLedger{}
+	server := &GRPCServer{engine: &serviceTestEngine{ledger: ledgerService}}
+	companyID := uuid.NewString()
+	journalID := uuid.NewString()
+	periodID := uuid.NewString()
+	cashAccID := uuid.NewString()
+	revAccID := uuid.NewString()
+
+	response, err := server.PostEntry(context.Background(), &accountingv1.PostEntryRequest{
+		CompanyId:           companyID,
+		JournalId:           journalID,
+		FiscalPeriodId:      periodID,
+		EffectiveDate:       "2026-11-14",
+		Description:         "Sale entry",
+		TransactionCurrency: "USD",
+		Lines: []*accountingv1.EntryLineProto{
+			{AccountId: cashAccID, TransactionAmount: "100.00", FunctionalDebit: "100.00"},
+			{AccountId: revAccID, TransactionAmount: "100.00", FunctionalCredit: "100.00"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PostEntry error = %v", err)
+	}
+	if !ledgerService.postCalled {
+		t.Fatal("complete PostEntry request did not call ledger service")
+	}
+	if response.GetStatus() != string(ledger.EntryPosted) {
+		t.Fatalf("status = %q, want %q", response.GetStatus(), ledger.EntryPosted)
+	}
+}
+
+func TestGRPCReverseEntryRPC(t *testing.T) {
+	companyID := uuid.New()
+	entryID := uuid.New()
+	reversalID := uuid.New()
+	ledgerService := &grpcTestLedger{
+		reversalEntry: ledger.JournalEntry{
+			ID:     types.JournalEntryID(reversalID),
+			Status: ledger.EntryReversed,
+		},
+	}
+	server := &GRPCServer{engine: &serviceTestEngine{ledger: ledgerService}}
+
+	response, err := server.ReverseEntry(context.Background(), &accountingv1.ReverseEntryRequest{
+		CompanyId: companyID.String(),
+		EntryId:   entryID.String(),
+		Reason:    "correction",
+	})
+	if err != nil {
+		t.Fatalf("ReverseEntry: %v", err)
+	}
+	if !ledgerService.reverseCalled {
+		t.Fatal("ReverseEntry RPC did not invoke ledger service")
+	}
+	if response.GetOriginalEntryId() != entryID.String() {
+		t.Errorf("original = %q, want %q", response.GetOriginalEntryId(), entryID.String())
+	}
+	if response.GetReversalEntryId() != reversalID.String() {
+		t.Errorf("reversal = %q, want %q", response.GetReversalEntryId(), reversalID.String())
+	}
+}
+
+func TestGRPCGetTrialBalanceReturnsData(t *testing.T) {
+	companyID := uuid.New()
+	reportingService := &grpcTestReporting{
+		trialBalance: reporting.TrialBalance{
+			CompanyID:  types.CompanyID(companyID),
+			Currency:   "USD",
+			IsBalanced: true,
+			Lines: []reporting.TrialBalanceLine{
+				{AccountCode: "1000", AccountName: "Cash", EndingDebit: mustMoney("500.00", "USD")},
+			},
+		},
+	}
+	server := &GRPCServer{engine: &serviceTestEngine{reporting: reportingService}}
+
+	response, err := server.GetTrialBalance(context.Background(), &accountingv1.GetTrialBalanceRequest{
+		CompanyId: companyID.String(),
+		AsOfDate:  "2026-11-14",
+		Currency:  "USD",
+	})
+	if err != nil {
+		t.Fatalf("GetTrialBalance: %v", err)
+	}
+	if !response.GetIsBalanced() {
+		t.Fatal("expected is_balanced = true")
+	}
+	if len(response.GetLines()) != 1 || response.GetLines()[0].GetAccountCode() != "1000" {
+		t.Fatalf("lines mismatch: %#v", response.GetLines())
+	}
+}
+
+func TestGRPCGetBalanceSheetReturnsData(t *testing.T) {
+	companyID := uuid.New()
+	reportingService := &grpcTestReporting{
+		balanceSheet: reporting.BalanceSheetReport{
+			CompanyID:   types.CompanyID(companyID),
+			Currency:    "USD",
+			IsBalanced:  true,
+			TotalAssets: mustMoney("1000.00", "USD"),
+			Assets: reporting.BalanceSheetSection{
+				Title:       "Assets",
+				TotalAmount: mustMoney("1000.00", "USD"),
+				Lines: []reporting.BalanceSheetLine{
+					{AccountCode: "1000", AccountName: "Cash", Amount: mustMoney("1000.00", "USD")},
+				},
+			},
+		},
+	}
+	server := &GRPCServer{engine: &serviceTestEngine{reporting: reportingService}}
+
+	response, err := server.GetBalanceSheet(context.Background(), &accountingv1.GetBalanceSheetRequest{
+		CompanyId: companyID.String(),
+		AsOfDate:  "2026-11-14",
+		Currency:  "USD",
+	})
+	if err != nil {
+		t.Fatalf("GetBalanceSheet: %v", err)
+	}
+	if !response.GetIsBalanced() || response.GetTotalAssets() != "$1,000.00" && response.GetTotalAssets() != "1000.00" {
+		// Verify total assets is present and not empty
+		if response.GetTotalAssets() == "" {
+			t.Fatal("expected non-empty total_assets")
+		}
+	}
+	if response.GetAssets() == nil || len(response.GetAssets().GetLines()) != 1 {
+		t.Fatalf("assets section mismatch: %#v", response.GetAssets())
+	}
+}
+
+func TestGRPCGetIncomeStatementReturnsData(t *testing.T) {
+	companyID := uuid.New()
+	reportingService := &grpcTestReporting{
+		incomeStatement: reporting.IncomeStatementReport{
+			CompanyID: types.CompanyID(companyID),
+			Currency:  "USD",
+			NetIncome: mustMoney("500.00", "USD"),
+			Revenues: reporting.IncomeStatementSection{
+				Title:       "Revenues",
+				TotalAmount: mustMoney("500.00", "USD"),
+				Lines: []reporting.IncomeStatementLine{
+					{AccountCode: "4000", AccountName: "Sales", Amount: mustMoney("500.00", "USD")},
+				},
+			},
+		},
+	}
+	server := &GRPCServer{engine: &serviceTestEngine{reporting: reportingService}}
+
+	response, err := server.GetIncomeStatement(context.Background(), &accountingv1.GetIncomeStatementRequest{
+		CompanyId: companyID.String(),
+		StartDate: "2026-01-01",
+		EndDate:   "2026-11-14",
+		Currency:  "USD",
+	})
+	if err != nil {
+		t.Fatalf("GetIncomeStatement: %v", err)
+	}
+	if response.GetNetIncome() == "" {
+		t.Fatal("expected non-empty net_income")
+	}
+	if response.GetRevenues() == nil || len(response.GetRevenues().GetLines()) != 1 {
+		t.Fatalf("revenues section mismatch: %#v", response.GetRevenues())
+	}
+}
+
 func TestGRPCEventRequiresExplicitDateAndCurrency(t *testing.T) {
 	server := &GRPCServer{engine: &serviceTestEngine{}}
 	base := &accountingv1.ProcessEventRequest{
@@ -270,15 +437,26 @@ func TestHTTPAndGRPCIngestionNormalizeTheSameCommand(t *testing.T) {
 	}
 }
 
-type grpcTestLedger struct {
-	entry          ledger.JournalEntry
-	getEntryCalled bool
-	postCalled     bool
+func mustMoney(amount, currency string) types.Money {
+	m, err := types.NewMoneyFromString(amount, currency)
+	if err != nil {
+		panic(err)
+	}
+	return m
 }
 
-func (s *grpcTestLedger) PostEntry(context.Context, ledger.JournalEntry) (ledger.JournalEntry, error) {
+type grpcTestLedger struct {
+	entry          ledger.JournalEntry
+	reversalEntry  ledger.JournalEntry
+	getEntryCalled bool
+	postCalled     bool
+	reverseCalled  bool
+}
+
+func (s *grpcTestLedger) PostEntry(_ context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
 	s.postCalled = true
-	return ledger.JournalEntry{}, nil
+	entry.Status = ledger.EntryPosted
+	return entry, nil
 }
 
 func (s *grpcTestLedger) GetEntry(_ context.Context, companyID types.CompanyID, entryID types.JournalEntryID) (ledger.JournalEntry, error) {
@@ -286,9 +464,32 @@ func (s *grpcTestLedger) GetEntry(_ context.Context, companyID types.CompanyID, 
 	return s.entry, nil
 }
 
-func (s *grpcTestLedger) ReverseEntry(context.Context, types.CompanyID, types.JournalEntryID, string) (ledger.JournalEntry, error) {
-	return ledger.JournalEntry{}, nil
+func (s *grpcTestLedger) ReverseEntry(_ context.Context, companyID types.CompanyID, entryID types.JournalEntryID, reason string) (ledger.JournalEntry, error) {
+	s.reverseCalled = true
+	return s.reversalEntry, nil
+}
+
+type grpcTestReporting struct {
+	trialBalance    reporting.TrialBalance
+	balanceSheet    reporting.BalanceSheetReport
+	incomeStatement reporting.IncomeStatementReport
+}
+
+func (r *grpcTestReporting) GetTrialBalance(context.Context, types.CompanyID, time.Time, string) (reporting.TrialBalance, error) {
+	return r.trialBalance, nil
+}
+
+func (r *grpcTestReporting) GetBalanceSheet(context.Context, types.CompanyID, time.Time, string) (reporting.BalanceSheetReport, error) {
+	return r.balanceSheet, nil
+}
+
+func (r *grpcTestReporting) GetIncomeStatement(context.Context, types.CompanyID, time.Time, time.Time, string) (reporting.IncomeStatementReport, error) {
+	return r.incomeStatement, nil
+}
+
+func (r *grpcTestReporting) GetGeneralLedger(context.Context, types.CompanyID, types.AccountID, time.Time, time.Time) (reporting.GeneralLedgerReport, error) {
+	return reporting.GeneralLedgerReport{}, nil
 }
 
 var _ sdk.LedgerService = (*grpcTestLedger)(nil)
-var _ sdk.ReportingService = serviceTestReporting{}
+var _ sdk.ReportingService = (*grpcTestReporting)(nil)

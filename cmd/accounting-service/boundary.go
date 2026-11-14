@@ -84,7 +84,7 @@ func (b *httpAuthBoundary) middleware(next http.Handler) http.Handler {
 			if b.challenge != "" {
 				w.Header().Set("WWW-Authenticate", b.challenge)
 			}
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+			writeHTTPError(w, r, http.StatusUnauthorized, "unauthorized", "authentication required")
 			return
 		}
 		ctx := publicapplication.WithPrincipal(r.Context(), principalFromIdentity(identity))
@@ -151,8 +151,8 @@ type configurationErrorHandler struct {
 	reason error
 }
 
-func (h configurationErrorHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "service is misconfigured", http.StatusServiceUnavailable)
+func (h configurationErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	writeHTTPError(w, r, http.StatusServiceUnavailable, "service_unavailable", "service is misconfigured")
 }
 
 func logAuthConfigurationError(err error) {

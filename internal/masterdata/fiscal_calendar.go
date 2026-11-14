@@ -138,4 +138,15 @@ func ValidateFiscalYearTransition(from, to FiscalYearState) error {
 	return nil
 }
 
+// ValidateFiscalYearReopen validates the audited reopening of a closed fiscal year.
+func ValidateFiscalYearReopen(from, to FiscalYearState, actorID uuid.UUID, reason string) error {
+	if (from != FiscalYearHardClosed && from != FiscalYearSoftClosed) || (to != FiscalYearOpen && to != FiscalYearSoftClosed) {
+		return ErrInvalidFiscalYearTransition
+	}
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return ErrPeriodReopenRequiresAudit
+	}
+	return nil
+}
+
 func (s PeriodState) IsOpen() bool { return s == PeriodOpen }

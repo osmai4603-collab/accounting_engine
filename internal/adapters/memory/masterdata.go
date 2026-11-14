@@ -46,6 +46,35 @@ func (d *Driver) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID)
 	return d.GetCompanyByID(companyID)
 }
 
+func (d *Driver) CreateJournal(ctx context.Context, journal masterdata.Journal) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if journal.ID == uuid.Nil || journal.CompanyID == uuid.Nil {
+		return masterdata.ErrInvalidJournalType
+	}
+	if _, ok := d.companies[journal.CompanyID]; !ok {
+		return masterdata.ErrInvalidCompany
+	}
+	for _, current := range d.journals {
+		if current.CompanyID == journal.CompanyID && strings.EqualFold(current.Code, journal.Code) {
+			return masterdata.ErrInvalidJournalType
+		}
+	}
+	if _, exists := d.journals[journal.ID]; exists {
+		return masterdata.ErrInvalidJournalType
+	}
+	d.journals[journal.ID] = journalRecord{
+		ID:        journal.ID,
+		CompanyID: journal.CompanyID,
+		Code:      journal.Code,
+		Name:      journal.Name,
+	}
+	return nil
+}
+
 func (d *Driver) GetJournalByCodeForCompany(ctx context.Context, companyID uuid.UUID, code string) (masterdata.Journal, error) {
 	if err := ctx.Err(); err != nil {
 		return masterdata.Journal{}, err
@@ -425,6 +454,28 @@ func (d *Driver) UpdateFiscalYearStateForCompanyContext(ctx context.Context, com
 	return d.UpdateFiscalYearState(ctx, companyID, id, state)
 }
 
+func (d *Driver) ReopenFiscalYearForCompanyContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	if actorID == uuid.Nil || reason == "" {
+		return masterdata.ErrPeriodReopenRequiresAudit
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	year, ok := d.years[id]
+	if !ok || year.CompanyID != companyID {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if err := masterdata.ValidateFiscalYearReopen(year.State, masterdata.FiscalYearOpen, actorID, reason); err != nil {
+		return err
+	}
+	year.State = masterdata.FiscalYearOpen
+	d.years[id] = year
+	return nil
+}
+
 func (d *Driver) GetFiscalYear(ctx context.Context, id uuid.UUID) (masterdata.FiscalYear, error) {
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalYear{}, err
@@ -555,6 +606,39 @@ func (d *Driver) UpdatePeriodStateForCompanyContext(ctx context.Context, company
 		return masterdata.ErrFiscalPeriodNotFound
 	}
 	return d.UpdatePeriodState(ctx, companyID, id, state)
+}
+
+func (d *Driver) ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	if actorID == uuid.Nil || reason == "" {
+		return masterdata.ErrPeriodReopenRequiresAudit
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	period, ok := d.periods[id]
+	if !ok || period.CompanyID != companyID {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	if err := masterdata.ValidatePeriodReopen(period.State, masterdata.PeriodOpen, actorID, reason); err != nil {
+		return err
+	}
+	period.State = masterdata.PeriodOpen
+	period.LastStateActorID = actorID
+	period.LastStateReason = reason
+	period.LastStateAt = time.Now().UTC()
+	d.periods[id] = period
+	for yearID, year := range d.years {
+		for i := range year.Periods {
+			if year.Periods[i].ID == id {
+				year.Periods[i] = period
+				d.years[yearID] = year
+			}
+		}
+	}
+	return nil
 }
 
 func (d *Driver) GetNextSequenceWithLock(ctx context.Context, companyID, id uuid.UUID) (int64, error) {

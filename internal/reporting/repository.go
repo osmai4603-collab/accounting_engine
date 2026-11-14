@@ -62,6 +62,14 @@ type FiscalYearRepository interface {
 	UpdateFiscalYearStateForCompanyContext(context.Context, uuid.UUID, uuid.UUID, masterdata.FiscalYearState) error
 }
 
+type FiscalYearReopenRepository interface {
+	ReopenFiscalYearForCompanyContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error
+}
+
+type PeriodReopenRepository interface {
+	ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error
+}
+
 type FiscalYearHistoryRepository interface {
 	IsFirstFiscalYearForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 }
@@ -72,6 +80,10 @@ type BalanceCarryForwardRepository interface {
 
 type CompanyScopedClosingRepository interface {
 	GetEntryByIDForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (posting.JournalEntry, error)
+}
+
+type DraftEntryRepository interface {
+	ListDraftEntriesForCompanyContext(context.Context, uuid.UUID) ([]posting.JournalEntry, error)
 }
 
 var ErrCompanyScopeRequired = errors.New("company-scoped reporting repository is required")
@@ -264,4 +276,34 @@ func (r companyReportingRepository) GetEntryByIDForCompanyContext(ctx context.Co
 		return posting.JournalEntry{}, ErrCompanyScopeRequired
 	}
 	return r.ledger.GetEntryByIDForCompanyContext(r.ctx, companyID, entryID)
+}
+
+func (r companyReportingRepository) ListDraftEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]posting.JournalEntry, error) {
+	if companyID != r.companyID {
+		return nil, ErrCompanyScopeRequired
+	}
+	if draftRepo, ok := r.ledger.(DraftEntryRepository); ok {
+		return draftRepo.ListDraftEntriesForCompanyContext(r.ctx, companyID)
+	}
+	return nil, nil
+}
+
+func (r companyReportingRepository) ReopenFiscalYearForCompanyContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	if reopenRepo, ok := r.ledger.(FiscalYearReopenRepository); ok {
+		return reopenRepo.ReopenFiscalYearForCompanyContext(r.ctx, companyID, id, actorID, reason)
+	}
+	return nil
+}
+
+func (r companyReportingRepository) ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	if reopenRepo, ok := r.ledger.(PeriodReopenRepository); ok {
+		return reopenRepo.ReopenPeriodContext(r.ctx, companyID, id, actorID, reason)
+	}
+	return nil
 }

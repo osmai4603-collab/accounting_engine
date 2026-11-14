@@ -33,6 +33,7 @@ type ExchangeRate struct {
 	Rate          decimal.Decimal
 	EffectiveDate time.Time
 	Type          RateType
+	Source        string
 }
 
 func (r ExchangeRate) Validate() error {
@@ -181,6 +182,58 @@ func (r *RateRegistry) GetRateOfType(ctx context.Context, rateType RateType, fro
 		return decimal.NewFromInt(1).DivRound(inverse[0].Rate, financialtypes.InternalScale), nil
 	}
 	return decimal.Zero, ErrRateNotFound
+}
+
+// GetRateRecord returns the most recent matching ExchangeRate, whether an inverted quote was used,
+// and the effective rate. This enables historical reproducibility and full rate provenance.
+func (r *RateRegistry) GetRateRecord(ctx context.Context, rateType RateType, from, to string, date time.Time) (ExchangeRate, bool, decimal.Decimal, error) {
+	if err := ctx.Err(); err != nil {
+		return ExchangeRate{}, false, decimal.Zero, err
+	}
+	switch rateType {
+	case SpotRate, ClosingRate, AverageRate, HistoricalRate:
+	default:
+		return ExchangeRate{}, false, decimal.Zero, ErrInvalidRate
+	}
+	from = strings.ToUpper(strings.TrimSpace(from))
+	to = strings.ToUpper(strings.TrimSpace(to))
+	if _, ok := financialtypes.LookupCurrency(from); !ok {
+		return ExchangeRate{}, false, decimal.Zero, ErrInvalidCurrency
+	}
+	if _, ok := financialtypes.LookupCurrency(to); !ok {
+		return ExchangeRate{}, false, decimal.Zero, ErrInvalidCurrency
+	}
+	if from == to {
+		return ExchangeRate{
+			FromCurrency: from, ToCurrency: to, Rate: decimal.NewFromInt(1),
+			EffectiveDate: dateOnly(date), Type: rateType, Source: "IDENTITY",
+		}, false, decimal.NewFromInt(1), nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	targetDate := dateOnly(date)
+	var direct, inverse []ExchangeRate
+	for _, rate := range r.rates {
+		if rate.Type != rateType || rate.EffectiveDate.After(targetDate) {
+			continue
+		}
+		if rate.FromCurrency == from && rate.ToCurrency == to {
+			direct = append(direct, rate)
+		}
+		if rate.FromCurrency == to && rate.ToCurrency == from {
+			inverse = append(inverse, rate)
+		}
+	}
+	sort.Slice(direct, func(i, j int) bool { return direct[i].EffectiveDate.After(direct[j].EffectiveDate) })
+	if len(direct) > 0 {
+		return direct[0], false, direct[0].Rate, nil
+	}
+	sort.Slice(inverse, func(i, j int) bool { return inverse[i].EffectiveDate.After(inverse[j].EffectiveDate) })
+	if len(inverse) > 0 && !inverse[0].Rate.IsZero() {
+		effectiveRate := decimal.NewFromInt(1).DivRound(inverse[0].Rate, financialtypes.InternalScale)
+		return inverse[0], true, effectiveRate, nil
+	}
+	return ExchangeRate{}, false, decimal.Zero, ErrRateNotFound
 }
 
 func (r *RateRegistry) GetRates() []ExchangeRate {

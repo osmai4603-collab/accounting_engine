@@ -45,6 +45,11 @@ func TestEngineObservabilityInstrumentsPosting(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	cashID, revenueID := uuid.New(), uuid.New()
 	for _, account := range []masterdata.Account{
 		{CompanyID: companyID, ID: cashID, Code: "1000", Name: "Cash",

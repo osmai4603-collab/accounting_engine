@@ -198,6 +198,11 @@ func TestFullFiscalYearSimulationFacade(t *testing.T) {
 	}
 
 	journalID := uuid.New()
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	amount, _ := financialtypes.NewMoneyFromString("100000", "USD")
 	capital, err := posting.NewJournalEntry(journalID, start.Add(24*time.Hour), "maker",
 		[]posting.JournalEntryLine{
@@ -332,6 +337,11 @@ func TestFiveYearFiscalCycleSimulation(t *testing.T) {
 	}
 
 	journalID := uuid.New()
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var postingFiscalYear masterdata.FiscalYear
 	postEntry := func(date time.Time, lines []posting.JournalEntryLine, ref string) posting.JournalEntry {
 		entry, err := posting.NewJournalEntry(journalID, date, "maker", lines)

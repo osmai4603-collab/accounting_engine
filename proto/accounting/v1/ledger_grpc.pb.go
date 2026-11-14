@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	AccountingService_PostEntry_FullMethodName       = "/accounting.v1.AccountingService/PostEntry"
 	AccountingService_GetEntry_FullMethodName        = "/accounting.v1.AccountingService/GetEntry"
+	AccountingService_ReverseEntry_FullMethodName    = "/accounting.v1.AccountingService/ReverseEntry"
 	AccountingService_GetTrialBalance_FullMethodName = "/accounting.v1.AccountingService/GetTrialBalance"
 )
 
@@ -30,6 +31,7 @@ const (
 type AccountingServiceClient interface {
 	PostEntry(ctx context.Context, in *PostEntryRequest, opts ...grpc.CallOption) (*PostEntryResponse, error)
 	GetEntry(ctx context.Context, in *GetEntryRequest, opts ...grpc.CallOption) (*GetEntryResponse, error)
+	ReverseEntry(ctx context.Context, in *ReverseEntryRequest, opts ...grpc.CallOption) (*ReverseEntryResponse, error)
 	GetTrialBalance(ctx context.Context, in *GetTrialBalanceRequest, opts ...grpc.CallOption) (*GetTrialBalanceResponse, error)
 }
 
@@ -61,6 +63,16 @@ func (c *accountingServiceClient) GetEntry(ctx context.Context, in *GetEntryRequ
 	return out, nil
 }
 
+func (c *accountingServiceClient) ReverseEntry(ctx context.Context, in *ReverseEntryRequest, opts ...grpc.CallOption) (*ReverseEntryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReverseEntryResponse)
+	err := c.cc.Invoke(ctx, AccountingService_ReverseEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *accountingServiceClient) GetTrialBalance(ctx context.Context, in *GetTrialBalanceRequest, opts ...grpc.CallOption) (*GetTrialBalanceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetTrialBalanceResponse)
@@ -77,6 +89,7 @@ func (c *accountingServiceClient) GetTrialBalance(ctx context.Context, in *GetTr
 type AccountingServiceServer interface {
 	PostEntry(context.Context, *PostEntryRequest) (*PostEntryResponse, error)
 	GetEntry(context.Context, *GetEntryRequest) (*GetEntryResponse, error)
+	ReverseEntry(context.Context, *ReverseEntryRequest) (*ReverseEntryResponse, error)
 	GetTrialBalance(context.Context, *GetTrialBalanceRequest) (*GetTrialBalanceResponse, error)
 	mustEmbedUnimplementedAccountingServiceServer()
 }
@@ -93,6 +106,9 @@ func (UnimplementedAccountingServiceServer) PostEntry(context.Context, *PostEntr
 }
 func (UnimplementedAccountingServiceServer) GetEntry(context.Context, *GetEntryRequest) (*GetEntryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetEntry not implemented")
+}
+func (UnimplementedAccountingServiceServer) ReverseEntry(context.Context, *ReverseEntryRequest) (*ReverseEntryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReverseEntry not implemented")
 }
 func (UnimplementedAccountingServiceServer) GetTrialBalance(context.Context, *GetTrialBalanceRequest) (*GetTrialBalanceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTrialBalance not implemented")
@@ -154,6 +170,24 @@ func _AccountingService_GetEntry_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountingService_ReverseEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReverseEntryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountingServiceServer).ReverseEntry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountingService_ReverseEntry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountingServiceServer).ReverseEntry(ctx, req.(*ReverseEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AccountingService_GetTrialBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetTrialBalanceRequest)
 	if err := dec(in); err != nil {
@@ -186,6 +220,10 @@ var AccountingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetEntry",
 			Handler:    _AccountingService_GetEntry_Handler,
+		},
+		{
+			MethodName: "ReverseEntry",
+			Handler:    _AccountingService_ReverseEntry_Handler,
 		},
 		{
 			MethodName: "GetTrialBalance",

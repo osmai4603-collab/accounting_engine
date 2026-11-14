@@ -9,6 +9,19 @@ service ReportingService {
   rpc GetIncomeStatement (GetIncomeStatementRequest) returns (GetIncomeStatementResponse);
 }
 
+message ReportLineProto {
+  string account_id = 1;
+  string account_code = 2;
+  string account_name = 3;
+  string amount = 4;
+}
+
+message ReportSectionProto {
+  string title = 1;
+  string total_amount = 2;
+  repeated ReportLineProto lines = 3;
+}
+
 message GetBalanceSheetRequest {
   string company_id = 1;
   string as_of_date = 2;
@@ -17,7 +30,14 @@ message GetBalanceSheetRequest {
 
 message GetBalanceSheetResponse {
   string company_id = 1;
-  bool success = 2;
+  string as_of_date = 2;
+  string currency = 3;
+  bool is_balanced = 4;
+  string total_assets = 5;
+  string total_liabilities_and_equity = 6;
+  ReportSectionProto assets = 7;
+  ReportSectionProto liabilities = 8;
+  ReportSectionProto equity = 9;
 }
 
 message GetIncomeStatementRequest {
@@ -29,5 +49,10 @@ message GetIncomeStatementRequest {
 
 message GetIncomeStatementResponse {
   string company_id = 1;
-  bool success = 2;
+  string start_date = 2;
+  string end_date = 3;
+  string currency = 4;
+  string net_income = 5;
+  ReportSectionProto revenues = 6;
+  ReportSectionProto expenses = 7;
 }

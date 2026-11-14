@@ -3,6 +3,8 @@ package reporting
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +20,7 @@ var (
 	ErrInvalidOpeningYear                 = errors.New("opening balance year is invalid")
 	ErrClosingMoveNotPosted               = errors.New("closing move must be posted before the fiscal year can be closed")
 	ErrFiscalYearNotClosedForCarryForward = errors.New("fiscal year must be hard closed before balances are carried forward")
+	ErrClosingPreCheckFailed              = errors.New("closing pre-check failed: blockers exist")
 )
 
 type ClosingEngine struct{ repository Repository }
@@ -344,6 +347,94 @@ func (e *ClosingEngine) ConfirmFiscalYearCloseContext(ctx context.Context, year 
 	}
 }
 
+// EvaluateClosingChecklist runs the formal closing checklist and pre-close checks for a fiscal year.
+func (e *ClosingEngine) EvaluateClosingChecklist(ctx context.Context, year masterdata.FiscalYear) (ClosingChecklistReport, error) {
+	return EvaluateFiscalYearChecklist(ctx, e.repository, year)
+}
+
+// CloseFiscalYearWithChecklist validates pre-close checklist blockers before generating the closing move.
+func (e *ClosingEngine) CloseFiscalYearWithChecklist(
+	ctx context.Context,
+	year masterdata.FiscalYear,
+	journalID, retainedEarningsID, actorID uuid.UUID,
+	currency string,
+	reason string,
+) (posting.JournalEntry, ClosingChecklistReport, error) {
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return posting.JournalEntry{}, ClosingChecklistReport{}, masterdata.ErrPeriodTransitionNeedsAudit
+	}
+
+	report, err := e.EvaluateClosingChecklist(ctx, year)
+	if err != nil {
+		return posting.JournalEntry{}, report, err
+	}
+	if !report.CanClose {
+		return posting.JournalEntry{}, report, fmt.Errorf("%w: %s", ErrClosingPreCheckFailed, report.Summary())
+	}
+
+	closingEntry, _, err := e.GenerateClosingMoveContext(ctx, year, journalID, retainedEarningsID, currency)
+	if err != nil {
+		return posting.JournalEntry{}, report, err
+	}
+
+	return closingEntry, report, nil
+}
+
+// ReopenFiscalYear performs an audited reopening of a closed fiscal year.
+// It requires an explicit actor UUID and non-empty business justification.
+func (e *ClosingEngine) ReopenFiscalYear(
+	ctx context.Context,
+	companyID, yearID, actorID uuid.UUID,
+	reason string,
+) error {
+	if companyID == uuid.Nil || yearID == uuid.Nil {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
+		return masterdata.ErrPeriodReopenRequiresAudit
+	}
+
+	year, err := e.repository.GetFiscalYearForCompanyContext(ctx, companyID, yearID)
+	if err != nil {
+		return err
+	}
+	if year.State == masterdata.FiscalYearOpen {
+		return errors.New("fiscal year is already open")
+	}
+
+	if err := masterdata.ValidateFiscalYearReopen(year.State, masterdata.FiscalYearOpen, actorID, reason); err != nil {
+		return err
+	}
+
+	// Reopen the fiscal year state to Open using audited reopen repository if available
+	if reopenRepo, ok := e.repository.(FiscalYearReopenRepository); ok {
+		if err := reopenRepo.ReopenFiscalYearForCompanyContext(ctx, companyID, yearID, actorID, reason); err != nil {
+			return err
+		}
+	} else if err := e.repository.UpdateFiscalYearStateForCompanyContext(ctx, companyID, yearID, masterdata.FiscalYearOpen); err != nil {
+		return err
+	}
+
+	// Reopen adjustment period 13 if present
+	if p13, ok := findFiscalPeriod(year, 13); ok && p13.State != masterdata.PeriodOpen {
+		if periodReopenRepo, ok := e.repository.(PeriodReopenRepository); ok {
+			_ = periodReopenRepo.ReopenPeriodContext(ctx, companyID, p13.ID, actorID, reason)
+		} else {
+			_ = e.repository.UpdatePeriodStateForCompanyContext(ctx, companyID, p13.ID, masterdata.PeriodOpen)
+		}
+	}
+	// Reopen adjustment period 14 if present
+	if p14, ok := findFiscalPeriod(year, 14); ok && p14.State != masterdata.PeriodOpen {
+		if periodReopenRepo, ok := e.repository.(PeriodReopenRepository); ok {
+			_ = periodReopenRepo.ReopenPeriodContext(ctx, companyID, p14.ID, actorID, reason)
+		} else {
+			_ = e.repository.UpdatePeriodStateForCompanyContext(ctx, companyID, p14.ID, masterdata.PeriodOpen)
+		}
+	}
+
+	return nil
+}
+
 type periodStateChange struct {
 	id    uuid.UUID
 	state masterdata.PeriodState
@@ -446,6 +537,10 @@ func closingEntriesMatch(actual, expected map[uuid.UUID]closingAmounts) bool {
 		}
 	}
 	return true
+}
+
+func FindFiscalPeriod(year masterdata.FiscalYear, number int) (masterdata.FiscalPeriod, bool) {
+	return findFiscalPeriod(year, number)
 }
 
 func findFiscalPeriod(year masterdata.FiscalYear, number int) (masterdata.FiscalPeriod, bool) {

@@ -136,6 +136,11 @@ func TestStandardsEntriesAndMonthlyCloseUseCentralPosting(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := driver.CreateJournal(ctx, masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General", Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, account := range []masterdata.Account{
 		{CompanyID: companyID, ID: debitAccountID, Code: "1000", Name: "Cash", AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit, IsActive: true},
 		{CompanyID: companyID, ID: creditAccountID, Code: "2000", Name: "Contract liability", AccountType: masterdata.AccountTypeLiability, NormalBalance: masterdata.NormalBalanceCredit, IsActive: true},

@@ -7,17 +7,41 @@ option go_package = "accounting_engine/proto/accounting/v1;accountingv1";
 service AccountingService {
   rpc PostEntry (PostEntryRequest) returns (PostEntryResponse);
   rpc GetEntry (GetEntryRequest) returns (GetEntryResponse);
+  rpc ReverseEntry (ReverseEntryRequest) returns (ReverseEntryResponse);
   rpc GetTrialBalance (GetTrialBalanceRequest) returns (GetTrialBalanceResponse);
+}
+
+message EntryLineProto {
+  string line_id = 1;
+  string account_id = 2;
+  string partner_id = 3;
+  string cost_center_id = 4;
+  string project_id = 5;
+  string transaction_amount = 6;
+  string transaction_currency = 7;
+  string exchange_rate = 8;
+  string functional_debit = 9;
+  string functional_credit = 10;
 }
 
 message PostEntryRequest {
   string company_id = 1;
   string description = 2;
+  string journal_id = 3;
+  string fiscal_period_id = 4;
+  string effective_date = 5;
+  string source_module = 6;
+  string reference_id = 7;
+  string transaction_currency = 8;
+  string exchange_rate = 9;
+  repeated EntryLineProto lines = 10;
+  string draft_entry_id = 11;
 }
 
 message PostEntryResponse {
   string entry_id = 1;
   string status = 2;
+  string entry_number = 3;
 }
 
 message GetEntryRequest {
@@ -27,7 +51,38 @@ message GetEntryRequest {
 
 message GetEntryResponse {
   string entry_id = 1;
-  string status = 2;
+  string company_id = 2;
+  string journal_id = 3;
+  string entry_number = 4;
+  string status = 5;
+  string effective_date = 6;
+  string description = 7;
+  repeated EntryLineProto lines = 8;
+}
+
+message ReverseEntryRequest {
+  string company_id = 1;
+  string entry_id = 2;
+  string reason = 3;
+}
+
+message ReverseEntryResponse {
+  string original_entry_id = 1;
+  string reversal_entry_id = 2;
+  string status = 3;
+}
+
+message TrialBalanceLineProto {
+  string account_id = 1;
+  string account_code = 2;
+  string account_name = 3;
+  string account_type = 4;
+  string opening_debit = 5;
+  string opening_credit = 6;
+  string period_debit = 7;
+  string period_credit = 8;
+  string ending_debit = 9;
+  string ending_credit = 10;
 }
 
 message GetTrialBalanceRequest {
@@ -38,5 +93,10 @@ message GetTrialBalanceRequest {
 
 message GetTrialBalanceResponse {
   string company_id = 1;
-  bool is_balanced = 2;
+  string as_of_date = 2;
+  string currency = 3;
+  bool is_balanced = 4;
+  string total_debit = 5;
+  string total_credit = 6;
+  repeated TrialBalanceLineProto lines = 7;
 }

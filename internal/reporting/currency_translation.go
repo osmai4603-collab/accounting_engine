@@ -35,6 +35,13 @@ type EquityItem struct {
 	HistoricalDate time.Time
 }
 
+// TranslationReserve represents the cumulative foreign currency translation reserve (FCTR / CTA)
+// accumulated in equity under IAS 21.39(c) when translating financial statements to a presentation currency.
+type TranslationReserve struct {
+	Currency string
+	Amount   financialtypes.Money
+}
+
 type CurrencyTranslator struct {
 	rateProvider valuation.RateProviderSPI
 }

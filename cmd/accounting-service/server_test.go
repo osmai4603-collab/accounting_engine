@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
@@ -108,16 +110,20 @@ func TestReadinessFailsClosedWithoutStorageHealthCheck(t *testing.T) {
 func TestPostingMetricsReflectSuccessfulAndFailedRequests(t *testing.T) {
 	ledgerService := &serviceTestLedger{}
 	server := newHTTPServer(Config{}, &serviceTestEngine{ledger: ledgerService}, func(context.Context) error { return nil })
+	body, err := json.Marshal(ledger.JournalEntry{CompanyID: types.NewCompanyID()})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	response := httptest.NewRecorder()
-	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{}`)))
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(string(body))))
 	if response.Code != http.StatusCreated {
 		t.Fatalf("successful post status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body)
 	}
 
 	ledgerService.err = errors.New("storage failure")
 	response = httptest.NewRecorder()
-	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{}`)))
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(string(body))))
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("failed post status = %d, want %d", response.Code, http.StatusInternalServerError)
 	}
@@ -177,25 +183,38 @@ func TestHTTPEventHandlerPassesTransportMetadataToIngestion(t *testing.T) {
 func TestHTTPMapsApplicationErrorsWithoutLeakingCauses(t *testing.T) {
 	response := httptest.NewRecorder()
 	cause := errors.New("database password=secret")
-	writeApplicationError(response, publicapplication.NewError(publicapplication.ErrValidation, "invalid journal entry", cause))
-	if response.Code != http.StatusBadRequest || strings.TrimSpace(response.Body.String()) != "invalid journal entry" {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/entries", nil)
+	writeApplicationError(response, request, publicapplication.NewError(publicapplication.ErrValidation, "invalid journal entry", cause))
+	var validationBody httpAPIError
+	if err := json.Unmarshal(response.Body.Bytes(), &validationBody); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest || validationBody.Error.Message != "invalid journal entry" ||
+		validationBody.Error.Code != "validation_error" {
 		t.Fatalf("validation response = %d %q", response.Code, response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
-	writeApplicationError(response, cause)
-	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret") {
+	writeApplicationError(response, request, cause)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), cause.Error()) ||
+		strings.Contains(response.Body.String(), "secret") {
 		t.Fatalf("internal error leaked details: %d %q", response.Code, response.Body.String())
 	}
 }
 
 type serviceTestEngine struct {
-	ledger sdk.LedgerService
-	events sdk.EventIngestionService
+	ledger    sdk.LedgerService
+	events    sdk.EventIngestionService
+	reporting sdk.ReportingService
 }
 
-func (e *serviceTestEngine) Ledger() sdk.LedgerService         { return e.ledger }
-func (e *serviceTestEngine) Reporting() sdk.ReportingService   { return serviceTestReporting{} }
+func (e *serviceTestEngine) Ledger() sdk.LedgerService { return e.ledger }
+func (e *serviceTestEngine) Reporting() sdk.ReportingService {
+	if e.reporting != nil {
+		return e.reporting
+	}
+	return serviceTestReporting{}
+}
 func (e *serviceTestEngine) Governance() sdk.GovernanceService { return serviceTestGovernance{} }
 func (e *serviceTestEngine) Events() sdk.EventIngestionService {
 	if e.events != nil {
@@ -209,10 +228,12 @@ func (e *serviceTestEngine) Close() error                               { return
 func (e *serviceTestEngine) CloseWithContext(ctx context.Context) error { return nil }
 
 type serviceTestLedger struct {
-	err error
+	err   error
+	calls int
 }
 
 func (s *serviceTestLedger) PostEntry(_ context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	s.calls++
 	return entry, s.err
 }
 func (*serviceTestLedger) GetEntry(context.Context, types.CompanyID, types.JournalEntryID) (ledger.JournalEntry, error) {
@@ -263,6 +284,42 @@ func (s *capturingEventService) ProcessEvent(ctx context.Context, event events.A
 	return ledger.JournalEntry{ID: types.NewJournalEntryID(), Status: ledger.EntryPosted}, nil
 }
 
+type recordingTrialBalanceService struct {
+	calls int
+}
+
+func (s *recordingTrialBalanceService) GetTrialBalance(context.Context, types.CompanyID, time.Time, string) (reporting.TrialBalance, error) {
+	s.calls++
+	return reporting.TrialBalance{}, nil
+}
+func (*recordingTrialBalanceService) GetBalanceSheet(context.Context, types.CompanyID, time.Time, string) (reporting.BalanceSheetReport, error) {
+	return reporting.BalanceSheetReport{}, nil
+}
+func (*recordingTrialBalanceService) GetIncomeStatement(context.Context, types.CompanyID, time.Time, time.Time, string) (reporting.IncomeStatementReport, error) {
+	return reporting.IncomeStatementReport{}, nil
+}
+func (*recordingTrialBalanceService) GetGeneralLedger(context.Context, types.CompanyID, types.AccountID, time.Time, time.Time) (reporting.GeneralLedgerReport, error) {
+	return reporting.GeneralLedgerReport{}, nil
+}
+
+type contextAwareLedger struct {
+	started       chan struct{}
+	contextErrors chan error
+}
+
+func (s *contextAwareLedger) PostEntry(ctx context.Context, entry ledger.JournalEntry) (ledger.JournalEntry, error) {
+	close(s.started)
+	<-ctx.Done()
+	s.contextErrors <- ctx.Err()
+	return ledger.JournalEntry{}, ctx.Err()
+}
+func (*contextAwareLedger) GetEntry(context.Context, types.CompanyID, types.JournalEntryID) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+func (*contextAwareLedger) ReverseEntry(context.Context, types.CompanyID, types.JournalEntryID, string) (ledger.JournalEntry, error) {
+	return ledger.JournalEntry{}, nil
+}
+
 func TestHTTPHandlersRejectOversizedRequestBody(t *testing.T) {
 	handler := newHTTPServer(Config{}, nil).Handler
 	body := `{"Description":"` + strings.Repeat("x", maxRequestBodyBytes) + `"}`
@@ -289,6 +346,163 @@ func TestHTTPServerTimeoutConfiguration(t *testing.T) {
 	}
 	if server.IdleTimeout != 120*time.Second {
 		t.Errorf("IdleTimeout = %s, want 120s", server.IdleTimeout)
+	}
+}
+
+func TestHTTPErrorSchemaCorrelationIDAndSecurityHeaders(t *testing.T) {
+	server := newHTTPServer(Config{}, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{"Description":`))
+	request.Header.Set("X-Correlation-ID", "http-test-42")
+	response := httptest.NewRecorder()
+
+	server.Handler.ServeHTTP(response, request)
+
+	var body httpAPIError
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("error response is not JSON: %v; body=%s", err, response.Body)
+	}
+	if response.Code != http.StatusBadRequest || body.Error.Code != "invalid_request" ||
+		body.CorrelationID != "http-test-42" ||
+		response.Header().Get("X-Correlation-ID") != body.CorrelationID {
+		t.Fatalf("unexpected error response: status=%d body=%+v headers=%v", response.Code, body, response.Header())
+	}
+	for header, want := range map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "no-referrer",
+		"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+		"Cache-Control":           "no-store",
+	} {
+		if got := response.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if response.Header().Get("Strict-Transport-Security") != "" {
+		t.Fatal("HSTS should be set only when TLS is enabled")
+	}
+}
+
+func TestHTTPAuthenticationFailuresUseSharedErrorSchema(t *testing.T) {
+	server := newHTTPServer(Config{
+		AuthMode:      serviceauth.ModeGatewayHMAC,
+		AuthSecret:    strings.Repeat("s", 32),
+		AuthClockSkew: time.Minute,
+	}, &serviceTestEngine{ledger: &serviceTestLedger{}})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(`{"CompanyID":"`+uuid.NewString()+`"}`))
+	request.Header.Set("X-Correlation-ID", "auth-correlation")
+	response := httptest.NewRecorder()
+
+	server.Handler.ServeHTTP(response, request)
+
+	var body httpAPIError
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("authentication error is not JSON: %v; body=%s", err, response.Body)
+	}
+	if response.Code != http.StatusUnauthorized || body.Error.Code != "unauthorized" ||
+		body.CorrelationID != "auth-correlation" ||
+		response.Header().Get("WWW-Authenticate") != "HMAC-SHA256" {
+		t.Fatalf("unexpected authentication response: status=%d body=%+v headers=%v", response.Code, body, response.Header())
+	}
+}
+
+func TestHTTPRejectsEntryBoundsBeforeCallingService(t *testing.T) {
+	ledgerService := &serviceTestLedger{}
+	server := newHTTPServer(Config{}, &serviceTestEngine{ledger: ledgerService})
+	entry := ledger.JournalEntry{CompanyID: types.NewCompanyID(), Lines: make([]ledger.EntryLine, maxEntryLines+1)}
+	body, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(string(body))))
+
+	if response.Code != http.StatusBadRequest || ledgerService.calls != 0 {
+		t.Fatalf("status = %d and service calls = %d; want 400 and no service call", response.Code, ledgerService.calls)
+	}
+}
+
+func TestHTTPRejectsInvalidTrialBalanceCurrencyBeforeCallingService(t *testing.T) {
+	reportingService := &recordingTrialBalanceService{}
+	server := newHTTPServer(Config{}, &serviceTestEngine{reporting: reportingService})
+	companyID := types.NewCompanyID()
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/v1/trial-balance?company_id="+uuid.UUID(companyID).String()+"&currency=NOPE", nil)
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || reportingService.calls != 0 {
+		t.Fatalf("status = %d and reporting calls = %d; want 400 and no service call", response.Code, reportingService.calls)
+	}
+}
+
+func TestHTTPRateLimitReturnsStructuredError(t *testing.T) {
+	handler := newRequestRateLimitMiddleware(newRequestRateLimiter(),
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	var response *httptest.ResponseRecorder
+	for i := 0; i < httpRateLimitRequests+1; i++ {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/test", nil))
+	}
+	var body httpAPIError
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("rate-limit response is not JSON: %v; body=%s", err, response.Body)
+	}
+	if response.Code != http.StatusTooManyRequests || body.Error.Code != "rate_limit_exceeded" ||
+		response.Header().Get("Retry-After") == "" {
+		t.Fatalf("unexpected rate-limit response: status=%d body=%+v headers=%v", response.Code, body, response.Header())
+	}
+}
+
+func TestHTTPRequestDeadlinePropagatesToEngineAndReturnsGatewayTimeout(t *testing.T) {
+	ledgerService := &contextAwareLedger{started: make(chan struct{}), contextErrors: make(chan error, 1)}
+	server := newHTTPServer(Config{}, &serviceTestEngine{ledger: ledgerService})
+	body, err := json.Marshal(ledger.JournalEntry{CompanyID: types.NewCompanyID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(string(body))).WithContext(ctx)
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusGatewayTimeout, response.Body)
+	}
+	if err := <-ledgerService.contextErrors; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("engine context error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestHTTPClientDisconnectCancelsEngineContext(t *testing.T) {
+	ledgerService := &contextAwareLedger{started: make(chan struct{}), contextErrors: make(chan error, 1)}
+	server := newHTTPServer(Config{}, &serviceTestEngine{ledger: ledgerService})
+	body, err := json.Marshal(ledger.JournalEntry{CompanyID: types.NewCompanyID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/entries", strings.NewReader(string(body))).WithContext(ctx)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		server.Handler.ServeHTTP(response, request)
+		close(done)
+	}()
+	<-ledgerService.started
+	cancel()
+	select {
+	case err := <-ledgerService.contextErrors:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("engine context error = %v, want canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("engine context was not cancelled after client disconnect")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return after client disconnect")
 	}
 }
 

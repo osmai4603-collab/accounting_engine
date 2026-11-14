@@ -309,6 +309,32 @@ func (d *Driver) ListEntriesForCompany(ctx context.Context, companyID uuid.UUID,
 	return result, err
 }
 
+func (d *Driver) ListDraftEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]posting.JournalEntry, error) {
+	result := make([]posting.JournalEntry, 0)
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT entry FROM account_moves
+			WHERE company_id=$1 AND status=$2
+			ORDER BY entry_date`, companyID, posting.EntryDraft)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var data []byte
+			if err := rows.Scan(&data); err != nil {
+				return err
+			}
+			var entry posting.JournalEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return err
+			}
+			result = append(result, entry)
+		}
+		return rows.Err()
+	})
+	return result, err
+}
+
 func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uuid.UUID) (financialtypes.Money, error) {
 	return d.GetAccountBalanceAsOf(ctx, companyID, accountID, time.Now().UTC())
 }

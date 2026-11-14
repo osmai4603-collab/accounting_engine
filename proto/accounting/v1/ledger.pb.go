@@ -21,28 +21,36 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type PostEntryRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CompanyId     string                 `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
-	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type EntryLineProto struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	LineId              string                 `protobuf:"bytes,1,opt,name=line_id,json=lineId,proto3" json:"line_id,omitempty"`
+	AccountId           string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	PartnerId           string                 `protobuf:"bytes,3,opt,name=partner_id,json=partnerId,proto3" json:"partner_id,omitempty"`
+	CostCenterId        string                 `protobuf:"bytes,4,opt,name=cost_center_id,json=costCenterId,proto3" json:"cost_center_id,omitempty"`
+	ProjectId           string                 `protobuf:"bytes,5,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	TransactionAmount   string                 `protobuf:"bytes,6,opt,name=transaction_amount,json=transactionAmount,proto3" json:"transaction_amount,omitempty"`
+	TransactionCurrency string                 `protobuf:"bytes,7,opt,name=transaction_currency,json=transactionCurrency,proto3" json:"transaction_currency,omitempty"`
+	ExchangeRate        string                 `protobuf:"bytes,8,opt,name=exchange_rate,json=exchangeRate,proto3" json:"exchange_rate,omitempty"`
+	FunctionalDebit     string                 `protobuf:"bytes,9,opt,name=functional_debit,json=functionalDebit,proto3" json:"functional_debit,omitempty"`
+	FunctionalCredit    string                 `protobuf:"bytes,10,opt,name=functional_credit,json=functionalCredit,proto3" json:"functional_credit,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
-func (x *PostEntryRequest) Reset() {
-	*x = PostEntryRequest{}
+func (x *EntryLineProto) Reset() {
+	*x = EntryLineProto{}
 	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PostEntryRequest) String() string {
+func (x *EntryLineProto) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PostEntryRequest) ProtoMessage() {}
+func (*EntryLineProto) ProtoMessage() {}
 
-func (x *PostEntryRequest) ProtoReflect() protoreflect.Message {
+func (x *EntryLineProto) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -54,9 +62,124 @@ func (x *PostEntryRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PostEntryRequest.ProtoReflect.Descriptor instead.
-func (*PostEntryRequest) Descriptor() ([]byte, []int) {
+func (*EntryLineProto) Descriptor() ([]byte, []int) {
 	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *EntryLineProto) GetLineId() string {
+	if x != nil {
+		return x.LineId
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetPartnerId() string {
+	if x != nil {
+		return x.PartnerId
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetCostCenterId() string {
+	if x != nil {
+		return x.CostCenterId
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetTransactionAmount() string {
+	if x != nil {
+		return x.TransactionAmount
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetTransactionCurrency() string {
+	if x != nil {
+		return x.TransactionCurrency
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetExchangeRate() string {
+	if x != nil {
+		return x.ExchangeRate
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetFunctionalDebit() string {
+	if x != nil {
+		return x.FunctionalDebit
+	}
+	return ""
+}
+
+func (x *EntryLineProto) GetFunctionalCredit() string {
+	if x != nil {
+		return x.FunctionalCredit
+	}
+	return ""
+}
+
+type PostEntryRequest struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	CompanyId           string                 `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
+	Description         string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	JournalId           string                 `protobuf:"bytes,3,opt,name=journal_id,json=journalId,proto3" json:"journal_id,omitempty"`
+	FiscalPeriodId      string                 `protobuf:"bytes,4,opt,name=fiscal_period_id,json=fiscalPeriodId,proto3" json:"fiscal_period_id,omitempty"`
+	EffectiveDate       string                 `protobuf:"bytes,5,opt,name=effective_date,json=effectiveDate,proto3" json:"effective_date,omitempty"`
+	SourceModule        string                 `protobuf:"bytes,6,opt,name=source_module,json=sourceModule,proto3" json:"source_module,omitempty"`
+	ReferenceId         string                 `protobuf:"bytes,7,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`
+	TransactionCurrency string                 `protobuf:"bytes,8,opt,name=transaction_currency,json=transactionCurrency,proto3" json:"transaction_currency,omitempty"`
+	ExchangeRate        string                 `protobuf:"bytes,9,opt,name=exchange_rate,json=exchangeRate,proto3" json:"exchange_rate,omitempty"`
+	Lines               []*EntryLineProto      `protobuf:"bytes,10,rep,name=lines,proto3" json:"lines,omitempty"`
+	DraftEntryId        string                 `protobuf:"bytes,11,opt,name=draft_entry_id,json=draftEntryId,proto3" json:"draft_entry_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *PostEntryRequest) Reset() {
+	*x = PostEntryRequest{}
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PostEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PostEntryRequest) ProtoMessage() {}
+
+func (x *PostEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*PostEntryRequest) Descriptor() ([]byte, []int) {
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PostEntryRequest) GetCompanyId() string {
@@ -73,17 +196,81 @@ func (x *PostEntryRequest) GetDescription() string {
 	return ""
 }
 
+func (x *PostEntryRequest) GetJournalId() string {
+	if x != nil {
+		return x.JournalId
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetFiscalPeriodId() string {
+	if x != nil {
+		return x.FiscalPeriodId
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetEffectiveDate() string {
+	if x != nil {
+		return x.EffectiveDate
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetSourceModule() string {
+	if x != nil {
+		return x.SourceModule
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetReferenceId() string {
+	if x != nil {
+		return x.ReferenceId
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetTransactionCurrency() string {
+	if x != nil {
+		return x.TransactionCurrency
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetExchangeRate() string {
+	if x != nil {
+		return x.ExchangeRate
+	}
+	return ""
+}
+
+func (x *PostEntryRequest) GetLines() []*EntryLineProto {
+	if x != nil {
+		return x.Lines
+	}
+	return nil
+}
+
+func (x *PostEntryRequest) GetDraftEntryId() string {
+	if x != nil {
+		return x.DraftEntryId
+	}
+	return ""
+}
+
 type PostEntryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EntryId       string                 `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	EntryNumber   string                 `protobuf:"bytes,3,opt,name=entry_number,json=entryNumber,proto3" json:"entry_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PostEntryResponse) Reset() {
 	*x = PostEntryResponse{}
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[1]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +282,7 @@ func (x *PostEntryResponse) String() string {
 func (*PostEntryResponse) ProtoMessage() {}
 
 func (x *PostEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[1]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -106,9 +293,8 @@ func (x *PostEntryResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PostEntryResponse.ProtoReflect.Descriptor instead.
 func (*PostEntryResponse) Descriptor() ([]byte, []int) {
-	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{1}
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PostEntryResponse) GetEntryId() string {
@@ -125,6 +311,13 @@ func (x *PostEntryResponse) GetStatus() string {
 	return ""
 }
 
+func (x *PostEntryResponse) GetEntryNumber() string {
+	if x != nil {
+		return x.EntryNumber
+	}
+	return ""
+}
+
 type GetEntryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CompanyId     string                 `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
@@ -135,7 +328,7 @@ type GetEntryRequest struct {
 
 func (x *GetEntryRequest) Reset() {
 	*x = GetEntryRequest{}
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[2]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -147,7 +340,7 @@ func (x *GetEntryRequest) String() string {
 func (*GetEntryRequest) ProtoMessage() {}
 
 func (x *GetEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[2]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -158,9 +351,8 @@ func (x *GetEntryRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetEntryRequest.ProtoReflect.Descriptor instead.
 func (*GetEntryRequest) Descriptor() ([]byte, []int) {
-	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{2}
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GetEntryRequest) GetCompanyId() string {
@@ -180,14 +372,20 @@ func (x *GetEntryRequest) GetEntryId() string {
 type GetEntryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EntryId       string                 `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	CompanyId     string                 `protobuf:"bytes,2,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
+	JournalId     string                 `protobuf:"bytes,3,opt,name=journal_id,json=journalId,proto3" json:"journal_id,omitempty"`
+	EntryNumber   string                 `protobuf:"bytes,4,opt,name=entry_number,json=entryNumber,proto3" json:"entry_number,omitempty"`
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	EffectiveDate string                 `protobuf:"bytes,6,opt,name=effective_date,json=effectiveDate,proto3" json:"effective_date,omitempty"`
+	Description   string                 `protobuf:"bytes,7,opt,name=description,proto3" json:"description,omitempty"`
+	Lines         []*EntryLineProto      `protobuf:"bytes,8,rep,name=lines,proto3" json:"lines,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetEntryResponse) Reset() {
 	*x = GetEntryResponse{}
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[3]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -199,7 +397,7 @@ func (x *GetEntryResponse) String() string {
 func (*GetEntryResponse) ProtoMessage() {}
 
 func (x *GetEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[3]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -210,9 +408,8 @@ func (x *GetEntryResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetEntryResponse.ProtoReflect.Descriptor instead.
 func (*GetEntryResponse) Descriptor() ([]byte, []int) {
-	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{3}
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetEntryResponse) GetEntryId() string {
@@ -222,9 +419,284 @@ func (x *GetEntryResponse) GetEntryId() string {
 	return ""
 }
 
+func (x *GetEntryResponse) GetCompanyId() string {
+	if x != nil {
+		return x.CompanyId
+	}
+	return ""
+}
+
+func (x *GetEntryResponse) GetJournalId() string {
+	if x != nil {
+		return x.JournalId
+	}
+	return ""
+}
+
+func (x *GetEntryResponse) GetEntryNumber() string {
+	if x != nil {
+		return x.EntryNumber
+	}
+	return ""
+}
+
 func (x *GetEntryResponse) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *GetEntryResponse) GetEffectiveDate() string {
+	if x != nil {
+		return x.EffectiveDate
+	}
+	return ""
+}
+
+func (x *GetEntryResponse) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *GetEntryResponse) GetLines() []*EntryLineProto {
+	if x != nil {
+		return x.Lines
+	}
+	return nil
+}
+
+type ReverseEntryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CompanyId     string                 `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
+	EntryId       string                 `protobuf:"bytes,2,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReverseEntryRequest) Reset() {
+	*x = ReverseEntryRequest{}
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReverseEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReverseEntryRequest) ProtoMessage() {}
+
+func (x *ReverseEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*ReverseEntryRequest) Descriptor() ([]byte, []int) {
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ReverseEntryRequest) GetCompanyId() string {
+	if x != nil {
+		return x.CompanyId
+	}
+	return ""
+}
+
+func (x *ReverseEntryRequest) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *ReverseEntryRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ReverseEntryResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	OriginalEntryId string                 `protobuf:"bytes,1,opt,name=original_entry_id,json=originalEntryId,proto3" json:"original_entry_id,omitempty"`
+	ReversalEntryId string                 `protobuf:"bytes,2,opt,name=reversal_entry_id,json=reversalEntryId,proto3" json:"reversal_entry_id,omitempty"`
+	Status          string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ReverseEntryResponse) Reset() {
+	*x = ReverseEntryResponse{}
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReverseEntryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReverseEntryResponse) ProtoMessage() {}
+
+func (x *ReverseEntryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*ReverseEntryResponse) Descriptor() ([]byte, []int) {
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReverseEntryResponse) GetOriginalEntryId() string {
+	if x != nil {
+		return x.OriginalEntryId
+	}
+	return ""
+}
+
+func (x *ReverseEntryResponse) GetReversalEntryId() string {
+	if x != nil {
+		return x.ReversalEntryId
+	}
+	return ""
+}
+
+func (x *ReverseEntryResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+type TrialBalanceLineProto struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AccountId     string                 `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	AccountCode   string                 `protobuf:"bytes,2,opt,name=account_code,json=accountCode,proto3" json:"account_code,omitempty"`
+	AccountName   string                 `protobuf:"bytes,3,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
+	AccountType   string                 `protobuf:"bytes,4,opt,name=account_type,json=accountType,proto3" json:"account_type,omitempty"`
+	OpeningDebit  string                 `protobuf:"bytes,5,opt,name=opening_debit,json=openingDebit,proto3" json:"opening_debit,omitempty"`
+	OpeningCredit string                 `protobuf:"bytes,6,opt,name=opening_credit,json=openingCredit,proto3" json:"opening_credit,omitempty"`
+	PeriodDebit   string                 `protobuf:"bytes,7,opt,name=period_debit,json=periodDebit,proto3" json:"period_debit,omitempty"`
+	PeriodCredit  string                 `protobuf:"bytes,8,opt,name=period_credit,json=periodCredit,proto3" json:"period_credit,omitempty"`
+	EndingDebit   string                 `protobuf:"bytes,9,opt,name=ending_debit,json=endingDebit,proto3" json:"ending_debit,omitempty"`
+	EndingCredit  string                 `protobuf:"bytes,10,opt,name=ending_credit,json=endingCredit,proto3" json:"ending_credit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrialBalanceLineProto) Reset() {
+	*x = TrialBalanceLineProto{}
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrialBalanceLineProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrialBalanceLineProto) ProtoMessage() {}
+
+func (x *TrialBalanceLineProto) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (*TrialBalanceLineProto) Descriptor() ([]byte, []int) {
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *TrialBalanceLineProto) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetAccountCode() string {
+	if x != nil {
+		return x.AccountCode
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetAccountName() string {
+	if x != nil {
+		return x.AccountName
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetAccountType() string {
+	if x != nil {
+		return x.AccountType
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetOpeningDebit() string {
+	if x != nil {
+		return x.OpeningDebit
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetOpeningCredit() string {
+	if x != nil {
+		return x.OpeningCredit
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetPeriodDebit() string {
+	if x != nil {
+		return x.PeriodDebit
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetPeriodCredit() string {
+	if x != nil {
+		return x.PeriodCredit
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetEndingDebit() string {
+	if x != nil {
+		return x.EndingDebit
+	}
+	return ""
+}
+
+func (x *TrialBalanceLineProto) GetEndingCredit() string {
+	if x != nil {
+		return x.EndingCredit
 	}
 	return ""
 }
@@ -240,7 +712,7 @@ type GetTrialBalanceRequest struct {
 
 func (x *GetTrialBalanceRequest) Reset() {
 	*x = GetTrialBalanceRequest{}
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[4]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -252,7 +724,7 @@ func (x *GetTrialBalanceRequest) String() string {
 func (*GetTrialBalanceRequest) ProtoMessage() {}
 
 func (x *GetTrialBalanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[4]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -263,9 +735,8 @@ func (x *GetTrialBalanceRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetTrialBalanceRequest.ProtoReflect.Descriptor instead.
 func (*GetTrialBalanceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{4}
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetTrialBalanceRequest) GetCompanyId() string {
@@ -290,16 +761,21 @@ func (x *GetTrialBalanceRequest) GetCurrency() string {
 }
 
 type GetTrialBalanceResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CompanyId     string                 `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
-	IsBalanced    bool                   `protobuf:"varint,2,opt,name=is_balanced,json=isBalanced,proto3" json:"is_balanced,omitempty"`
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	CompanyId     string                   `protobuf:"bytes,1,opt,name=company_id,json=companyId,proto3" json:"company_id,omitempty"`
+	AsOfDate      string                   `protobuf:"bytes,2,opt,name=as_of_date,json=asOfDate,proto3" json:"as_of_date,omitempty"`
+	Currency      string                   `protobuf:"bytes,3,opt,name=currency,proto3" json:"currency,omitempty"`
+	IsBalanced    bool                     `protobuf:"varint,4,opt,name=is_balanced,json=isBalanced,proto3" json:"is_balanced,omitempty"`
+	TotalDebit    string                   `protobuf:"bytes,5,opt,name=total_debit,json=totalDebit,proto3" json:"total_debit,omitempty"`
+	TotalCredit   string                   `protobuf:"bytes,6,opt,name=total_credit,json=totalCredit,proto3" json:"total_credit,omitempty"`
+	Lines         []*TrialBalanceLineProto `protobuf:"bytes,7,rep,name=lines,proto3" json:"lines,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetTrialBalanceResponse) Reset() {
 	*x = GetTrialBalanceResponse{}
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[5]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -311,7 +787,7 @@ func (x *GetTrialBalanceResponse) String() string {
 func (*GetTrialBalanceResponse) ProtoMessage() {}
 
 func (x *GetTrialBalanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[5]
+	mi := &file_proto_accounting_v1_ledger_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -322,14 +798,27 @@ func (x *GetTrialBalanceResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetTrialBalanceResponse.ProtoReflect.Descriptor instead.
 func (*GetTrialBalanceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{5}
+	return file_proto_accounting_v1_ledger_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetTrialBalanceResponse) GetCompanyId() string {
 	if x != nil {
 		return x.CompanyId
+	}
+	return ""
+}
+
+func (x *GetTrialBalanceResponse) GetAsOfDate() string {
+	if x != nil {
+		return x.AsOfDate
+	}
+	return ""
+}
+
+func (x *GetTrialBalanceResponse) GetCurrency() string {
+	if x != nil {
+		return x.Currency
 	}
 	return ""
 }
@@ -341,40 +830,31 @@ func (x *GetTrialBalanceResponse) GetIsBalanced() bool {
 	return false
 }
 
+func (x *GetTrialBalanceResponse) GetTotalDebit() string {
+	if x != nil {
+		return x.TotalDebit
+	}
+	return ""
+}
+
+func (x *GetTrialBalanceResponse) GetTotalCredit() string {
+	if x != nil {
+		return x.TotalCredit
+	}
+	return ""
+}
+
+func (x *GetTrialBalanceResponse) GetLines() []*TrialBalanceLineProto {
+	if x != nil {
+		return x.Lines
+	}
+	return nil
+}
+
 var File_proto_accounting_v1_ledger_proto protoreflect.FileDescriptor
 
 const file_proto_accounting_v1_ledger_proto_rawDesc = "" +
-	"\n" +
-	" proto/accounting/v1/ledger.proto\x12\raccounting.v1\"S\n" +
-	"\x10PostEntryRequest\x12\x1d\n" +
-	"\n" +
-	"company_id\x18\x01 \x01(\tR\tcompanyId\x12 \n" +
-	"\vdescription\x18\x02 \x01(\tR\vdescription\"F\n" +
-	"\x11PostEntryResponse\x12\x19\n" +
-	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"K\n" +
-	"\x0fGetEntryRequest\x12\x1d\n" +
-	"\n" +
-	"company_id\x18\x01 \x01(\tR\tcompanyId\x12\x19\n" +
-	"\bentry_id\x18\x02 \x01(\tR\aentryId\"E\n" +
-	"\x10GetEntryResponse\x12\x19\n" +
-	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"q\n" +
-	"\x16GetTrialBalanceRequest\x12\x1d\n" +
-	"\n" +
-	"company_id\x18\x01 \x01(\tR\tcompanyId\x12\x1c\n" +
-	"\n" +
-	"as_of_date\x18\x02 \x01(\tR\basOfDate\x12\x1a\n" +
-	"\bcurrency\x18\x03 \x01(\tR\bcurrency\"Y\n" +
-	"\x17GetTrialBalanceResponse\x12\x1d\n" +
-	"\n" +
-	"company_id\x18\x01 \x01(\tR\tcompanyId\x12\x1f\n" +
-	"\vis_balanced\x18\x02 \x01(\bR\n" +
-	"isBalanced2\x92\x02\n" +
-	"\x11AccountingService\x12N\n" +
-	"\tPostEntry\x12\x1f.accounting.v1.PostEntryRequest\x1a .accounting.v1.PostEntryResponse\x12K\n" +
-	"\bGetEntry\x12\x1e.accounting.v1.GetEntryRequest\x1a\x1f.accounting.v1.GetEntryResponse\x12`\n" +
-	"\x0fGetTrialBalance\x12%.accounting.v1.GetTrialBalanceRequest\x1a&.accounting.v1.GetTrialBalanceResponseB4Z2accounting_engine/proto/accounting/v1;accountingv1b\x06proto3"
+	"\n#proto/accounting/v1/ledger.proto\x12\raccounting.v1"
 
 var (
 	file_proto_accounting_v1_ledger_proto_rawDescOnce sync.Once
@@ -388,25 +868,34 @@ func file_proto_accounting_v1_ledger_proto_rawDescGZIP() []byte {
 	return file_proto_accounting_v1_ledger_proto_rawDescData
 }
 
-var file_proto_accounting_v1_ledger_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_proto_accounting_v1_ledger_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_proto_accounting_v1_ledger_proto_goTypes = []any{
-	(*PostEntryRequest)(nil),        // 0: accounting.v1.PostEntryRequest
-	(*PostEntryResponse)(nil),       // 1: accounting.v1.PostEntryResponse
-	(*GetEntryRequest)(nil),         // 2: accounting.v1.GetEntryRequest
-	(*GetEntryResponse)(nil),        // 3: accounting.v1.GetEntryResponse
-	(*GetTrialBalanceRequest)(nil),  // 4: accounting.v1.GetTrialBalanceRequest
-	(*GetTrialBalanceResponse)(nil), // 5: accounting.v1.GetTrialBalanceResponse
+	(*EntryLineProto)(nil),          // 0: accounting.v1.EntryLineProto
+	(*PostEntryRequest)(nil),        // 1: accounting.v1.PostEntryRequest
+	(*PostEntryResponse)(nil),       // 2: accounting.v1.PostEntryResponse
+	(*GetEntryRequest)(nil),         // 3: accounting.v1.GetEntryRequest
+	(*GetEntryResponse)(nil),        // 4: accounting.v1.GetEntryResponse
+	(*ReverseEntryRequest)(nil),     // 5: accounting.v1.ReverseEntryRequest
+	(*ReverseEntryResponse)(nil),    // 6: accounting.v1.ReverseEntryResponse
+	(*TrialBalanceLineProto)(nil),   // 7: accounting.v1.TrialBalanceLineProto
+	(*GetTrialBalanceRequest)(nil),  // 8: accounting.v1.GetTrialBalanceRequest
+	(*GetTrialBalanceResponse)(nil), // 9: accounting.v1.GetTrialBalanceResponse
 }
 var file_proto_accounting_v1_ledger_proto_depIdxs = []int32{
-	0, // 0: accounting.v1.AccountingService.PostEntry:input_type -> accounting.v1.PostEntryRequest
-	2, // 1: accounting.v1.AccountingService.GetEntry:input_type -> accounting.v1.GetEntryRequest
-	4, // 2: accounting.v1.AccountingService.GetTrialBalance:input_type -> accounting.v1.GetTrialBalanceRequest
-	1, // 3: accounting.v1.AccountingService.PostEntry:output_type -> accounting.v1.PostEntryResponse
-	3, // 4: accounting.v1.AccountingService.GetEntry:output_type -> accounting.v1.GetEntryResponse
-	5, // 5: accounting.v1.AccountingService.GetTrialBalance:output_type -> accounting.v1.GetTrialBalanceResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
+	0, // 0: accounting.v1.PostEntryRequest.lines:type_name -> accounting.v1.EntryLineProto
+	0, // 1: accounting.v1.GetEntryResponse.lines:type_name -> accounting.v1.EntryLineProto
+	7, // 2: accounting.v1.GetTrialBalanceResponse.lines:type_name -> accounting.v1.TrialBalanceLineProto
+	1, // 3: accounting.v1.AccountingService.PostEntry:input_type -> accounting.v1.PostEntryRequest
+	3, // 4: accounting.v1.AccountingService.GetEntry:input_type -> accounting.v1.GetEntryRequest
+	5, // 5: accounting.v1.AccountingService.ReverseEntry:input_type -> accounting.v1.ReverseEntryRequest
+	8, // 6: accounting.v1.AccountingService.GetTrialBalance:input_type -> accounting.v1.GetTrialBalanceRequest
+	2, // 7: accounting.v1.AccountingService.PostEntry:output_type -> accounting.v1.PostEntryResponse
+	4, // 8: accounting.v1.AccountingService.GetEntry:output_type -> accounting.v1.GetEntryResponse
+	6, // 9: accounting.v1.AccountingService.ReverseEntry:output_type -> accounting.v1.ReverseEntryResponse
+	9, // 10: accounting.v1.AccountingService.GetTrialBalance:output_type -> accounting.v1.GetTrialBalanceResponse
+	7, // [7:11] is the sub-list for method output_type
+	3, // [3:7] is the sub-list for method input_type
+	0, // [0:3] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
 }
@@ -422,7 +911,7 @@ func file_proto_accounting_v1_ledger_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_accounting_v1_ledger_proto_rawDesc), len(file_proto_accounting_v1_ledger_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 
 const (
 	maxRequestBodyBytes   = 1 << 20
+	maxEntryLines         = 500
+	maxEventDimensions    = 64
 	serverShutdownTimeout = 10 * time.Second
 )
 
@@ -69,10 +72,10 @@ func newHTTPServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.C
 	verifier, err := newServiceVerifier(cfg)
 	if err != nil {
 		logAuthConfigurationError(err)
-		return &http.Server{
+		return configureHTTPServer(cfg, &http.Server{
 			Addr:    ":" + cfg.HTTPPort,
 			Handler: configurationErrorHandler{reason: err},
-		}
+		})
 	}
 	return newHTTPServerWithVerifier(cfg, engine, verifier, healthChecks...)
 }
@@ -88,7 +91,7 @@ func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceau
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -97,15 +100,15 @@ func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceau
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
 		if srv.health == nil {
-			http.Error(w, "NOT READY", http.StatusServiceUnavailable)
+			writeHTTPError(w, r, http.StatusServiceUnavailable, "not_ready", "service is not ready")
 			return
 		}
 		if err := srv.health(r.Context()); err != nil {
-			http.Error(w, "NOT READY", http.StatusServiceUnavailable)
+			writeHTTPError(w, r, http.StatusServiceUnavailable, "not_ready", "service is not ready")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -115,20 +118,32 @@ func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceau
 	mux.HandleFunc("/api/v1/entries", srv.handleEntries)
 	mux.HandleFunc("/api/v1/trial-balance", srv.handleTrialBalance)
 	mux.HandleFunc("/api/v1/events", srv.handleEvents)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeHTTPError(w, r, http.StatusNotFound, "not_found", "endpoint not found")
+	})
 
 	var handler http.Handler = mux
 	if boundary := newHTTPAuthBoundary(cfg, verifier); boundary != nil {
 		handler = boundary.middleware(handler)
 	}
+	handler = newRequestRateLimitMiddleware(newRequestRateLimiter(), handler)
 
-	return &http.Server{
+	return configureHTTPServer(cfg, &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	})
+}
+
+func configureHTTPServer(cfg Config, server *http.Server) *http.Server {
+	if server.Handler == nil {
+		server.Handler = http.NotFoundHandler()
 	}
+	server.Handler = newHTTPRequestContextMiddleware(cfg.RequireTLS, httpRequestTimeout, server.Handler)
+	return server
 }
 
 func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener) error {
@@ -160,16 +175,21 @@ func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener) 
 
 func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", http.MethodPost)
+		writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	var entry ledger.JournalEntry
 	if err := decodeRequestJSON(w, r, &entry); err != nil {
-		writeRequestDecodeError(w, err)
+		writeRequestDecodeError(w, r, err)
+		return
+	}
+	if err := validateHTTPEntry(entry); err != nil {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if err := authorizeCompany(r.Context(), entry.CompanyID); err != nil {
-		writeApplicationError(w, err)
+		writeApplicationError(w, r, err)
 		return
 	}
 	started := time.Now()
@@ -179,7 +199,7 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
 		s.metrics.IncPostingFailure("service")
-		writeApplicationError(w, err)
+		writeApplicationError(w, r, err)
 		return
 	}
 	s.metrics.IncPostedEntries()
@@ -190,27 +210,47 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", http.MethodGet)
+		writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	companyIDStr := r.URL.Query().Get("company_id")
-	currency := r.URL.Query().Get("currency")
+	query := r.URL.Query()
+	companyIDs := query["company_id"]
+	currencies := query["currency"]
+	if len(r.URL.RawQuery) > 2048 || len(companyIDs) != 1 || len(companyIDs[0]) > 36 || len(currencies) > 1 {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", "invalid query parameters")
+		return
+	}
+	companyIDStr := companyIDs[0]
+	currency := ""
+	if len(currencies) == 1 {
+		currency = strings.TrimSpace(currencies[0])
+	}
 	if currency == "" {
 		currency = "USD"
 	}
+	if len(currency) > 3 {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", "invalid currency")
+		return
+	}
+	currency = strings.ToUpper(currency)
+	if _, ok := types.LookupCurrency(currency); !ok {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", "invalid currency")
+		return
+	}
 	parsedCompanyID, err := uuid.Parse(companyIDStr)
-	if err != nil {
-		http.Error(w, "invalid company_id", http.StatusBadRequest)
+	if err != nil || parsedCompanyID == uuid.Nil {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", "invalid company_id")
 		return
 	}
 	companyID := types.CompanyID(parsedCompanyID)
 	if err := authorizeCompany(r.Context(), companyID); err != nil {
-		writeApplicationError(w, err)
+		writeApplicationError(w, r, err)
 		return
 	}
 	tb, err := s.engine.Reporting().GetTrialBalance(r.Context(), companyID, time.Now().UTC(), currency)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeApplicationError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -219,16 +259,21 @@ func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", http.MethodPost)
+		writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	var ev events.AccountingEvent
 	if err := decodeRequestJSON(w, r, &ev); err != nil {
-		writeRequestDecodeError(w, err)
+		writeRequestDecodeError(w, r, err)
+		return
+	}
+	if err := validateHTTPEvent(ev); err != nil {
+		writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if err := authorizeCompany(r.Context(), ev.CompanyID); err != nil {
-		writeApplicationError(w, err)
+		writeApplicationError(w, r, err)
 		return
 	}
 	started := time.Now()
@@ -238,7 +283,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
 		s.metrics.IncPostingFailure("service")
-		writeApplicationError(w, err)
+		writeApplicationError(w, r, err)
 		return
 	}
 	s.metrics.IncPostedEntries()
@@ -262,30 +307,45 @@ func headerOrDefault(value, fallback string) string {
 	return value
 }
 
-func writeApplicationError(w http.ResponseWriter, err error) {
+func writeApplicationError(w http.ResponseWriter, r *http.Request, err error) {
 	statusCode := http.StatusInternalServerError
 	message := "internal error"
+	code := "internal_error"
 	var classified interface {
 		PublicMessage() string
 	}
 	if errors.As(err, &classified) {
-		message = classified.PublicMessage()
+		if publicMessage := strings.TrimSpace(classified.PublicMessage()); publicMessage != "" && len(publicMessage) <= 1024 {
+			message = publicMessage
+		}
+		code = "application_error"
 		switch {
 		case errors.Is(err, publicapplication.ErrValidation):
 			statusCode = http.StatusBadRequest
+			code = "validation_error"
 		case errors.Is(err, publicapplication.ErrUnauthorized):
 			statusCode = http.StatusUnauthorized
+			code = "unauthorized"
 		case errors.Is(err, publicapplication.ErrForbidden):
 			statusCode = http.StatusForbidden
+			code = "forbidden"
 		case errors.Is(err, publicapplication.ErrNotFound):
 			statusCode = http.StatusNotFound
+			code = "not_found"
 		case errors.Is(err, publicapplication.ErrConflict), errors.Is(err, publicapplication.ErrDuplicateRequest):
 			statusCode = http.StatusConflict
+			code = "conflict"
 		case errors.Is(err, publicapplication.ErrDependencyUnavailable):
 			statusCode = http.StatusServiceUnavailable
+			code = "dependency_unavailable"
 		}
 	}
-	http.Error(w, message, statusCode)
+	if errors.Is(err, context.DeadlineExceeded) {
+		statusCode, code, message = http.StatusGatewayTimeout, "request_timeout", "request timed out"
+	} else if errors.Is(err, context.Canceled) {
+		statusCode, code, message = http.StatusRequestTimeout, "request_cancelled", "request was cancelled"
+	}
+	writeHTTPError(w, r, statusCode, code, message)
 }
 
 func decodeRequestJSON(w http.ResponseWriter, r *http.Request, destination any) error {
@@ -310,11 +370,11 @@ func decodeRequestJSON(w http.ResponseWriter, r *http.Request, destination any) 
 	return nil
 }
 
-func writeRequestDecodeError(w http.ResponseWriter, err error) {
+func writeRequestDecodeError(w http.ResponseWriter, r *http.Request, err error) {
 	var maxBytesError *http.MaxBytesError
 	if errors.As(err, &maxBytesError) {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		writeHTTPError(w, r, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
 		return
 	}
-	http.Error(w, "invalid request body", http.StatusBadRequest)
+	writeHTTPError(w, r, http.StatusBadRequest, "invalid_request", "invalid request body")
 }

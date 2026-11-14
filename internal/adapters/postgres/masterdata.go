@@ -484,6 +484,28 @@ func (d *Driver) UpdateFiscalYearStateForCompanyContext(ctx context.Context, com
 	return d.UpdateFiscalYearState(ctx, companyID, id, state)
 }
 
+func (d *Driver) ReopenFiscalYearForCompanyContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if actorID == uuid.Nil || reason == "" {
+		return masterdata.ErrPeriodReopenRequiresAudit
+	}
+	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var current masterdata.FiscalYearState
+		err := tx.QueryRow(ctx, `SELECT state FROM fiscal_years WHERE company_id=$1 AND id=$2 FOR UPDATE`, companyID, id).Scan(&current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return masterdata.ErrFiscalYearNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := masterdata.ValidateFiscalYearReopen(current, masterdata.FiscalYearOpen, actorID, reason); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE fiscal_years SET state=$1 WHERE company_id=$2 AND id=$3`, masterdata.FiscalYearOpen, companyID, id)
+		return err
+	})
+}
+
 func (d *Driver) GetPeriodByDate(ctx context.Context, date time.Time) (masterdata.FiscalPeriod, error) {
 	return masterdata.FiscalPeriod{}, masterdata.ErrCompanyScopeRequired
 }
