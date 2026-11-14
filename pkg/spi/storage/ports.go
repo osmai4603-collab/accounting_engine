@@ -162,6 +162,8 @@ type Ports struct {
 	Balance     BalanceReader
 	Audit       AuditWriter
 	Idempotency IdempotencyStore
+	TxRunner    TransactionRunner
+	UOWRunner   UnitOfWorkRunner
 	Private     PrivateExtensions
 }
 

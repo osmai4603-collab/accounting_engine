@@ -43,8 +43,9 @@ type EngineBuilder struct {
 	reportingStore  storage.ReportingStore
 	governanceStore storage.GovernanceStore
 	authorizer      publicapplication.Authorizer
-	standards       []standards.StandardModule
-	postingConfig   PostingConfig
+	standards         []standards.StandardModule
+	standardsRegistry *standards.Registry
+	postingConfig     PostingConfig
 	postingCaps     storage.PostingCapabilities
 	optsErrs        []error
 }
@@ -194,15 +195,16 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	}
 
 	inst := &engineInstance{
-		coreStore:        b.coreStore,
-		reportingStore:   b.reportingStore,
-		governanceStore:  b.governanceStore,
-		standards:        b.standards,
-		eventRouter:      router,
-		eventService:     &defaultEventService{}, // initialized below
-		publicMasterData: publicMasterData,
-		useCases:         useCases,
-		requirePrincipal: b.authorizer != nil,
+		coreStore:         b.coreStore,
+		reportingStore:    b.reportingStore,
+		governanceStore:   b.governanceStore,
+		standards:         b.standards,
+		standardsRegistry: b.standardsRegistry,
+		eventRouter:       router,
+		eventService:      &defaultEventService{}, // initialized below
+		publicMasterData:  publicMasterData,
+		useCases:          useCases,
+		requirePrincipal:  b.authorizer != nil,
 	}
 
 	inst.eventService = &defaultEventService{
@@ -232,36 +234,38 @@ func (b *EngineBuilder) preflight() []error {
 		}
 	}
 
-	seenModules := map[string]standards.StandardModule{}
-	for _, mod := range b.standards {
-		if mod == nil {
-			errs = append(errs, errors.New("standard module is nil"))
-			continue
-		}
-		name := mod.Name()
-		if _, exists := seenModules[name]; exists {
-			errs = append(errs, fmt.Errorf("standard module %s: duplicate module", name))
-			continue
-		}
-		seenModules[name] = mod
-	}
-
-	for _, mod := range b.standards {
-		if mod == nil {
-			continue
-		}
-		name := mod.Name()
-		for _, dep := range mod.Dependencies() {
-			if _, ok := seenModules[dep]; !ok {
-				errs = append(errs, fmt.Errorf("standard module %s: required module %s is not loaded", name, dep))
+	if len(b.standards) > 0 {
+		registry := standards.NewRegistry()
+		for _, mod := range b.standards {
+			if mod == nil {
+				errs = append(errs, errors.New("standard module is nil"))
+				continue
+			}
+			if err := registry.Register(mod); err != nil {
+				errs = append(errs, err)
 			}
 		}
-		if b.coreStore == nil {
-			errs = append(errs, fmt.Errorf("standard module %s: standard modules require WithCoreStorage in this release; storage ports do not expose the standards repository", name))
-			continue
+
+		resolvedMods, resErr := registry.Resolve()
+		if resErr != nil {
+			errs = append(errs, resErr)
+		} else {
+			b.standards = resolvedMods
+			b.standardsRegistry = registry
 		}
-		if err := mod.ValidateDependencies(b.coreStore); err != nil {
-			errs = append(errs, fmt.Errorf("standard module %s: dependency validation failed: %w", name, err))
+
+		for _, mod := range b.standards {
+			if mod == nil {
+				continue
+			}
+			name := mod.Name()
+			if b.coreStore == nil {
+				errs = append(errs, fmt.Errorf("standard module %s: standard modules require WithCoreStorage in this release; storage ports do not expose the standards repository", name))
+				continue
+			}
+			if err := mod.ValidateDependencies(b.coreStore); err != nil {
+				errs = append(errs, fmt.Errorf("standard module %s: dependency validation failed: %w", name, err))
+			}
 		}
 	}
 
@@ -289,15 +293,16 @@ func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.
 }
 
 type engineInstance struct {
-	coreStore        legacy.CoreLedgerStore
-	reportingStore   storage.ReportingStore
-	governanceStore  storage.GovernanceStore
-	standards        []standards.StandardModule
-	eventRouter      *events.Router
-	eventService     *defaultEventService
-	publicMasterData publicmasterdata.Store
-	useCases         publicapplication.Service
-	requirePrincipal bool
+	coreStore         legacy.CoreLedgerStore
+	reportingStore    storage.ReportingStore
+	governanceStore   storage.GovernanceStore
+	standards         []standards.StandardModule
+	standardsRegistry *standards.Registry
+	eventRouter       *events.Router
+	eventService      *defaultEventService
+	publicMasterData  publicmasterdata.Store
+	useCases          publicapplication.Service
+	requirePrincipal  bool
 }
 
 func (e *engineInstance) Ledger() LedgerService {
@@ -319,9 +324,37 @@ func (e *engineInstance) Events() EventIngestionService {
 	return e.eventService
 }
 
+func (e *engineInstance) Standards() StandardsService {
+	return &defaultStandardsService{registry: e.standardsRegistry}
+}
+
+type defaultStandardsService struct {
+	registry *standards.Registry
+}
+
+func (s *defaultStandardsService) Registry() *standards.Registry {
+	return s.registry
+}
+
+func (s *defaultStandardsService) Diagnostics() standards.EngineDiagnostics {
+	if s.registry == nil {
+		return standards.EngineDiagnostics{}
+	}
+	return s.registry.Diagnostics()
+}
+
+func (s *defaultStandardsService) HasCapability(cap standards.Capability) bool {
+	if s.registry == nil {
+		return false
+	}
+	return s.registry.HasCapability(cap)
+}
+
 func (e *engineInstance) Close() error {
 	var errs []error
-	for _, mod := range e.standards {
+	// Close standard modules in reverse topological order so dependents clean up first.
+	for i := len(e.standards) - 1; i >= 0; i-- {
+		mod := e.standards[i]
 		if err := mod.Close(context.Background()); err != nil {
 			errs = append(errs, fmt.Errorf("module %s close failed: %w", mod.Name(), err))
 		}

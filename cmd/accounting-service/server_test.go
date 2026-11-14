@@ -202,7 +202,8 @@ func (e *serviceTestEngine) Events() sdk.EventIngestionService {
 	}
 	return serviceTestEvents{}
 }
-func (e *serviceTestEngine) Close() error { return nil }
+func (e *serviceTestEngine) Standards() sdk.StandardsService { return nil }
+func (e *serviceTestEngine) Close() error                    { return nil }
 
 type serviceTestLedger struct {
 	err error

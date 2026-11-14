@@ -8,6 +8,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
 type Engine interface {
@@ -15,7 +16,14 @@ type Engine interface {
 	Reporting() ReportingService
 	Governance() GovernanceService
 	Events() EventIngestionService
+	Standards() StandardsService
 	Close() error
+}
+
+type StandardsService interface {
+	Registry() *standards.Registry
+	Diagnostics() standards.EngineDiagnostics
+	HasCapability(cap standards.Capability) bool
 }
 
 type LedgerService interface {

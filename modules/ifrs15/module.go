@@ -11,7 +11,20 @@ import (
 
 type Module struct{}
 
-var _ standards.StandardModule = (*Module)(nil)
+var (
+	_ standards.StandardModule  = (*Module)(nil)
+	_ standards.DescribedModule = (*Module)(nil)
+)
+
+func (m *Module) Descriptor() standards.ModuleDescriptor {
+	return standards.ModuleDescriptor{
+		ID:          "ifrs15",
+		Name:        "IFRS 15",
+		Version:     "1.0.0",
+		Provides:    []standards.Capability{"revenue_recognition"},
+		Description: "IFRS 15 Revenue from Contracts with Customers",
+	}
+}
 
 func (m *Module) Name() string {
 	return "IFRS 15"

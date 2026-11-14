@@ -94,7 +94,7 @@ func TestPortsValidateAcceptsRequiredPortsOnly(t *testing.T) {
 
 func TestOptionalCapabilitiesAreNilByDefault(t *testing.T) {
 	ports := Ports{}
-	if ports.Balance != nil || ports.Audit != nil || ports.Idempotency != nil || ports.Private != nil {
+	if ports.Balance != nil || ports.Audit != nil || ports.Idempotency != nil || ports.TxRunner != nil || ports.UOWRunner != nil || ports.Private != nil {
 		t.Fatal("optional capabilities must default to nil, not silent stubs")
 	}
 }

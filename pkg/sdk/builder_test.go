@@ -404,3 +404,31 @@ func TestBuilder_OptionalCapabilitiesFailExplicitly(t *testing.T) {
 		t.Fatalf("Governance error = %v, want explicit not-configured error", err)
 	}
 }
+
+func TestBuilder_StandardsDiagnosticsAndCapabilities(t *testing.T) {
+	driver := memory.New()
+	mod := &mockStandard{
+		name: "test-module",
+	}
+	engine, err := NewBuilder(
+		WithCoreStorage(driver),
+		WithStandard(mod),
+	).Build(context.Background())
+	if err != nil {
+		t.Fatalf("build engine: %v", err)
+	}
+	defer engine.Close()
+
+	standardsSvc := engine.Standards()
+	if standardsSvc == nil {
+		t.Fatal("expected non-nil Standards service")
+	}
+
+	diag := standardsSvc.Diagnostics()
+	if len(diag.ActiveModules) != 1 {
+		t.Fatalf("expected 1 active module in diagnostics, got %d", len(diag.ActiveModules))
+	}
+	if diag.ActiveModules[0].Name != "test-module" {
+		t.Fatalf("expected active module name test-module, got %s", diag.ActiveModules[0].Name)
+	}
+}

@@ -11,7 +11,20 @@ import (
 
 type Module struct{}
 
-var _ standards.StandardModule = (*Module)(nil)
+var (
+	_ standards.StandardModule  = (*Module)(nil)
+	_ standards.DescribedModule = (*Module)(nil)
+)
+
+func (m *Module) Descriptor() standards.ModuleDescriptor {
+	return standards.ModuleDescriptor{
+		ID:          "ias12",
+		Name:        "IAS 12",
+		Version:     "1.0.0",
+		Provides:    []standards.Capability{"deferred_tax"},
+		Description: "IAS 12 Income Taxes",
+	}
+}
 
 func (m *Module) Name() string {
 	return "IAS 12"
