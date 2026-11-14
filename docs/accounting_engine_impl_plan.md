@@ -21,6 +21,20 @@
 9. كل مهمة تُغلق بملف `docs/ard/ARD-<task-id>.md` يحتوي أدلة فعلية. لا تتحول الحالة إلى `منفذة` قبل اكتمال كل معايير القبول.
 10. أي متطلب معياري غير محسوم يتطلب الرجوع إلى النص الرسمي الحالي، وتحديد إصدار المعيار وتاريخ سريانه والنطاق، ومراجعة محاسب مؤهل. لا يُستخدم وصف «متوافق مع IFRS» بناءً على اختبارات تقنية وحدها.
 
+## قاعدة معمارية ملزمة: استقلال المصادقة والتفويض
+
+تسري هذه القاعدة على جميع المراحل والمهام، وتُقدّم على أي صياغة قد توحي بأن المحرك يملك هوية المستخدم أو صلاحياته:
+
+1. **Authentication مملوكة للنظام المضيف:** Backend المستهلك يتحقق من هوية المستخدم أو الخدمة. لا ينشئ Accounting Engine حسابات مستخدمين أو كلمات مرور أو جلسات، ولا يفرض JWT/OIDC أو مزود هوية على Embedded Library.
+2. **Authorization التجاري مملوك للنظام المضيف:** Backend يقرر صلاحية المستخدم لإنشاء مستند تجاري أو اعتماده أو ترحيله أو إدارة مستخدمي الشركة. لا يفرض المحرك RBAC أو Roles/Permissions أو صلاحيات مثل `sales.invoice.post`.
+3. **Accounting Invariants مملوكة للمحرك:** يرفض المحرك القيد غير المتوازن، والفترة المغلقة، والحساب غير الصالح، والعكس غير الصحيح، وأي عملية تخالف قواعده المحاسبية، حتى لو كان المستدعي مخولًا من النظام المضيف.
+4. **Execution Context بحسب العملية:** يمرر النظام المضيف/Adapter سياقًا موثوقًا يتضمن عند الحاجة `CompanyID` و`ActorID` و`RequestID`/`CorrelationID` و`Source`. هذا السياق بيانات تنفيذ وتدقيق، وليس إثبات مصادقة أو قرار تفويض. لا تُقبل قيم Body/Header من العميل كمصدر موثوق دون تحقق عند حد الثقة.
+5. **Tenant/Company Isolation مسؤولية المحرك:** يفرض المحرك نطاق الشركة في كل Query/Command وفي Storage Adapter وقيود DB/RLS. يتحقق النظام المضيف من عضوية المستخدم وصلاحيته للشركة؛ ويمنع المحرك عبور البيانات بين الشركات حتى عند وجود خطأ في الطبقات الأعلى.
+6. **Auditability محاسبية:** يسجل المحرك الأحداث المحاسبية والفاعل والسياق والوقت والمراجع اللازمة للتتبع، ولا يتحول إلى نظام تدقيق شامل لأنشطة المستخدمين في النظام المضيف.
+7. **Standalone Service فقط:** إذا فُعّلت واجهات HTTP/gRPC كخدمة مستقلة، تُحمى حدودها بالتحقق من هوية المستدعي أو استقبال هوية موثقة من Gateway موثوق، ثم يُنشأ Execution Context. لا يلزم بناء User Management أو Authorization Engine داخل المحرك.
+8. **تكاملات اختيارية:** يجوز قبول Approval Evidence أو توفير تكامل تفويض خارجي عند الحاجة، دون فرض نموذج هوية أو صلاحيات. لا تتجاوز هذه الإضافات الثوابت المحاسبية أو عزل الشركات.
+9. **حدود المعاملات:** إذا استخدم النظام المضيف والمحرك معاملتين/قاعدتي بيانات منفصلتين، فلا تفترض ذرية مشتركة؛ استخدم نمطًا موثقًا مثل Transactional Outbox وIdempotency أو Saga عند الحاجة.
+
 ## تعريف حالات الاكتمال الوظيفي
 
 | الحالة الوظيفية | المعنى |
@@ -41,7 +55,7 @@
 | `P3` | فصل التخزين عن التطبيق، وإثبات موائم خارجي وتكافؤ PostgreSQL وMemory. | `P3-01` إلى `P3-07` | `P2` (اكتمال جميع مهامها) |
 | `P4` | استكمال ضوابط الدورة المحاسبية والعملات والأستاذ المساعد والإقفال والتقارير. | `P4-01` إلى `P4-08` | `P3` (اكتمال جميع مهامها) |
 | `P5` | تحويل الوحدات الاختيارية إلى Capabilities ذات اعتماديات ودورة حياة ونطاق معياري واضح. | `P5-01` إلى `P5-09` | `P2` و`P4` (اكتمال جميع مهامهما) |
-| `P6` | تأمين HTTP/gRPC وإغلاق فجوات الإعداد والعزل والمراقبة والتعافي. | `P6-01` إلى `P6-06` | `P3` (اكتمال جميع مهامها)، و`P1` لعقود الخدمة |
+| `P6` | تأمين حدود HTTP/gRPC عند اعتماد Standalone، وإغلاق فجوات الإعداد والعزل والمراقبة والتعافي. | `P6-01` إلى `P6-06` | `P3` (اكتمال جميع مهامها)، و`P1` لعقود الخدمة |
 | `P7` | اختبارات قبول المنتج وتجهيز النشر والتوثيق وإصدار مستقر. | `P7-01` إلى `P7-06` | `P4` و`P5` و`P6` (اكتمال جميع مهامها) |
 
 ## 2. حالة المهام
@@ -92,14 +106,14 @@
 | `P5-09` | `P5` | معلقة | `P5-02`، `P4-08` | — |
 | `P6-01` | `P6` | منفذة | `P3-02`، `P1-06` | `docs/ard/ARD-P6-01.md` |
 | `P6-02` | `P6` | معلقة | `P2-02`، `P6-01` | — |
-| `P6-03` | `P6` | معلقة | `P6-02`، `P3-02` | — |
-| `P6-04` | `P6` | معلقة | `P1-04`، `P2-06`، `P6-02` | — |
-| `P6-05` | `P6` | معلقة | `P2-06`، `P6-02`، `P6-04` | — |
+| `P6-03` | `P6` | معلقة | `P2-02`، `P3-02` | — |
+| `P6-04` | `P6` | معلقة | `P1-04`، `P2-06`، `P6-02` (إذا كان Standalone ضمن الإصدار) | — |
+| `P6-05` | `P6` | معلقة | `P2-06`، `P6-02` (إذا كان Standalone)، `P6-04` (إذا كانت HTTP/gRPC ضمن الإصدار) | — |
 | `P6-06` | `P6` | معلقة | `P3-06`، `P6-01`، `P6-03` | — |
 | `P7-01` | `P7` | معلقة | `P3-07`، `P4-08`، `P5-09`، `P6-06` | — |
 | `P7-02` | `P7` | معلقة | `P3-07`، `P6-06` | — |
 | `P7-03` | `P7` | معلقة | `P6-01`، `P6-03`، `P7-02` | — |
-| `P7-04` | `P7` | معلقة | `P1-06`، `P2-06`، `P5-09`، `P6-04` | — |
+| `P7-04` | `P7` | معلقة | `P1-06`، `P2-06`، `P5-09`، `P6-04` (إذا كانت gRPC ضمن الإصدار) | — |
 | `P7-05` | `P7` | معلقة | `P7-01`، `P7-02`، `P7-03`، `P7-04` | — |
 | `P7-06` | `P7` | معلقة | `P7-05` | — |
 
@@ -115,7 +129,7 @@
 - **خطوات التنفيذ:**
   1. حصر الخدمات التي يجب أن يقدمها المحرك: إنشاء/قراءة القيود، التحقق، الترحيل، العكس، الأحداث، والسجل المحاسبي.
   2. حصر ما يملكه النظام المضيف: المبيعات والمخزون والرواتب والعمليات الزراعية/الصناعية وإدارة هوية المستخدمين عند توفيرها خارجيًا.
-  3. تحديد الحد الأدنى من Master Data لتشغيل Posting: Company وAccounts وJournals وFiscal Periods وFunctional Currency والصلاحيات.
+  3. تحديد الحد الأدنى من Master Data لتشغيل Posting: Company وAccounts وJournals وFiscal Periods وFunctional Currency. لا تُعد أدوار المستخدمين أو صلاحيات النظام المضيف Master Data يملكها المحرك.
   4. تصنيف كل Capability إلى `core-required` أو `optional` أو `host-owned` أو `out-of-scope`.
   5. تعريف معايير قياس Industry Independence وInfrastructure Independence وExternal Consumption.
   6. تحديد نطاق الإصدار الأول دون وصف وحدات معيارية بأنها متوافقة بالكامل.
@@ -166,20 +180,26 @@
 
 #### `P0-04` — اعتماد قرارات التصميم وتجميد النطاق
 
-- **المشكلة التي تحلها:** قد تختلف قرارات التنفيذ اللاحقة حول موضع Application Layer وملكية المعاملة وSPI وهوية المستخدم وحدود الوحدات المعيارية.
+- **المشكلة التي تحلها:** قد تختلف قرارات التنفيذ اللاحقة حول موضع Application Layer وملكية المعاملة وSPI وسياق التنفيذ وحدود مسؤولية الهوية والتفويض والوحدات المعيارية.
 - **الهدف الذي تحققه:** ADRs ملزمة قبل تعديل العقود العامة.
 - **نطاق المهمة:** قرارات معمارية ومنتج فقط. لا تشمل تنفيذها.
 - **خطوات التنفيذ:**
   1. اعتماد قرار نقطة الدخول العامة وفصل API عن SPI.
   2. اعتماد قرار Application Layer وPorts/Adapters وUnit of Work.
-  3. تحديد مسؤولية المحرك والنظام المضيف في Authentication/Authorization.
-  4. تحديد مصدر Company/Tenant Context الموثوق.
-  5. تحديد نطاق وإصدارات وحدات IAS/IFRS الاختيارية.
-  6. اعتماد سياسة Memory/PostgreSQL وGo Module وSemVer.
-  7. اعتماد تجميد الميزات الجديدة حتى اجتياز بوابات المنتج الأساسية.
+  3. اعتماد مبدأ استقلال Authentication/Authorization: النظام المضيف يملك المصادقة والتفويض التجاري، والمحرك لا يفرض User Management أو Roles/Permissions.
+  4. تحديد عقد Execution Context ومصدره الموثوق، بما يشمل CompanyID وActorID وRequest/Correlation ID وSource، وآلية فرض Tenant Isolation داخل المحرك.
+  5. حسم نمط الإصدار الأول صراحة: Embedded Library فقط أم Embedded Library مع Standalone HTTP/gRPC Service.
+  6. تحديد متطلبات حماية HTTP/gRPC إذا اختير Standalone Service، مع عدم فرضها على Embedded Library.
+  7. تحديد نطاق Auditability المحاسبية وما يجب أن يسجله المحرك دون أن يتحول إلى سجل شامل لأنشطة المستخدمين.
+  8. تحديد نطاق وإصدارات وحدات IAS/IFRS الاختيارية.
+  9. اعتماد سياسة Memory/PostgreSQL وGo Module وSemVer.
+  10. اعتماد تجميد الميزات الجديدة حتى اجتياز بوابات المنتج الأساسية.
 - **الاعتماديات:** `P0-01`، `P0-02`، `P0-03`.
 - **معايير القبول:**
   - [ ] ADR لكل قرار أو توثيق سبب دمج بعضها.
+  - [ ] ADR يثبت أن Authentication وAuthorization التجاريين مسؤولية النظام المضيف، وأن المحرك لا يفرض إدارة مستخدمين أو أدوارًا.
+  - [ ] ADR يحدد Execution Context الموثوق وCompany/Tenant Isolation وAuditability.
+  - [ ] ADR يفصل متطلبات أمن Standalone Service عن Embedded Library.
   - [ ] لا توجد قرارات أساسية معلقة تؤثر على Public API أو Storage SPI.
   - [ ] كل ADR يضم السياق والبدائل والقرار والنتائج.
   - [ ] تجميد التوسع موثق وموافق عليه.
@@ -217,7 +237,9 @@
   4. فصل Integration SPI لاستقبال أحداث النظام المضيف عن Persistence SPI.
   5. اعتماد حزم عامة واضحة مثل `pkg/spi/storage` و`pkg/spi/application` و`pkg/spi/integration` أو بديل موثق.
   6. تعريف Reporting وGovernance وStandards كـ Capabilities مستقلة لا كحقول إلزامية في Core Store.
-  7. كتابة مثال Adapter لا يستورد أي `internal` ولا يعرف SQL.
+  7. تعريف `ExecutionContext` عام مستقل عن `context.Context` الخاص بالإلغاء والمهلة، ويشمل عند الحاجة `CompanyID` و`ActorID` و`RequestID`/`CorrelationID` و`Source`.
+  8. توثيق أن هذا السياق بيانات موثوقة ينشئها Backend/Adapter بعد التحقق عند حد الثقة، وليس Token مصادقة ولا وسيلة تفويض بذاته.
+  9. كتابة مثال Adapter لا يستورد أي `internal` ولا يعرف SQL.
 - **الاعتماديات:** `P1-01`.
 - **معايير القبول:**
   - [x] وجود `docs/public_contracts_design.md` ومخطط تبعيات.
@@ -311,15 +333,15 @@
 
 #### `P2-01` — تعريف أوامر ونتائج حالات الاستخدام المحاسبية
 
-- **المشكلة التي تحلها:** واجهات SDK تستقبل `JournalEntry` مباشرة في Post وتقبل `reason string` فقط في العكس. هذا لا يمثل بوضوح هوية المنفذ ومفتاح التكرار ومرجع المصدر وسياسة الموافقة، ويخلط أمر الاستخدام بنموذج القيد المخزن.
+- **المشكلة التي تحلها:** واجهات SDK تستقبل `JournalEntry` مباشرة في Post وتقبل `reason string` فقط في العكس. هذا لا يمثل بوضوح سياق المنفذ ومفتاح التكرار ومرجع المصدر ودليل الاعتماد الاختياري، ويخلط أمر الاستخدام بنموذج القيد المخزن.
 - **الهدف الذي تحققه:** Commands/Queries واضحة وثابتة تمثل نية العملية وبياناتها الحوكمية والمحاسبية.
 - **نطاق المهمة:** تصميم العقود العامة والاختبارات الأولية فقط؛ لا تشمل التخزين.
 - **خطوات التنفيذ:**
   1. تعريف `CreateDraftCommand` و`ValidateEntryCommand` و`PostEntryCommand` و`ReverseEntryCommand` و`GetEntryQuery`.
-  2. تضمين `CompanyID` و`ActorID` و`CorrelationID` و`IdempotencyKey` حيث تلزم، مع اعتبار الهوية المدخلة غير موثوقة قبل Authorization.
+  2. تضمين `CompanyID` و`ActorID` و`CorrelationID` و`IdempotencyKey` حيث تلزم؛ وتُشتق الهوية والسياق من مصدر موثوق في النظام المضيف/Adapter، لا من Body/Header غير متحقق منه.
   3. تعريف `Reason` للعكس منفصلًا عن `ActorID`، وإضافة مرجع وتاريخ فعال عند الحاجة.
   4. تعريف نتائج تحفظ الهوية والحالة والرقم القانوني والتوقيت دون قيم مشتقة مضللة.
-  5. توحيد أخطاء Validation/NotFound/Conflict/Unauthorized/Forbidden/PeriodClosed/DuplicateRequest/DependencyUnavailable/Internal.
+  5. توحيد أخطاء Validation/NotFound/Conflict/Unauthenticated/Forbidden/PeriodClosed/DuplicateRequest/DependencyUnavailable/Internal حسب حد الخدمة؛ لا يقرر المحرك صلاحيات المستخدم التجارية.
   6. تعريف الفرق بين `EffectiveDate` و`PostingDate` و`CreatedAt` و`PostedAt` و`ApprovedAt` ومصدر كل قيمة.
 - **الاعتماديات:** اكتمال جميع مهام `P1`.
 - **معايير القبول:**
@@ -336,27 +358,27 @@
 - **خطوات التنفيذ:**
   1. اعتماد حزمة تطبيق واحدة؛ إعادة استخدام `internal/sdkapplication` أو نقلها إلى `internal/application` بقرار ADR.
   2. جعلها تعتمد على Public Ports عبر Adapters داخلية.
-  3. بناء Pipeline: Context validation، Authorization hook، Input validation، Master Data validation، Policy/Approval، Posting Engine، Audit/Outbox، Result mapping.
+  3. بناء Pipeline: Trusted Execution Context validation، Input validation، Master Data validation، Accounting Invariants/Policy validation، Optional Approval Evidence integration عند تفعيلها، Posting Engine، Accounting Audit/Outbox، Result mapping. لا تنفذ Application Layer مصادقة المستخدم أو تفويضه التجاري.
   4. منع `cmd` وSDK وIndustry Adapters من استدعاء `posting.Engine` مباشرة.
-  5. منع Storage Adapter من تنفيذ قواعد التوازن أو الموافقات أو بناء القيود.
+  5. منع Storage Adapter من تنفيذ قواعد التوازن أو بناء القيود. لا ينقل ذلك إلى Storage أي قرار Authentication/Authorization تجاري؛ وتبقى موافقات الأعمال خارج المحرك أو تكاملًا اختياريًا يمرر دليل اعتماد موثوقًا.
   6. توثيق كل مسار Sequence من API حتى التخزين.
 - **الاعتماديات:** `P2-01`.
 - **معايير القبول:**
   - [x] كل مداخل SDK وHTTP وgRPC والأحداث تستدعي Use Cases نفسها.
   - [x] لا يوجد Posting Engine بتهيئة مستقلة خارج Composition Root.
   - [x] اختبار Architecture يمنع استيراد `internal/posting` من `cmd` أو `pkg/sdk` مباشرة.
-  - [x] نفس الأمر يعطي قواعد تحقق وأخطاء دلالية متطابقة عبر Transports.
+  - [x] نفس الأمر يعطي قواعد تحقق محاسبية وأخطاء دلالية متطابقة عبر Transports.
 
-#### `P2-03` — توحيد إعداد Posting Engine والسياسات والموافقات
+#### `P2-03` — توحيد إعداد Posting Engine وضوابطه وتكاملات الاعتماد الاختيارية
 
-- **المشكلة التي تحلها:** يتم إنشاء `posting.Engine` بأكثر من موضع، وبعض الإنشاءات لا تربط Policy وApproval وFinancial Dimensions وMaker-Checker.
-- **الهدف الذي تحققه:** Composition Root وحيد يحقن ضوابط Posting المطلوبة ويمنع الإعداد الجزئي غير المقصود.
-- **نطاق المهمة:** تهيئة Posting Engine والسياسات والأبعاد والموافقات والتدقيق؛ لا تشمل بناء نظام هوية المستخدم.
+- **المشكلة التي تحلها:** يتم إنشاء `posting.Engine` بأكثر من موضع، وبعض الإنشاءات لا تربط Accounting Policy وFinancial Dimensions ومتطلبات الاعتماد الاختيارية؛ كما يجب ألا يفرض المحرك نظام Maker-Checker أو أدوار مستخدمين خاصًا به.
+- **الهدف الذي تحققه:** Composition Root وحيد يحقن ضوابط Posting المحاسبية المطلوبة، ويتيح تكاملًا اختياريًا مع موافقات النظام المضيف دون امتلاك المحرك سياسة هوية أو صلاحيات المستخدمين.
+- **نطاق المهمة:** تهيئة Posting Engine والسياسات المحاسبية والأبعاد والتدقيق وتكامل Approval Evidence الاختياري؛ لا تشمل Authentication أو User Management أو RBAC أو تقرير صلاحيات المستخدمين.
 - **خطوات التنفيذ:**
-  1. تعريف `PostingConfig` يحدد سياسات القيد ومتطلبات الأبعاد والفترة والعملة والموافقة وMaker-Checker والتدقيق.
+  1. تعريف `PostingConfig` يحدد سياسات القيد ومتطلبات الأبعاد والفترة والعملة والتدقيق، ويحدد متى يلزم Approval Evidence خارجي. لا يحتوي على تعريف أدوار أو صلاحيات مستخدمين.
   2. الفصل بين Core Dependencies وCapabilities التي تفعّلها سياسة الشركة.
   3. بناء Factory داخلي وحيد ينشئ Posting Engine ويربط Dependencies.
-  4. التحقق عند Build من وجود Approval Port عند اشتراط الموافقة ومصدر أبعاد عند اشتراطها.
+  4. التحقق عند Build من وجود Approval Evidence Provider/Port عند تفعيل متطلب اعتماد اختياري ومصدر أبعاد عند اشتراطها؛ لا يحدد المحرك هوية المعتمد أو أذوناته.
   5. منع إنشاء Engine ناقص إذا فشل حقن ضابط مطلوب.
   6. إضافة اختبارات مقارنة بين SDK وHTTP وEvent Ingestion على نفس سياسة الشركة.
 - **الاعتماديات:** `P2-02`.
@@ -364,7 +386,7 @@
   - [x] مكان واحد فقط لإنشاء Posting Engine.
   - [x] كل Posting Path يمر بالسياسات نفسها.
   - [x] السياسة ذات الاعتماد المفقود تفشل في Build لا أثناء الترحيل.
-  - [x] اختبارات تمنع الترحيل عند فشل Approval أو Maker-Checker أو الأبعاد المطلوبة.
+  - [x] اختبارات تمنع الترحيل عند غياب Approval Evidence المطلوب اختياريًا أو فشل ضوابط المحاسبة/الأبعاد المطلوبة، دون تنفيذ RBAC أو صلاحيات مستخدمين داخل المحرك.
 
 #### `P2-04` — إصلاح Mapping بين Public DTOs والنماذج الداخلية
 
@@ -605,7 +627,7 @@
   3. تعريف خصائص Journal: Company Scope وCurrency Rules وNumbering Policy وActivation.
   4. حجز التسلسل داخل معاملة الترحيل وتحديد هل يستهلك الرقم عند Rollback أم لا.
   5. فرض قيود تمنع تعديل رقم قيد مرحّل أو حذف Journal مستخدم.
-  6. تعريف Reopen بصلاحيات وسبب وسجل تدقيق، لا بفتح تلقائي بعد الفشل.
+  6. تعريف Reopen بمتطلبات الحالة والسبب وسجل التدقيق، مع ترك تفويض المستخدم للنظام المضيف وإمكان تمرير Approval Evidence اختياري؛ لا إعادة فتح تلقائية بعد الفشل.
   7. اختبار آخر رقم يومية وإقفال الفترة بالتزامن مع Posting.
 - **الاعتماديات:** `P2-03`، `P3-02`.
 - **معايير القبول:**
@@ -688,8 +710,8 @@
   2. تعريف Close Checklist بنتائج Pass/Warning/Blocker مع أدلة.
   3. تنفيذ Closing Command عبر Application Layer مع قفل يمنع Posting المتزامن أثناء الإقفال.
   4. تعريف قيود الإقفال/التدوير وسياسة إعادة فتح الفترة التالية.
-  5. فصل صلاحيات الإقفال وإعادة الفتح مع Reason وApproval وAudit.
-  6. اختبار الفشل قبل/بعد الاعتماد ومحاولة Posting بالتزامن ومحاولة Reopen دون صلاحية.
+  5. فصل شروط الإقفال وإعادة الفتح المحاسبية عن تفويض المستخدم؛ حفظ Reason وActor وApproval Evidence الاختياري في Audit.
+  6. اختبار الفشل قبل/بعد الاعتماد ومحاولة Posting بالتزامن ومحاولة Reopen دون Execution Context أو متطلبات اعتماد خارجية مستوفاة.
 - **الاعتماديات:** `P4-02`، `P4-05`.
 - **معايير القبول:**
   - [ ] لكل فترة Close Checklist قابلة للتشغيل والتقرير.
@@ -929,7 +951,9 @@
   - [ ] Capabilities الفعالة والنواقص ظاهرة للمستهلك.
 - **ملاحظة التوازي:** تتوازى مع وحدات المعايير بعد اعتماد `P5-02` و`P4-08`، بشرط عدم تعديل Registry أو عقود Standards المشتركة.
 
-### المرحلة `P6` — الأمان والتشغيل وخدمات HTTP/gRPC
+### المرحلة `P6` — أمان حدود الخدمة المستقلة والتشغيل وخدمات HTTP/gRPC
+
+**شرط النطاق:** يحدد `P0-04` هل يتضمن الإصدار الأول Standalone Service أم Library فقط. تكون `P6-02` و`P6-04` و`P6-05` متطلبات إصدار إلزامية فقط إذا كانت واجهات HTTP/gRPC المستقلة ضمن الإصدار. إذا كان الإصدار Embedded Library فقط، تُسجل هذه المهام `مؤجلة خارج نطاق الإصدار` مع سبب واضح، ولا يُعد غياب Authentication داخل المحرك عائقًا لإصدار المكتبة. تبقى `P6-03` وعزل الشركات وسلامة Execution Context إلزامية في كلا نمطي الاستخدام. وتُطبق من `P6-01` و`P6-06` متطلبات التشغيل التي تنطبق على مكونات الإصدار الفعلية.
 
 #### `P6-01` — جعل Production Configuration Fail-Closed
 
@@ -940,7 +964,7 @@
   1. إضافة `APP_ENV` أو مكافئ وتحديد development/test/production صراحة.
   2. جعل غياب `DATABASE_DSN` في Production خطأ يمنع التشغيل.
   3. جعل Memory اختيارًا صريحًا ومنعه في Production افتراضيًا.
-  4. التحقق من TLS/Auth/Secrets/Connection Pool/Migration Policy بحسب النشر.
+  4. التحقق من TLS/Secrets/Connection Pool/Migration Policy بحسب النشر؛ وتُطلب إعدادات مصادقة المستدعي فقط إذا كانت واجهات HTTP/gRPC مفعلة كنمط Standalone، ولا تُفرض على Embedded Library.
   5. منع طباعة DSN والأسرار في Logs.
   6. توثيق الإعدادات وإضافة Tests لكل Environment.
 - **الاعتماديات:** `P3-02`، `P1-06`.
@@ -950,45 +974,48 @@
   - [x] Development/Test يسمحان بـ Memory باختيار صريح.
   - [x] لا تظهر Secrets في Logs أو Errors.
 
-#### `P6-02` — إضافة Authentication/Authorization Boundary للخدمة
+#### `P6-02` — تأمين حدود HTTP/gRPC عند تشغيل المحرك كخدمة مستقلة
 
-- **المشكلة التي تحلها:** HTTP/gRPC لا يربطان الطلب بهوية موثقة وتفويض على الشركة والعملية؛ `company_id` القادم في الطلب ليس مصدرًا موثوقًا للصلاحية.
-- **الهدف الذي تحققه:** التحقق من هوية مقدم الطلب وتفويض العملية على Company/Tenant قبل Application Layer.
-- **نطاق المهمة:** HTTP Middleware وgRPC Interceptors وPrincipal Context وAuthorization Port؛ لا تشمل بناء Identity Provider.
+- **المشكلة التي تحلها:** عند تشغيل المحرك كـ Standalone Service تصبح واجهات HTTP/gRPC حدودًا شبكية؛ لا يجوز قبول استدعاءات مجهولة أو إنشاء Execution Context من بيانات طلب غير موثوقة. ولا يجوز فرض هذه الآليات على Embedded Library.
+- **الهدف الذي تحققه:** حماية واجهات الخدمة المستقلة والتحقق من هوية المستدعي أو الثقة بهوية موثقة من Gateway موثوق، ثم إنشاء Trusted Execution Context. لا تنشئ هذه المهمة Authorization Model تجاريًا داخل المحرك.
+- **نطاق المهمة:** HTTP Middleware وgRPC Interceptors وTrusted Principal-to-ExecutionContext Adapter وإعدادات Service Boundary. لا تشمل Identity Provider أو User Management أو Roles/Permissions أو سياسات صلاحيات الشركة والعمليات.
 - **خطوات التنفيذ:**
-  1. تحديد تكامل الهوية (JWT/OIDC أو mTLS أو موفر خارجي) حسب بيئة النشر.
-  2. استخراج Principal موثق يحوي Actor/User ID وTenant Scope وClaims المطلوبة.
-  3. التحقق من التوقيع وIssuer وAudience وExpiry وNot Before والخوارزمية المسموحة.
-  4. تعريف Authorization Port لصلاحيات العملية على الشركة والدفتر والقيد والحساب عند الحاجة.
-  5. أخذ Company Context من Principal أو اختيار شركة تم التحقق منه؛ لا تثق في `company_id` وحده.
-  6. إضافة HTTP Middleware وgRPC Unary/Stream Interceptors قبل Handlers.
-  7. توحيد Unauthorized/Forbidden دون تسريب تفاصيل حساسة.
+  1. تحديد نمط نشر الخدمة ومصدر الهوية الموثوق: تحقق محلي من JWT/OIDC، أو mTLS، أو هوية موثقة يمررها Gateway موثوق مع منع تجاوز Gateway.
+  2. التحقق من إثبات هوية المستدعي وفق النمط المعتمد، مثل التوقيع وIssuer وAudience وExpiry لخيار JWT أو هوية الشهادة لخيار mTLS.
+  3. اشتقاق `ActorID` و`CompanyID` و`RequestID` و`Source` من Claims/Metadata موثوقة أو من اختيار شركة تم التحقق منه خارج المحرك؛ لا تثق في `company_id` القادم وحده من Body أو Header غير موثوق.
+  4. تحويل الهوية الموثقة إلى `ExecutionContext` موحد وتمريره إلى Application Layer.
+  5. إبقاء قرار صلاحية المستخدم للعملية التجارية في النظام المضيف أو طبقة التفويض الخارجية؛ لا تضف Authorization Port إلزاميًا أو RBAC داخل Core Ledger.
+  6. إبقاء Embedded دون Middleware أو Interceptor يفرض مصادقة؛ يستقبل المحرك Execution Context موثوقًا من Backend المستهلك.
+  7. توحيد أخطاء حدود الخدمة (Unauthenticated/Unavailable/Invalid Principal) دون تسريب تفاصيل حساسة، وتوثيق مسؤولية Gateway/Reverse Proxy.
 - **الاعتماديات:** `P2-02`، `P6-01`.
 - **معايير القبول:**
-  - [ ] الطلب بلا هوية صالحة يرفض قبل Application Layer.
-  - [ ] المستخدم غير المخول للشركة يحصل على Forbidden ولا يقرأ أو يكتب بياناتها.
-  - [ ] صلاحيات القراءة والكتابة والترحيل والعكس منفصلة.
-  - [ ] اختبارات HTTP/gRPC تثبت أن تغيير Company ID لا يتجاوز العزل.
+  - [ ] لا تقبل الخدمة المستقلة طلبًا مجهولًا أو Principal غير موثوق وفق نمط النشر المعتمد.
+  - [ ] لا يُنشأ Execution Context من `company_id` أو `actor_id` يقدمهما العميل دون تحقق.
+  - [ ] يمكن تشغيل SDK كـ Embedded Library دون Identity Provider أو User Management أو Roles/Permissions داخل المحرك.
+  - [ ] لا يحتوي Core Ledger على RBAC أو سياسة صلاحيات تجارية للمستخدمين.
+  - [ ] اختبارات HTTP/gRPC تثبت سلامة تحويل Principal موثوق إلى Execution Context ورفض انتحال Actor/Company.
 
-#### `P6-03` — إثبات Tenant/Company Isolation وPostgreSQL RLS
+#### `P6-03` — إثبات Tenant/Company Isolation وPostgreSQL RLS اعتمادًا على Execution Context موثوق
 
-- **المشكلة التي تحلها:** وجود RLS لا يثبت العزل إذا كان Company ID أو `app.current_company_id` يأتيان من طلب غير موثوق أو يتسربان عبر Connection Pool.
-- **الهدف الذي تحققه:** ربط Principal الموثق بالشركة وتطبيق Authorization في الخدمة وRLS دفاعيًا في DB.
-- **نطاق المهمة:** `storage/postgres` وmigrations وسياسات RLS وContext Propagation واختبارات العزل.
+- **المشكلة التي تحلها:** وجود RLS لا يثبت العزل إذا كان CompanyID مفقودًا أو غير موثوق أو يتسرب عبر Connection Pool. كما أن RLS لا يحل محل التحقق من عضوية المستخدم في النظام المضيف.
+- **الهدف الذي تحققه:** فرض Company/Tenant Scope داخل المحرك وطبقة التخزين اعتمادًا على Execution Context موثوق، مع ترك Membership/Authorization التجاري للنظام المضيف.
+- **نطاق المهمة:** `storage/postgres` وmigrations وسياسات RLS وContext Propagation واختبارات العزل؛ لا تشمل بناء عضوية شركات أو RBAC داخل المحرك.
 - **خطوات التنفيذ:**
   1. توثيق حدود Tenant مقابل Company إذا كان المنتج يدعم أكثر من شركة للمستأجر.
-  2. التحقق من Company Membership/Authorization في Application Layer قبل كل Query/Command.
-  3. ضبط `app.current_company_id` transaction-local داخل المعاملة لا Session-global.
+  2. اشتراط `CompanyID` صالح في Execution Context للعمليات ذات النطاق المؤسسي، ورفض غيابه أو عدم اتساقه.
+  3. ضبط `app.current_company_id` transaction-local داخل المعاملة لا Session-global، مع ضمان تنظيف السياق عند انتهاء المعاملة.
   4. مراجعة ملكية الجداول وسياسات RLS وأدوار DB وعدم تشغيل الخدمة بدور يتجاوز RLS.
-  5. اختبار غياب Company Context، والسياق الخاطئ، والتناوب بين شركتين على Pool نفسه.
+  5. اختبار غياب Company Context، والسياق الخاطئ، والتناوب بين شركتين على Pool نفسه، ومحاولات الوصول بمعرفات موارد من شركة أخرى.
   6. مراجعة كل جدول مؤسسي وتغطية RLS أو توثيق الاستثناء.
   7. التأكد من عدم تسريب وجود بيانات شركة أخرى عبر Errors.
-- **الاعتماديات:** `P6-02`، `P3-02`.
+- **الاعتماديات:** `P2-02`، `P3-02`.
 - **معايير القبول:**
-  - [ ] غير العضو لا يقرأ أو يعدل بيانات شركة حتى مع معرفة UUID.
+  - [ ] لا يمكن لعملية ضمن Company A قراءة أو تعديل بيانات Company B حتى مع معرفة UUID.
+  - [ ] غياب Company Context أو عدم اتساقه يرفض قبل تنفيذ Query/Command.
   - [ ] Company Context مضبوط داخل المعاملة ويزول بانتهائها.
   - [ ] Pool Reuse Tests لا تكشف بيانات بين الشركات.
   - [ ] جداول البيانات المؤسسية محمية بـ RLS أو باستثناء موثق ومقبول.
+  - [ ] لا يحتوي المحرك على منطق عضوية المستخدمين أو أدوارهم؛ التحقق من صلاحية المستخدم للشركة مسؤولية النظام المضيف.
 
 #### `P6-04` — إعادة تصميم عقود gRPC واستكمال تنفيذها
 
@@ -1003,34 +1030,35 @@
   5. تطبيق قواعد Protobuf compatibility: عدم إعادة استخدام أرقام الحقول المحذوفة وحجز الأسماء والأرقام.
   6. إعادة توليد `*.pb.go` و`*_grpc.pb.go` بالأداة والإصدار المعتمدين.
   7. تحويل Domain Errors إلى Status Codes مناسبة.
-  8. ربط Interceptors من `P6-02` وإضافة Contract Tests للعميل والخادم.
-- **الاعتماديات:** `P1-04`، `P2-06`، `P6-02`.
+  8. ربط Interceptors من `P6-02` عند تشغيل الخدمة بنمط Standalone فقط، وتمرير Execution Context موثوق؛ وإضافة Contract Tests للعميل والخادم.
+- **الاعتماديات:** `P1-04`، `P2-06`، و`P6-02` لربط Interceptors إذا كان Standalone ضمن الإصدار.
 - **معايير القبول:**
   - [ ] كل RPC معلن ينفذ وظيفة فعلية أو يزال/يؤجل.
-  - [ ] لا يقبل Post دون Journal/Period/Lines/Actor/Authorization.
+  - [ ] لا يقبل Post دون Journal/Period/Lines وExecution Context صالح يتضمن ActorID وفق سياسة التدقيق؛ لا يفرض gRPC داخل المحرك Authorization Model تجاريًا.
   - [ ] Responses التقارير تعيد البيانات لا Success فقط.
   - [ ] يمكن إعادة توليد ملفات Go في CI دون Diff.
   - [ ] أخطاء Domain تتحول إلى gRPC Status Codes دلالية.
 
 #### `P6-05` — تقوية HTTP Validation وError Handling وحدود الخدمة
 
-- **المشكلة التي تحلها:** Timeouts وحدود حجم الطلب لا تكفي لإثبات صحة Validation أو Rate Limits أو صلاحيات الموارد ودلالة Errors.
+- **المشكلة التي تحلها:** Timeouts وحدود حجم الطلب لا تكفي لإثبات صحة Validation أو Rate Limits أو دلالة Errors؛ ولا يجوز أن تتحول معالجة HTTP إلى نظام Authorization تجاري داخل المحرك.
 - **الهدف الذي تحققه:** HTTP API آمنة ومتسقة مع SDK وgRPC ولا تنفذ منطقًا محاسبيًا داخل Handlers.
 - **نطاق المهمة:** `server.go` وHandlers/Middleware واختبارات الخدمة؛ لا تشمل UI أو API Gateway خارجي.
 - **خطوات التنفيذ:**
   1. حصر Endpoints وربطها بـ Use Cases وحذف/إخفاء غير المكتمل منها.
   2. تعريف DTO Validation للمعرفات والتواريخ والمبالغ والعملات وحدود القوائم والنصوص.
-  3. تطبيق Authentication/Authorization قبل Handler.
+  3. في نمط Standalone فقط، تطبيق التحقق من هوية المستدعي عند حدود الخدمة قبل Handler أو الوثوق بهوية موثقة من Gateway محمي. لا يطبق Handler نظام صلاحيات تجاريًا داخل المحرك؛ وفي Embedded يتولى Backend ذلك قبل الاستدعاء.
   4. توحيد Error Schema مع Correlation ID ودون SQL/Stack Trace.
   5. تحديد Rate Limits والحماية من أحجام/تكرار الطلبات المسيئة.
   6. ضبط CORS وTLS/HSTS/Headers وتحديد ما يتولاه Reverse Proxy.
-  7. اختبار malformed inputs وboundary values وunauthorized/forbidden/timeouts/client disconnect.
-- **الاعتماديات:** `P2-06`، `P6-02`، `P6-04`.
+  7. اختبار malformed inputs وboundary values وأخطاء هوية المستدعي في Standalone وtimeouts وclient disconnect.
+- **الاعتماديات:** `P2-06`، `P6-02` إذا كان Standalone، و`P6-04` إذا كانت HTTP/gRPC ضمن الإصدار.
 - **معايير القبول:**
   - [ ] كل Endpoint له Contract واختبار Request/Response.
   - [ ] لا يعيد Handler SQL أو Stack Trace أو Secrets.
   - [ ] Validation يسبق Domain/Storage.
-  - [ ] أخطاء الصلاحيات والمصادقة والموارد غير الموجودة مميزة.
+  - [ ] أخطاء التحقق من هوية المستدعي في Standalone مميزة عن أخطاء Domain/NotFound؛ أما قرارات Authorization التجارية فيصدرها النظام المضيف.
+  - [ ] لا تحتوي HTTP Handlers على Role/Permission checks قطاعية مملوكة للمحرك.
   - [ ] حدود الحجم والوقت والمعدل موثقة ومختبرة.
 
 #### `P6-06` — إكمال Observability وReadiness وGraceful Shutdown والتعافي
@@ -1063,11 +1091,12 @@
 - **نطاق المهمة:** مشروع مستهلك خارجي وIndustry Adapters وPostgreSQL/Memory/External Adapter وGolden Scenarios؛ لا تشمل ميزات جديدة.
 - **خطوات التنفيذ:**
   1. بناء مشروع Go مستقل يستخدم Public SDK وينشئ Company/Accounts/Period/Journal ثم Draft/Post/Get/Reverse/Report دون `internal`.
-  2. إنشاء ثلاثة مستهلكين منفصلين على الأقل: تجاري وزراعي وصناعي أو خدمي؛ يحول كل واحد أحداثه إلى Canonical Accounting Command.
+  2. إنشاء ثلاثة مستهلكين منفصلين على الأقل: تجاري وزراعي وصناعي أو خدمي؛ يحول كل واحد أحداثه إلى Canonical Accounting Command ويمرر Execution Context موثوقًا من Backend المضيف دون الاعتماد على User Management داخل المحرك.
   3. إثبات أن Core Ledger لا يستورد أو يستدعي مفاهيم المبيعات أو المحاصيل أو الإنتاج.
   4. تشغيل السيناريوهات نفسها على PostgreSQL وMemory وExternal Adapter.
   5. مقارنة القيود والحالات والأرصدة والتقارير والأخطاء والعكس وIdempotency.
   6. إنتاج تقرير آلي يذكر نسخة المحرك والـ Adapter والسيناريو والفروقات.
+  7. إثبات أن Embedded Consumer يمرر Execution Context من Backend المضيف دون Authentication/Authorization داخلي في المحرك؛ وإذا كان Standalone ضمن الإصدار، يثبت اختبار مستقل حماية HTTP/gRPC عند حد الخدمة.
 - **الاعتماديات:** `P3-07`، `P4-08`، `P5-09`، `P6-06`.
 - **معايير القبول:**
   - [ ] External Consumption ينجح دون `internal` imports.
@@ -1124,11 +1153,11 @@
   2. توفير مثال ينشئ Company وAccounts وJournal وFiscal Period ثم ينشئ قيدًا ويرحله ويقرأه ويعكسه.
   3. توثيق تنفيذ External Adapter من Public SPI وضمانات المعاملات دون SQL خاص بالمحرك.
   4. توثيق SDK API وSPI وIntegration Adapter وIndustry Adapter وStandard Module والفروق بينها.
-  5. توثيق Bootstrap Dependencies وCapability Discovery وError Model وContext/Actor/Tenant.
+  5. توثيق Bootstrap Dependencies وCapability Discovery وError Model وExecution Context/Actor/Tenant، مع توضيح أن النظام المضيف يملك Authentication والتفويض التجاري، وأن عزل الشركة والثوابت المحاسبية مسؤولية المحرك.
   6. توثيق PostgreSQL وMemory وProduction Config وHealth/Readiness وMigrations وBackup/Restore.
   7. تحديث أو أرشفة وثائق الجاهزية القديمة وحذف نسب الجاهزية غير المدعومة.
   8. تشغيل أمثلة الوثائق في CI.
-- **الاعتماديات:** `P1-06`، `P2-06`، `P5-09`، `P6-04`.
+- **الاعتماديات:** `P1-06`، `P2-06`، `P5-09`، و`P6-04` إذا كانت gRPC ضمن الإصدار.
 - **معايير القبول:**
   - [ ] كل مثال يبنى ويعمل في CI.
   - [ ] لا يستورد المثال `internal` ولا يطلب SQL من المستهلك.
@@ -1223,14 +1252,14 @@
 | `P5-09` | `P5-02`، `P4-08` |
 | `P6-01` | `P3-02`، `P1-06` |
 | `P6-02` | `P2-02`، `P6-01` |
-| `P6-03` | `P6-02`، `P3-02` |
-| `P6-04` | `P1-04`، `P2-06`، `P6-02` |
-| `P6-05` | `P2-06`، `P6-02`، `P6-04` |
+| `P6-03` | `P2-02`، `P3-02` |
+| `P6-04` | `P1-04`، `P2-06`، `P6-02` (لربط Interceptors إذا كان Standalone ضمن الإصدار) |
+| `P6-05` | `P2-06`، `P6-02` (إذا كان Standalone)، `P6-04` (إذا كانت HTTP/gRPC ضمن الإصدار) |
 | `P6-06` | `P3-06`، `P6-01`، `P6-03` |
 | `P7-01` | `P3-07`، `P4-08`، `P5-09`، `P6-06` |
 | `P7-02` | `P3-07`، `P6-06` |
 | `P7-03` | `P6-01`، `P6-03`، `P7-02` |
-| `P7-04` | `P1-06`، `P2-06`، `P5-09`، `P6-04` |
+| `P7-04` | `P1-06`، `P2-06`، `P5-09`، `P6-04` (إذا كانت gRPC ضمن الإصدار) |
 | `P7-05` | `P7-01`، `P7-02`، `P7-03`، `P7-04` |
 | `P7-06` | `P7-05` |
 
@@ -1267,8 +1296,8 @@
 | G3 — Reversal Integrity | العكس كامل وموثق وغير مكرر ولا يترك الأصل والعكس متعارضين. | `P2-05`، `P4-04` |
 | G4 — External Consumption | مستهلك مستقل يستخدم Public API/SPI دون `internal` أو معرفة SQL/PostgreSQL أو `posting.Engine`. | `P1-03`، `P1-04`، `P3-05`، `P7-01` |
 | G5 — Infrastructure Independence | Core Scenarios متكافئة عبر PostgreSQL وMemory وExternal Adapter مع توثيق حدود المحاكاة. | `P3-07`، `P7-01` |
-| G6 — Company Isolation | لا يمكن لمستخدم/شركة الوصول إلى بيانات شركة أخرى مع تزوير Company ID أو إعادة استخدام الاتصال. | `P6-02`، `P6-03` |
-| G7 — Production Safety | لا يبدأ Production على Memory افتراضيًا ولا يعمل دون إعدادات التخزين والأمان المطلوبة. | `P6-01`، `P7-03` |
+| G6 — Company Isolation | لا يمكن لأي عملية ضمن Company Scope الوصول إلى بيانات شركة أخرى عند تزوير CompanyID أو إعادة استخدام الاتصال؛ Execution Context موثوق. يثبت النظام المضيف عضوية المستخدم وصلاحيته للشركة، ويفرض المحرك عزل بياناته. | `P2-02`، `P3-02`، `P6-03` |
+| G7 — Production Safety | لا يبدأ Standalone Production على Memory افتراضيًا، وتكون واجهات الخدمة محمية وفق نمط النشر عند اعتماد Standalone. لا يُشترط وجود Authentication داخل Embedded Library إذا كان Backend المضيف هو حد الثقة. | `P6-01`، `P6-02` (إذا كان Standalone)، `P7-03` |
 | G8 — Accounting Scope Honesty | كل ادعاء معياري مرتبط بنطاق ومتطلبات وأدلة ومراجعة؛ لا توجد دعوى IFRS عامة غير مثبتة. | `P4-08`، `P5-04` إلى `P5-09`، `P7-05` |
 
 ## 6. تعريف الإنجاز النهائي
@@ -1282,7 +1311,7 @@
 5. تثبت اختبارات PostgreSQL الذرية والتزامن وإعادة المحاولة والعكس وIdempotency سلامة النتائج بعد الفشل وRestart.
 6. Reporting وGovernance وIFRS/IAS اختيارية حقًا ولا تتفعل دون Dependencies، ونطاق كل وحدة موثق.
 7. ينجح اختبار لقطاع تجاري وزراعي وصناعي/خدمي دون تغيير Core Ledger.
-8. الخدمة محمية بالمصادقة والتفويض وعزل الشركات، مع Readiness وObservability وBackup/Restore مجرب.
+8. في نمط Standalone تكون حدود HTTP/gRPC محمية بهوية مستدعٍ موثوقة؛ وفي نمط Embedded يتولى Backend المضيف Authentication/Authorization. وفي كلا النمطين يفرض المحرك Execution Context وCompany/Tenant Isolation، مع Readiness وObservability وBackup/Restore مجرب.
 9. توجد Golden Accounting Scenarios ومراجعة محاسبية موثقة لكل نطاق يُعلن دعمه.
 10. جميع Release Gates من G1 إلى G8 مجتازة، ويوجد تقرير Go/No-Go وARD لكل مهمة منفذة.
 
@@ -1295,7 +1324,9 @@
 - هل الإصدار الأول Library فقط أم Library وخدمة HTTP/gRPC معًا؟ يجب فصل أمن المكتبة عن أمن الخدمة.
 - النطاق المعياري الدقيق المراد دعمه في الإصدار الأول لكل معيار IAS/IFRS.
 - هل Memory أداة اختبار فقط أم مسموح استخدامه بتطبيقات تجريبية؟ لا يوصى به لتشغيل مالي إنتاجي.
-- آلية هوية المستخدم والشركة التي يوفرها النظام المضيف ومسؤولية المحرك في Authorization.
+- عقد Execution Context ومصدر CompanyID وActorID وRequestID وSource الموثوق.
+- آلية حماية Standalone HTTP/gRPC (JWT/OIDC أو mTLS أو Gateway موثوق) إن كانت ضمن الإصدار، مع عدم فرضها على Embedded Library.
+- حدود Authorization: النظام المضيف يقرر صلاحيات المستخدم التجارية؛ المحرك يفرض الثوابت المحاسبية وعزل الشركة ولا يدير المستخدمين أو Roles/Permissions.
 - متطلبات الاحتفاظ بالتدقيق والنسخ الاحتياطي والتعافي.
 - قواعد العملة الوظيفية وعملة العرض وسياسة التقريب ومصدر أسعار الصرف لكل شركة.
 
@@ -1307,11 +1338,11 @@
 | Root API | Facade توافق مهمَل يستدعي `pkg/sdk`، بلا أنواع `internal/*`؛ الإزالة في أول MAJOR لاحق | `docs/adr/ADR-0001-public-entry-point.md` |
 | شكل الإصدار الأول | Go Library + Embedded SDK فقط؛ HTTP/gRPC ليست مطلوبة وتُؤجل | `docs/adr/ADR-0006-release-form-storage-toolchain.md` |
 | Application/Ports/UoW | Application واحدة + Public Ports + Unit of Work محايد | `docs/adr/ADR-0003-application-layer-uow.md` |
-| Auth/Tenant | المضيف يملك الهوية؛ المحرك يتحقق من Principal وعضوية الشركة؛ RLS دفاعي | `docs/adr/ADR-0004-auth-and-company-context.md` |
+| Auth/Tenant | النظام المضيف يملك Authentication وAuthorization التجاري وعضوية المستخدم؛ المحرك يفرض Execution Context وCompany Isolation/RLS ويسجل Auditability المحاسبية، دون User Management أو RBAC | `docs/adr/ADR-0004-auth-and-company-context.md` |
 | Standards scope | نطاق محدود معلن + Compliance Matrix، لا ادعاء IFRS عام | `docs/adr/ADR-0005-standards-scope.md` |
 | Memory/Production | Memory للاختبار/التطوير فقط ويُختار صراحةً | `docs/adr/ADR-0006-release-form-storage-toolchain.md` |
 
-**أثر قرار شكل الإصدار:** `P6-04` و`P6-05` خارج نطاق الإصدار الأول ويُنقلان إلى Backlog. تبقى `P6-01`..`P6-03` و`P6-06` كضوابط لسلامة أي نشر خدمي اختياري. يجب أن يعكس `P7-05` هذا النطاق صراحةً.
+**أثر قرار شكل الإصدار:** `P6-02` و`P6-04` و`P6-05` خارج نطاق الإصدار الأول ويُنقلان إلى Backlog؛ يُنفذ `P6-02` فقط إذا اعتمد إصدار خدمة Standalone مستقبلًا. تبقى `P6-01` و`P6-03` و`P6-06` بالقدر المنطبق على المكونات الفعلية للإصدار. لا يُفرض Authentication/Authorization داخل Embedded SDK.
 
 ## 8. طريقة متابعة التنفيذ
 
