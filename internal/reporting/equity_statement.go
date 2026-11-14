@@ -139,7 +139,7 @@ func equityMovements(
 	transfers := make(map[uuid.UUID]decimal.Decimal)
 	distributions := make(map[uuid.UUID]decimal.Decimal)
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		var retainedDebits, retainedCredits, reserveDebits, reserveCredits []equityMovementLine

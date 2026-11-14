@@ -110,7 +110,7 @@ func (e *TrialBalanceEngine) GenerateAdjusted(startDate, endDate time.Time, curr
 			return TrialBalance{}, err
 		}
 		for _, entry := range allEntries {
-			if entry.Status != posting.EntryPosted ||
+			if !isLedgerPosted(entry.Status) ||
 				(!adjusted && postingClassification(entry) == posting.EntryClassAdjusting) {
 				continue
 			}
@@ -245,7 +245,7 @@ func listPostedEntries(repository Repository, start, end time.Time) ([]posting.J
 	}
 	var latestOpening time.Time
 	for _, entry := range entries {
-		if entry.Status == posting.EntryPosted && postingClassification(entry) == posting.EntryClassOpening {
+		if isLedgerPosted(entry.Status) && postingClassification(entry) == posting.EntryClassOpening {
 			date := entryEffectiveDate(entry)
 			if latestOpening.IsZero() || date.After(latestOpening) {
 				latestOpening = date

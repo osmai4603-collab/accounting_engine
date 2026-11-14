@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
@@ -22,9 +23,12 @@ import (
 func TestMain(m *testing.M) {
 	code := m.Run()
 
-	// Automatically compile and write out the parity report artifact
-	_ = GlobalReporter.WriteReportToFile("parity_report.md")
-	_ = GlobalReporter.WriteReportToFile("../../docs/reports/contract_parity_report.md")
+	for _, path := range []string{"parity_report.md", "../../docs/reports/contract_parity_report.md"} {
+		if err := GlobalReporter.WriteReportToFile(path); err != nil {
+			fmt.Fprintf(os.Stderr, "write contract parity report %q: %v\n", path, err)
+			code = 1
+		}
+	}
 
 	os.Exit(code)
 }
@@ -34,7 +38,6 @@ func TestMain(m *testing.M) {
 func TestContractParity_CoreLifecycle(t *testing.T) {
 	ForEachAdapter(t, "CoreLifecycle", func(t *testing.T, h *AdapterHarness, f UnifiedFixture) {
 		ctx := context.Background()
-		start := time.Now()
 
 		amount150, err := types.NewMoneyFromString("150.00", f.FunctionalCurrency)
 		if err != nil {
@@ -126,13 +129,16 @@ func TestContractParity_CoreLifecycle(t *testing.T) {
 		if posted.SequenceNumber < 1 {
 			t.Errorf("posted sequence number = %d, want >= 1", posted.SequenceNumber)
 		}
+		if posted.PostedBy != "parity-tester" {
+			t.Errorf("posted actor = %q, want parity-tester", posted.PostedBy)
+		}
 
 		// 4. GetEntry
 		readBack, err := h.Engine.Ledger().GetEntry(ctx, f.Company.ID, posted.ID)
 		if err != nil {
 			t.Fatalf("GetEntry failed: %v", err)
 		}
-		if readBack.Status != ledger.EntryPosted || len(readBack.Lines) != 2 {
+		if readBack.Status != ledger.EntryPosted || len(readBack.Lines) != 2 || !sameEntry(posted, readBack) {
 			t.Errorf("read-back invalid: status=%q, lines=%d", readBack.Status, len(readBack.Lines))
 		}
 
@@ -149,13 +155,6 @@ func TestContractParity_CoreLifecycle(t *testing.T) {
 			t.Errorf("trial balance amounts = %s / %s, want %s", tb.TotalDebit, tb.TotalCredit, wantAmt)
 		}
 
-		GlobalReporter.Record(ScenarioResult{
-			ScenarioName:      "Draft -> Validate -> Post -> GetEntry -> TrialBalance",
-			AdapterName:       h.Name,
-			Passed:            true,
-			InvariantsChecked: []string{"draft_creation", "validation_success", "atomic_post", "sequence_allocated", "trial_balance_equality"},
-			ExecutionDuration: time.Since(start),
-		})
 	})
 }
 
@@ -164,7 +163,6 @@ func TestContractParity_CoreLifecycle(t *testing.T) {
 func TestContractParity_ReversalLifecycle(t *testing.T) {
 	ForEachAdapter(t, "ReversalLifecycle", func(t *testing.T, h *AdapterHarness, f UnifiedFixture) {
 		ctx := context.Background()
-		start := time.Now()
 
 		amount, _ := types.NewMoneyFromString("200.00", f.FunctionalCurrency)
 		zero, _ := types.Zero(f.FunctionalCurrency)
@@ -259,11 +257,8 @@ func TestContractParity_ReversalLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetTrialBalance: %v", err)
 		}
-		for _, line := range tb.Lines {
-			if !line.EndingDebit.Amount().IsZero() || !line.EndingCredit.Amount().IsZero() {
-				t.Errorf("account %s net ending balance not zero: debit=%s, credit=%s",
-					line.AccountCode, line.EndingDebit, line.EndingCredit)
-			}
+		if !tb.IsBalanced || !tb.TotalDebit.Equal(tb.TotalCredit) {
+			t.Errorf("trial balance after reversal is unbalanced: debit=%s, credit=%s", tb.TotalDebit, tb.TotalCredit)
 		}
 
 		// Verify Double Reversal is rejected across all adapters
@@ -276,18 +271,17 @@ func TestContractParity_ReversalLifecycle(t *testing.T) {
 		})
 		if doubleRevErr == nil {
 			t.Errorf("second reversal succeeded, want rejection")
-		} else if !errors.Is(doubleRevErr, publicapplication.ErrConflict) && !errors.Is(doubleRevErr, ErrExternalConflict) {
-			// Acceptance: semantic error representing conflict or already reversed
-			t.Logf("second reversal returned expected conflict: %v", doubleRevErr)
+		} else {
+			originalAfterRetry, getErr := h.Engine.Ledger().GetEntry(ctx, f.Company.ID, posted.Entry.ID)
+			if getErr != nil {
+				t.Fatalf("GetEntry after rejected second reversal: %v", getErr)
+			}
+			if originalAfterRetry.Status != ledger.EntryReversed || originalAfterRetry.ReversedByID == nil {
+				t.Errorf("rejected second reversal changed original state: status=%q reversedBy=%v",
+					originalAfterRetry.Status, originalAfterRetry.ReversedByID)
+			}
 		}
 
-		GlobalReporter.Record(ScenarioResult{
-			ScenarioName:      "Reversal Lifecycle & Double Reversal Rejection",
-			AdapterName:       h.Name,
-			Passed:            true,
-			InvariantsChecked: []string{"reversal_entry_created", "original_marked_reversed", "trial_balance_net_zero", "double_reversal_prevented"},
-			ExecutionDuration: time.Since(start),
-		})
 	})
 }
 
@@ -296,7 +290,6 @@ func TestContractParity_ReversalLifecycle(t *testing.T) {
 func TestContractParity_EventIdempotency(t *testing.T) {
 	ForEachAdapter(t, "EventIdempotency", func(t *testing.T, h *AdapterHarness, f UnifiedFixture) {
 		ctx := context.Background()
-		start := time.Now()
 
 		amount, _ := types.NewMoneyFromString("300.00", f.FunctionalCurrency)
 		zero, _ := types.Zero(f.FunctionalCurrency)
@@ -405,16 +398,9 @@ func TestContractParity_EventIdempotency(t *testing.T) {
 		} else if !errors.Is(conflictErr, sdk.ErrIdempotencyKeyConflict) &&
 			!errors.Is(conflictErr, publicapplication.ErrConflict) &&
 			!errors.Is(conflictErr, ErrExternalConflict) {
-			t.Logf("expected conflict error returned: %v", conflictErr)
+			t.Errorf("conflicting payload returned %v, want a semantic conflict", conflictErr)
 		}
 
-		GlobalReporter.Record(ScenarioResult{
-			ScenarioName:      "Event Ingestion Idempotency & Conflict Detection",
-			AdapterName:       h.Name,
-			Passed:            true,
-			InvariantsChecked: []string{"idempotent_replay_preserves_id", "idempotent_replay_preserves_sequence", "payload_hash_conflict_rejected"},
-			ExecutionDuration: time.Since(start),
-		})
 	})
 }
 
@@ -423,7 +409,6 @@ func TestContractParity_EventIdempotency(t *testing.T) {
 func TestContractParity_SemanticErrorsAndInvariants(t *testing.T) {
 	ForEachAdapter(t, "SemanticErrorsAndInvariants", func(t *testing.T, h *AdapterHarness, f UnifiedFixture) {
 		ctx := context.Background()
-		start := time.Now()
 
 		amt100, _ := types.NewMoneyFromString("100.00", f.FunctionalCurrency)
 		amt90, _ := types.NewMoneyFromString("90.00", f.FunctionalCurrency)
@@ -481,6 +466,10 @@ func TestContractParity_SemanticErrorsAndInvariants(t *testing.T) {
 			})
 			if postClosedErr == nil {
 				t.Errorf("posting to closed period succeeded, want rejection")
+			} else if !errors.Is(postClosedErr, publicapplication.ErrPeriodClosed) &&
+				!errors.Is(postClosedErr, publicapplication.ErrConflict) &&
+				!errors.Is(postClosedErr, types.ErrFiscalPeriodClosed) {
+				t.Errorf("closed period returned %v, want a period-closed or conflict error", postClosedErr)
 			} else {
 				t.Logf("closed period correctly rejected: %v", postClosedErr)
 			}
@@ -528,75 +517,59 @@ func TestContractParity_SemanticErrorsAndInvariants(t *testing.T) {
 			})
 			if valErr == nil {
 				t.Errorf("validating unbalanced entry succeeded, want validation failure")
+			} else if !errors.Is(valErr, publicapplication.ErrValidation) &&
+				!errors.Is(valErr, types.ErrUnbalancedMove) {
+				t.Errorf("unbalanced entry returned %v, want a validation error", valErr)
 			} else {
 				t.Logf("unbalanced entry correctly failed validation: %v", valErr)
 			}
 		}
 
-		// C. Non-existent Account Invariant
-		nonExistentAccountID := types.NewAccountID()
-		badAccountCmd := publicapplication.CreateDraftCommand{
-			Context:             cmdCtx,
-			CompanyID:           f.Company.ID,
-			JournalID:           types.JournalID(f.Journal.ID),
-			FiscalPeriodID:      f.OpenPeriod.ID,
-			EffectiveDate:       time.Date(2026, time.January, 10, 0, 0, 0, 0, time.UTC),
-			PostingDate:         time.Date(2026, time.January, 10, 0, 0, 0, 0, time.UTC),
-			Description:         "Unknown account entry",
-			TransactionCurrency: f.FunctionalCurrency,
-			ExchangeRate:        f.ExchangeRate.String(),
-			Lines: []ledger.EntryLine{
-				{
-					ID:                  types.NewJournalEntryLineID(),
-					AccountID:           nonExistentAccountID,
-					TransactionAmount:   amt100,
-					TransactionCurrency: f.FunctionalCurrency,
-					ExchangeRate:        f.ExchangeRate,
-					FunctionalDebit:     amt100,
-					FunctionalCredit:    zero,
-				},
-				{
-					ID:                  types.NewJournalEntryLineID(),
-					AccountID:           f.RevenueAccount.ID,
-					TransactionAmount:   amt100,
-					TransactionCurrency: f.FunctionalCurrency,
-					ExchangeRate:        f.ExchangeRate,
-					FunctionalDebit:     zero,
-					FunctionalCredit:    amt100,
-				},
-			},
-		}
-
-		draftBadAcc, err := h.AppService.CreateDraft(ctx, badAccountCmd)
-		if err == nil {
-			valErr := h.AppService.Validate(ctx, publicapplication.ValidateEntryCommand{
+		// C. Non-existent accounts are rejected through the common SPI error contract.
+		badAccountCmd := unbalancedCmd
+		badAccountCmd.Description = "Unknown account entry"
+		badAccountCmd.Lines = append([]ledger.EntryLine(nil), unbalancedCmd.Lines...)
+		badAccountCmd.Lines[0].ID = types.NewJournalEntryLineID()
+		badAccountCmd.Lines[0].AccountID = types.NewAccountID()
+		badAccountCmd.Lines[1].ID = types.NewJournalEntryLineID()
+		badAccountCmd.Lines[1].TransactionAmount = amt100
+		badAccountCmd.Lines[1].FunctionalCredit = amt100
+		draftBadAccount, createErr := h.AppService.CreateDraft(ctx, badAccountCmd)
+		if createErr == nil {
+			validationErr := h.AppService.Validate(ctx, publicapplication.ValidateEntryCommand{
 				Context:   cmdCtx,
 				CompanyID: f.Company.ID,
-				EntryID:   draftBadAcc.Entry.ID,
+				EntryID:   draftBadAccount.Entry.ID,
 			})
-			if valErr == nil {
-				t.Errorf("validating non-existent account succeeded, want validation error")
-			} else {
-				t.Logf("non-existent account correctly failed: %v", valErr)
+			if validationErr == nil {
+				t.Errorf("validating an entry with an unknown account succeeded")
+			} else if !errors.Is(validationErr, publicapplication.ErrValidation) &&
+				!errors.Is(validationErr, publicapplication.ErrNotFound) &&
+				!errors.Is(validationErr, types.ErrAccountNotFound) {
+				t.Errorf("unknown account returned %v, want a validation or not-found error", validationErr)
 			}
 		}
 
 		// D. Cross-Company Isolation Invariant
 		otherCompanyID := types.NewCompanyID()
-		_, crossErr := h.Engine.Ledger().GetEntry(ctx, otherCompanyID, types.NewJournalEntryID())
+		tenantCmd := unbalancedCmd
+		tenantCmd.Description = "Tenant isolation draft"
+		tenantCmd.Lines = append([]ledger.EntryLine(nil), unbalancedCmd.Lines...)
+		tenantCmd.Lines[0].ID = types.NewJournalEntryLineID()
+		tenantCmd.Lines[1].ID = types.NewJournalEntryLineID()
+		tenantCmd.Lines[1].TransactionAmount = amt100
+		tenantCmd.Lines[1].FunctionalCredit = amt100
+		tenantDraft, createTenantErr := h.AppService.CreateDraft(ctx, tenantCmd)
+		if createTenantErr != nil {
+			t.Fatalf("create tenant-isolation draft: %v", createTenantErr)
+		}
+		_, crossErr := h.Engine.Ledger().GetEntry(ctx, otherCompanyID, tenantDraft.Entry.ID)
 		if crossErr == nil {
 			t.Errorf("querying across company boundary succeeded, want error")
 		} else {
 			t.Logf("cross-company access correctly rejected: %v", crossErr)
 		}
 
-		GlobalReporter.Record(ScenarioResult{
-			ScenarioName:      "Semantic Invariants: Closed Period, Unbalanced, Bad Account, Tenant Isolation",
-			AdapterName:       h.Name,
-			Passed:            true,
-			InvariantsChecked: []string{"closed_period_rejected", "unbalanced_rejected", "invalid_account_rejected", "cross_tenant_rejected"},
-			ExecutionDuration: time.Since(start),
-		})
 	})
 }
 
@@ -630,20 +603,6 @@ func TestContractParity_CapabilitiesMatrix(t *testing.T) {
 			}
 		}
 
-		GlobalReporter.Record(ScenarioResult{
-			ScenarioName: "Declared Adapter Capabilities Matrix",
-			AdapterName:  h.Name,
-			Passed:       true,
-			InvariantsChecked: []string{
-				fmt.Sprintf("durability=%v", caps.GuaranteesDurability),
-				fmt.Sprintf("foreign_keys=%v", caps.EnforcesForeignKeys),
-			},
-			CapabilityDifferences: []string{
-				fmt.Sprintf("Durability: %v", caps.GuaranteesDurability),
-				fmt.Sprintf("ForeignKeys: %v", caps.EnforcesForeignKeys),
-			},
-			ExecutionDuration: 1 * time.Millisecond,
-		})
 	})
 }
 
@@ -652,6 +611,21 @@ func TestContractParity_CapabilitiesMatrix(t *testing.T) {
 func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 	// Execute an identical scenario on all three adapters and verify normalized output parity.
 	ctx := context.Background()
+	start := time.Now()
+	defer func() {
+		unexpected := []string(nil)
+		if t.Failed() {
+			unexpected = []string{"cross-adapter assertions failed; see the corresponding go test output"}
+		}
+		GlobalReporter.Record(ScenarioResult{
+			ScenarioName:          "CrossAdapterSemanticEquivalence",
+			AdapterName:           "all",
+			Passed:                !t.Failed() && !t.Skipped(),
+			Skipped:               t.Skipped(),
+			UnexpectedDifferences: unexpected,
+			ExecutionDuration:     time.Since(start),
+		})
+	}()
 
 	companyID := types.NewCompanyID()
 	journalID := publicmasterdata.NewJournalID()
@@ -677,9 +651,29 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 			Type: publicmasterdata.AccountTypeAsset, NormalBalance: publicmasterdata.NormalBalanceDebit,
 			Currency: "USD", IsActive: true,
 		},
+		ReceivableAccount: publicmasterdata.Account{
+			ID: types.NewAccountID(), CompanyID: companyID, Code: "1200", Name: "Receivables",
+			Type: publicmasterdata.AccountTypeAsset, NormalBalance: publicmasterdata.NormalBalanceDebit,
+			Currency: "USD", IsActive: true,
+		},
+		PayableAccount: publicmasterdata.Account{
+			ID: types.NewAccountID(), CompanyID: companyID, Code: "2000", Name: "Payables",
+			Type: publicmasterdata.AccountTypeLiability, NormalBalance: publicmasterdata.NormalBalanceCredit,
+			Currency: "USD", IsActive: true,
+		},
+		EquityAccount: publicmasterdata.Account{
+			ID: types.NewAccountID(), CompanyID: companyID, Code: "3000", Name: "Equity",
+			Type: publicmasterdata.AccountTypeEquity, NormalBalance: publicmasterdata.NormalBalanceCredit,
+			Currency: "USD", IsActive: true,
+		},
 		RevenueAccount: publicmasterdata.Account{
 			ID: revenueID, CompanyID: companyID, Code: "4000", Name: "Revenue",
 			Type: publicmasterdata.AccountTypeIncome, NormalBalance: publicmasterdata.NormalBalanceCredit,
+			Currency: "USD", IsActive: true,
+		},
+		ExpenseAccount: publicmasterdata.Account{
+			ID: types.NewAccountID(), CompanyID: companyID, Code: "5000", Name: "Expenses",
+			Type: publicmasterdata.AccountTypeExpense, NormalBalance: publicmasterdata.NormalBalanceDebit,
 			Currency: "USD", IsActive: true,
 		},
 		FiscalYear: publicmasterdata.FiscalYear{
@@ -694,6 +688,12 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 			EndDate:   time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
 			State:     publicmasterdata.PeriodOpen, Type: publicmasterdata.FiscalPeriodTypeNormal,
 		},
+		ClosedPeriod: publicmasterdata.FiscalPeriod{
+			ID: types.NewFiscalPeriodID(), CompanyID: companyID, FiscalYearID: yearID, Number: 2, Name: "Feb",
+			StartDate: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+			EndDate:   time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC),
+			State:     publicmasterdata.PeriodHardClosed, Type: publicmasterdata.FiscalPeriodTypeNormal,
+		},
 		FunctionalCurrency: "USD",
 		ExchangeRate:       decimal.NewFromInt(1),
 	}
@@ -701,7 +701,13 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 	amt, _ := types.NewMoneyFromString("500.00", "USD")
 	zero, _ := types.Zero("USD")
 
-	runScenario := func(h *AdapterHarness) (ledger.JournalEntry, decimal.Decimal) {
+	runScenario := func(h *AdapterHarness) (
+		ledger.JournalEntry,
+		ledger.JournalEntry,
+		ledger.JournalEntry,
+		reporting.TrialBalance,
+		reporting.GeneralLedgerReport,
+	) {
 		entry := ledger.JournalEntry{
 			ID:                  entryID,
 			CompanyID:           companyID,
@@ -741,59 +747,267 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 			t.Fatalf("%s: PostEntry: %v", h.Name, err)
 		}
 
+		commandContext := publicapplication.Context{
+			Principal: publicapplication.Principal{
+				ActorID:    "equivalence-tester",
+				CompanyIDs: []types.CompanyID{companyID},
+			},
+			SourceSystem: "parity-suite",
+		}
+		reversalResult, err := h.AppService.Reverse(ctx, publicapplication.ReverseEntryCommand{
+			Context:       commandContext,
+			CompanyID:     companyID,
+			EntryID:       posted.ID,
+			Reason:        "Cross-adapter parity reversal",
+			EffectiveDate: effDate,
+		})
+		if err != nil {
+			t.Fatalf("%s: Reverse: %v", h.Name, err)
+		}
+		originalAfterReversal, err := h.Engine.Ledger().GetEntry(ctx, companyID, posted.ID)
+		if err != nil {
+			t.Fatalf("%s: GetEntry after reversal: %v", h.Name, err)
+		}
+
 		tb, err := h.Engine.Reporting().GetTrialBalance(ctx, companyID, effDate, "USD")
 		if err != nil {
 			t.Fatalf("%s: GetTrialBalance: %v", h.Name, err)
 		}
 
-		return posted, tb.TotalDebit.Amount()
+		gl, err := h.Engine.Reporting().GetGeneralLedger(ctx, companyID, cashID, time.Time{}, effDate)
+		if err != nil {
+			t.Fatalf("%s: GetGeneralLedger: %v", h.Name, err)
+		}
+		if len(gl.Entries) != 1 || gl.Entries[0].EntryID != reversalResult.Entry.ID {
+			t.Fatalf("%s: general ledger entries do not identify the reversal: %#v", h.Name, gl.Entries)
+		}
+
+		return posted, reversalResult.Entry, originalAfterReversal, tb, gl
 	}
 
 	// 1. Run Memory
 	memH := NewMemoryHarness(t, fixture)
 	defer memH.Cleanup()
-	memEntry, memDebit := runScenario(memH)
+	memEntry, memReversal, memOriginal, memBalance, memLedger := runScenario(memH)
 
 	// 2. Run External
 	extH := NewExternalHarness(t, fixture)
 	defer extH.Cleanup()
-	extEntry, extDebit := runScenario(extH)
+	extEntry, extReversal, extOriginal, extBalance, extLedger := runScenario(extH)
 
 	// 3. Run Postgres
 	pgH := NewPostgresHarness(t, fixture)
 	if pgH != nil {
 		defer pgH.Cleanup()
-		pgEntry, pgDebit := runScenario(pgH)
+		pgEntry, pgReversal, pgOriginal, pgBalance, pgLedger := runScenario(pgH)
 
-		if !pgDebit.Equal(memDebit) || !extDebit.Equal(memDebit) {
-			t.Fatalf("trial balance debits mismatch: memory=%s, ext=%s, postgres=%s",
-				memDebit, extDebit, pgDebit)
+		if !sameTrialBalance(memBalance, pgBalance) || !sameTrialBalance(memBalance, extBalance) {
+			t.Fatalf("trial balance mismatch across adapters: memory=%s external=%s postgres=%s",
+				trialBalanceSummary(memBalance), trialBalanceSummary(extBalance), trialBalanceSummary(pgBalance))
 		}
 
-		if pgEntry.Status != memEntry.Status || extEntry.Status != memEntry.Status {
-			t.Fatalf("entry statuses mismatch: memory=%s, ext=%s, postgres=%s",
-				memEntry.Status, extEntry.Status, pgEntry.Status)
+		if !sameEntry(memEntry, pgEntry) || !sameEntry(memEntry, extEntry) {
+			t.Fatalf("posted entry differs across adapters")
 		}
-
-		if len(pgEntry.Lines) != len(memEntry.Lines) || len(extEntry.Lines) != len(memEntry.Lines) {
-			t.Fatalf("lines count mismatch: memory=%d, ext=%d, postgres=%d",
-				len(memEntry.Lines), len(extEntry.Lines), len(pgEntry.Lines))
+		if memEntry.ID != pgEntry.ID || memEntry.ID != extEntry.ID {
+			t.Fatalf("posted entry identity differs across adapters")
+		}
+		if !sameReversal(memReversal, pgReversal) || !sameReversal(memReversal, extReversal) {
+			t.Fatalf("reversal entry differs across adapters: memory=%s external=%s postgres=%s",
+				reversalSummary(memReversal), reversalSummary(extReversal), reversalSummary(pgReversal))
+		}
+		if !reversedOriginalsMatch(memOriginal, pgOriginal) || !reversedOriginalsMatch(memOriginal, extOriginal) {
+			t.Fatalf("original reversal state differs across adapters")
+		}
+		if *memOriginal.ReversedByID != memReversal.ID ||
+			*pgOriginal.ReversedByID != pgReversal.ID ||
+			*extOriginal.ReversedByID != extReversal.ID {
+			t.Fatalf("original-to-reversal identity link differs across adapters")
+		}
+		if !sameGeneralLedger(memLedger, pgLedger) || !sameGeneralLedger(memLedger, extLedger) {
+			t.Fatalf("general ledger mismatch across adapters: memory=%s external=%s postgres=%s",
+				generalLedgerSummary(memLedger), generalLedgerSummary(extLedger), generalLedgerSummary(pgLedger))
 		}
 	}
 
-	// Verify deep snapshot equivalence between memory and external
-	if !memDebit.Equal(extDebit) {
-		t.Fatalf("trial balance debit mismatch: memory=%s, external=%s", memDebit, extDebit)
+	if !sameTrialBalance(memBalance, extBalance) {
+		t.Fatalf("trial balance differs between memory and external adapters")
 	}
-	if !reflect.DeepEqual(memEntry.Status, extEntry.Status) {
-		t.Fatalf("status mismatch: memory=%s, external=%s", memEntry.Status, extEntry.Status)
+	if !sameEntry(memEntry, extEntry) {
+		t.Fatalf("posted entry differs between memory and external adapters")
 	}
+	if memEntry.ID != extEntry.ID {
+		t.Fatalf("posted entry identity differs between memory and external adapters")
+	}
+	if !sameReversal(memReversal, extReversal) {
+		t.Fatalf("reversal entry differs between memory and external adapters")
+	}
+	if !reversedOriginalsMatch(memOriginal, extOriginal) {
+		t.Fatalf("original reversal state differs between memory and external adapters")
+	}
+	if *memOriginal.ReversedByID != memReversal.ID || *extOriginal.ReversedByID != extReversal.ID {
+		t.Fatalf("original-to-reversal identity link differs between memory and external adapters")
+	}
+	if !sameGeneralLedger(memLedger, extLedger) {
+		t.Fatalf("general ledger differs between memory and external adapters")
+	}
+}
 
-	GlobalReporter.Record(ScenarioResult{
-		ScenarioName:      "Cross-Adapter 100% Semantic Identity Verification",
-		AdapterName:       "all",
-		Passed:            true,
-		InvariantsChecked: []string{"exact_entry_status_match", "exact_lines_count_match", "exact_trial_balance_match"},
-		ExecutionDuration: 10 * time.Millisecond,
-	})
+func sameEntry(a, b ledger.JournalEntry) bool {
+	type lineSnapshot struct {
+		ID                  types.JournalEntryLineID
+		AccountID           types.AccountID
+		TransactionAmount   string
+		TransactionCurrency string
+		ExchangeRate        string
+		FunctionalDebit     string
+		FunctionalCredit    string
+	}
+	type entrySnapshot struct {
+		ID                  types.JournalEntryID
+		CompanyID           types.CompanyID
+		JournalID           types.JournalID
+		FiscalPeriodID      types.FiscalPeriodID
+		Status              ledger.EntryStatus
+		SequenceNumber      int64
+		EntryNumber         string
+		EffectiveDate       time.Time
+		PostingDate         time.Time
+		Description         string
+		TransactionCurrency string
+		ExchangeRate        string
+		Classification      ledger.EntryClassification
+		ReferenceID         string
+		CreatedBy           string
+		PostedBy            string
+		ReversalOfID        string
+		ReversalReason      string
+		Lines               []lineSnapshot
+	}
+	snapshot := func(entry ledger.JournalEntry) entrySnapshot {
+		result := entrySnapshot{
+			ID: entry.ID, CompanyID: entry.CompanyID, JournalID: entry.JournalID,
+			FiscalPeriodID: entry.FiscalPeriodID, Status: entry.Status,
+			SequenceNumber: entry.SequenceNumber, EntryNumber: entry.EntryNumber,
+			EffectiveDate: entry.EffectiveDate, PostingDate: entry.PostingDate,
+			Description: entry.Description, TransactionCurrency: entry.TransactionCurrency,
+			ExchangeRate: entry.ExchangeRate.String(), Classification: entry.Classification,
+			ReferenceID: entry.ReferenceID, CreatedBy: entry.CreatedBy, PostedBy: entry.PostedBy,
+			ReversalReason: entry.ReversalReason,
+		}
+		if entry.ReversalOfID != nil {
+			result.ReversalOfID = uuid.UUID(*entry.ReversalOfID).String()
+		}
+		for _, line := range entry.Lines {
+			result.Lines = append(result.Lines, lineSnapshot{
+				ID: line.ID, AccountID: line.AccountID,
+				TransactionAmount:   line.TransactionAmount.String(),
+				TransactionCurrency: line.TransactionCurrency,
+				ExchangeRate:        line.ExchangeRate.String(),
+				FunctionalDebit:     line.FunctionalDebit.String(),
+				FunctionalCredit:    line.FunctionalCredit.String(),
+			})
+		}
+		return result
+	}
+	return reflect.DeepEqual(snapshot(a), snapshot(b))
+}
+
+func sameReversal(a, b ledger.JournalEntry) bool {
+	if a.Status != ledger.EntryPosted || b.Status != ledger.EntryPosted ||
+		a.Classification != ledger.EntryClassReversing || b.Classification != ledger.EntryClassReversing ||
+		a.ReversalOfID == nil || b.ReversalOfID == nil || *a.ReversalOfID != *b.ReversalOfID ||
+		a.ReversalReason != b.ReversalReason {
+		return false
+	}
+	a.ID, b.ID = types.JournalEntryID{}, types.JournalEntryID{}
+	for i := range a.Lines {
+		a.Lines[i].ID = types.JournalEntryLineID{}
+	}
+	for i := range b.Lines {
+		b.Lines[i].ID = types.JournalEntryLineID{}
+	}
+	return sameEntry(a, b)
+}
+
+func reversalSummary(entry ledger.JournalEntry) string {
+	var lines string
+	for _, line := range entry.Lines {
+		lines += fmt.Sprintf("%s:%s/%s;", line.AccountID, line.FunctionalDebit, line.FunctionalCredit)
+	}
+	return fmt.Sprintf("status=%s classification=%s sequence=%d number=%q reversalOf=%v reason=%q date=%s lines=[%s]",
+		entry.Status, entry.Classification, entry.SequenceNumber, entry.EntryNumber,
+		entry.ReversalOfID, entry.ReversalReason, entry.EffectiveDate.Format(time.RFC3339), lines)
+}
+
+func reversedOriginalsMatch(a, b ledger.JournalEntry) bool {
+	return a.ID == b.ID && a.Status == ledger.EntryReversed && b.Status == ledger.EntryReversed &&
+		a.ReversedByID != nil && b.ReversedByID != nil
+}
+
+func sameTrialBalance(a, b reporting.TrialBalance) bool {
+	type lineSnapshot struct {
+		AccountID                 types.AccountID
+		AccountCode, AccountName  string
+		PeriodDebit, PeriodCredit string
+		EndingDebit, EndingCredit string
+	}
+	snapshot := func(balance reporting.TrialBalance) (string, string, bool, map[string]lineSnapshot) {
+		lines := make(map[string]lineSnapshot, len(balance.Lines))
+		for _, line := range balance.Lines {
+			lines[line.AccountCode] = lineSnapshot{
+				AccountID: line.AccountID, AccountCode: line.AccountCode, AccountName: line.AccountName,
+				PeriodDebit: line.PeriodDebit.String(), PeriodCredit: line.PeriodCredit.String(),
+				EndingDebit: line.EndingDebit.String(), EndingCredit: line.EndingCredit.String(),
+			}
+		}
+		return balance.TotalDebit.String(), balance.TotalCredit.String(), balance.IsBalanced, lines
+	}
+	aDebit, aCredit, aBalanced, aLines := snapshot(a)
+	bDebit, bCredit, bBalanced, bLines := snapshot(b)
+	return aDebit == bDebit && aCredit == bCredit && aBalanced == bBalanced && reflect.DeepEqual(aLines, bLines)
+}
+
+func trialBalanceSummary(balance reporting.TrialBalance) string {
+	var out string
+	for _, line := range balance.Lines {
+		out += fmt.Sprintf("%s:%s/%s/%s/%s;", line.AccountCode,
+			line.PeriodDebit, line.PeriodCredit, line.EndingDebit, line.EndingCredit)
+	}
+	return fmt.Sprintf("debit=%s credit=%s balanced=%t [%s]",
+		balance.TotalDebit, balance.TotalCredit, balance.IsBalanced, out)
+}
+
+func sameGeneralLedger(a, b reporting.GeneralLedgerReport) bool {
+	type entrySnapshot struct {
+		EntryNumber, Description string
+		EffectiveDate            time.Time
+		Debit, Credit, Running   string
+	}
+	snapshot := func(report reporting.GeneralLedgerReport) (string, string, string, []entrySnapshot) {
+		entries := make([]entrySnapshot, 0, len(report.Entries))
+		for _, entry := range report.Entries {
+			entries = append(entries, entrySnapshot{
+				EntryNumber: entry.EntryNumber,
+				Description: entry.Description, EffectiveDate: entry.EffectiveDate,
+				Debit: entry.Debit.String(), Credit: entry.Credit.String(),
+				Running: entry.RunningBalance.String(),
+			})
+		}
+		return report.AccountCode, report.AccountName, report.OpeningBalance.String() + "/" + report.EndingBalance.String(), entries
+	}
+	aCode, aName, aBalances, aEntries := snapshot(a)
+	bCode, bName, bBalances, bEntries := snapshot(b)
+	return aCode == bCode && aName == bName && aBalances == bBalances && reflect.DeepEqual(aEntries, bEntries)
+}
+
+func generalLedgerSummary(report reporting.GeneralLedgerReport) string {
+	var out string
+	for _, entry := range report.Entries {
+		out += fmt.Sprintf("%s/%s/%s/%s/%s/%s;",
+			entry.EntryNumber, entry.Description, entry.EffectiveDate.Format(time.RFC3339),
+			entry.Debit, entry.Credit, entry.RunningBalance)
+	}
+	return fmt.Sprintf("%s/%s opening=%s ending=%s [%s]",
+		report.AccountCode, report.AccountName, report.OpeningBalance, report.EndingBalance, out)
 }

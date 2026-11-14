@@ -48,6 +48,24 @@ func TestControlAccountBalanceFromEntriesUsesNaturalSide(t *testing.T) {
 	}
 }
 
+func TestControlAccountBalanceIncludesReversedSourceAndReversal(t *testing.T) {
+	companyID, accountID, journalID := uuid.New(), uuid.New(), uuid.New()
+	zero := money(t, "0.00")
+	source := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID, Status: posting.EntryReversed,
+		Lines: []posting.JournalEntryLine{{CompanyID: companyID, AccountID: accountID, Debit: money(t, "75"), Credit: zero}},
+	}
+	reversal := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID, Status: posting.EntryPosted,
+		Lines: []posting.JournalEntryLine{{CompanyID: companyID, AccountID: accountID, Debit: zero, Credit: money(t, "75")}},
+	}
+	account := masterdata.Account{CompanyID: companyID, ID: accountID, NormalBalance: masterdata.NormalBalanceDebit}
+	balance, err := ControlAccountBalanceFromEntries(account, []posting.JournalEntry{source, reversal}, "USD")
+	if err != nil || !balance.Amount().IsZero() {
+		t.Fatalf("reversed debit and its reversal balance = %s, err=%v; want zero", balance, err)
+	}
+}
+
 func TestLedgerReconciliationEngineDetectsMismatch(t *testing.T) {
 	repo := NewMemoryRepository()
 	companyID := uuid.New()
@@ -335,9 +353,15 @@ func TestReconciliationDaemonPersistsCertificateAuditsAndNotifies(t *testing.T) 
 		t.Fatal(err)
 	}
 	if certificate.Clean || len(certificate.Reports) != 1 || len(gl.reports) != 1 ||
-		len(gl.certificates) != 1 || len(gl.auditLogs) != 2 || len(notifier.reports) != 1 {
-		t.Fatalf("certificate=%+v reports=%d certs=%d audits=%d alerts=%d",
-			certificate, len(gl.reports), len(gl.certificates), len(gl.auditLogs), len(notifier.reports))
+		len(gl.certificates) != 1 || len(gl.exceptions) != 1 ||
+		len(gl.auditLogs) != 2 || len(notifier.reports) != 1 {
+		t.Fatalf("certificate=%+v reports=%d certs=%d exceptions=%d audits=%d alerts=%d",
+			certificate, len(gl.reports), len(gl.certificates), len(gl.exceptions), len(gl.auditLogs), len(notifier.reports))
+	}
+	if gl.exceptions[0].Status != ReconciliationExceptionUnmatched ||
+		gl.exceptions[0].ActorID != reconciliationDaemonActorID() ||
+		gl.exceptions[0].Reason == "" || gl.exceptions[0].Difference.IsZero() {
+		t.Fatalf("persisted exception lacks initial status or trace data: %+v", gl.exceptions[0])
 	}
 }
 
@@ -348,6 +372,7 @@ type fakeReconciliationStore struct {
 	bankItems    []BankItem
 	reports      []DiscrepancyReport
 	certificates []ReconciliationCertificate
+	exceptions   []ReconciliationException
 	auditLogs    []governance.FinancialAuditLog
 }
 
@@ -394,11 +419,21 @@ func (s *fakeReconciliationStore) ListBankItemsForCompany(ctx context.Context, c
 	return items, nil
 }
 
-func (s *fakeReconciliationStore) SaveReconciliationReport(ctx context.Context, report DiscrepancyReport) error {
+func (s *fakeReconciliationStore) SaveReconciliationOutcome(
+	ctx context.Context,
+	report DiscrepancyReport,
+	exception *ReconciliationException,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := ValidateReconciliationOutcome(report, exception); err != nil {
+		return err
+	}
 	s.reports = append(s.reports, report)
+	if exception != nil {
+		s.exceptions = append(s.exceptions, *exception)
+	}
 	return nil
 }
 

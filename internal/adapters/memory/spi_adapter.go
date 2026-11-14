@@ -183,7 +183,8 @@ func (d *Driver) computeTrialBalance(companyID uuid.UUID, start, end time.Time) 
 		aggs[a.ID] = &tbLineAgg{account: acc}
 	}
 	for _, e := range d.entries {
-		if e.CompanyID != companyID || e.Status != posting.EntryPosted {
+		if e.CompanyID != companyID ||
+			(e.Status != posting.EntryPosted && e.Status != posting.EntryReversed) {
 			continue
 		}
 		date := e.EntryDate
@@ -277,7 +278,8 @@ func (d *Driver) GetGeneralLedger(ctx context.Context, companyID types.CompanyID
 	var opening, running decimal.Decimal
 	var rows []row
 	for _, e := range d.entries {
-		if e.CompanyID != uuid.UUID(companyID) || e.Status != posting.EntryPosted {
+		if e.CompanyID != uuid.UUID(companyID) ||
+			(e.Status != posting.EntryPosted && e.Status != posting.EntryReversed) {
 			continue
 		}
 		date := e.EntryDate

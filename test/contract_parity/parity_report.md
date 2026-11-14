@@ -1,31 +1,44 @@
-# تقرير تكافؤ العقود التخزينية (Contract Parity Report) — P3-07
+# Contract Parity Report — P3-07
 
-- **تاريخ الإنشاء:** 2026-11-14T19:35:56Z
-- **نطاق الاختبار:** المقارنة الدلالية المحاسبية بين موائمات `PostgreSQL` و`Memory` و`External Adapter`.
-- **معايير التكافؤ:** دقة الأرصدة، حالات القيود، دورة العكس، منع التكرار (Idempotency)، رفض المدخلات غير المتوازنة والفترات المغلقة.
+- **Generated (UTC):** 2026-11-14T20:46:27Z
+- **Adapters:** Memory, External SPI adapter, PostgreSQL (when `POSTGRES_URL` is configured).
 
-## 1. جدول النتائج حسب السيناريو والموائم
+| Scenario | Adapter | Result | Duration |
+| :--- | :--- | :---: | ---: |
+| CapabilitiesMatrix | external | PASS | 0s |
+| CapabilitiesMatrix | memory | PASS | 0s |
+| CapabilitiesMatrix | postgres | PASS | 486ms |
+| CoreLifecycle | external | PASS | 0s |
+| CoreLifecycle | memory | PASS | 1ms |
+| CoreLifecycle | postgres | PASS | 877ms |
+| CrossAdapterSemanticEquivalence | all | FAIL | 0s |
+| EventIdempotency | external | PASS | 0s |
+| EventIdempotency | memory | PASS | 1ms |
+| EventIdempotency | postgres | PASS | 524ms |
+| ReversalLifecycle | external | PASS | 0s |
+| ReversalLifecycle | memory | PASS | 0s |
+| ReversalLifecycle | postgres | PASS | 579ms |
+| SemanticErrorsAndInvariants | external | PASS | 0s |
+| SemanticErrorsAndInvariants | memory | PASS | 1ms |
+| SemanticErrorsAndInvariants | postgres | PASS | 723ms |
 
-| السيناريو | Memory | External Adapter | PostgreSQL | حالة التكافؤ الدلالي |
-| :--- | :---: | :---: | :---: | :---: |
-| Draft -> Validate -> Post -> GetEntry -> TrialBalance | PASS ✅ | PASS ✅ | PASS ✅ | متطابق 100% 🎯 |
-| Reversal Lifecycle & Double Reversal Rejection | PASS ✅ | PASS ✅ | PASS ✅ | متطابق 100% 🎯 |
-| Event Ingestion Idempotency & Conflict Detection | PASS ✅ | FAIL ❌ | PASS ✅ | يوجد تباين ⚠️ |
-| Semantic Invariants: Closed Period, Unbalanced, Bad Account, Tenant Isolation | PASS ✅ | PASS ✅ | PASS ✅ | متطابق 100% 🎯 |
-| Declared Adapter Capabilities Matrix | PASS ✅ | PASS ✅ | PASS ✅ | متطابق 100% 🎯 |
+- **Totals:** 15 passed, 1 failed, 0 skipped.
 
-## 2. جدول الفروقات المشروعة للقدرات (Capability Differences)
+## Capability differences
 
-توضح الفروقات المشروعة بين الموائمات التي يقرها عقد `storage.AdapterCapabilities` دون أن تخل بدقة وسلامة القيود المحاسبية:
+- external: durability=false
+- external: foreign_keys=false
+- external: savepoints=false
+- external: serializable=true
+- memory: durability=false
+- memory: foreign_keys=false
+- memory: savepoints=false
+- memory: serializable=true
+- postgres: durability=true
+- postgres: foreign_keys=true
+- postgres: savepoints=true
+- postgres: serializable=true
 
-| القدرة (Capability) | PostgreSQL | Memory | External Adapter | الأثر التشغيلي |
-| :--- | :---: | :---: | :---: | :--- |
-| **الاستمرارية على القرص (Durability)** | مدعومة (WAL) ✅ | غير مدعومة (ذاكرة مؤقتة) ⚠️ | غير مدعومة (ذاكرة مؤقتة) ⚠️ | Memory و External مخصصان للاختبار والتطوير؛ الإنتاج يتطلب PostgreSQL. |
-| **القيود المرجعية (Foreign Keys)** | مفروضة على مستوى DB ✅ | مفروضة عبر Domain Logic ℹ️ | مفروضة عبر Domain Logic ℹ️ | يتم حماية سلامة العلاقات في Memory/External برمجياً في طبقة النواة. |
-| **عزل العمليات (Isolation)** | Serializable / ReadCommitted | Serializable (Mutex Process-local) | Serializable (Mutex Process-local) | التزامن آمن في الجميع؛ PostgreSQL يوفر عزلاً عبر سيرفرات وعمليات متعددة. |
-| **اكتشاف التعارض الميت (Deadlocks)** | تلقائي مع كود خطأ `40P01` | قفل تسلسلي يمنع التعارض | قفل تسلسلي يمنع التعارض | في الذاكرة لا يحدث Deadlock لتسلسل المعاملات داخل Mutex واحد. |
+## Unexpected differences
 
-## 3. إحصاء الاختلافات غير المفسرة (Unexpected Differences)
-
-- **عدد الاختلافات غير المفسرة:** `0` (الهدف: `0` ✅)
-- **حالة بوابات القبول:** تم استيفاء جميع معايير القبول للمهمة `P3-07`.
+- CrossAdapterSemanticEquivalence / all: cross-adapter assertions failed; see the corresponding go test output

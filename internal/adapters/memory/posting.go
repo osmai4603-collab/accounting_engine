@@ -56,6 +56,9 @@ func (d *Driver) SaveDraft(entry posting.JournalEntry) error {
 		if entry.ID == uuid.Nil || entry.JournalID == uuid.Nil {
 			return posting.ErrInvalidEntry
 		}
+		if err := d.validateEntryReferencesLocked(entry); err != nil {
+			return err
+		}
 		for i := range entry.Lines {
 			if entry.Lines[i].CompanyID != uuid.Nil && entry.Lines[i].CompanyID != entry.CompanyID {
 				return posting.ErrInvalidEntry
@@ -723,34 +726,15 @@ func (d *Driver) accountBalanceDeltasLocked(entry posting.JournalEntry) (map[acc
 	if entry.CompanyID == uuid.Nil {
 		return map[accountBalanceKey]accountBalance{}, nil
 	}
-	if entry.PeriodID == uuid.Nil {
-		return nil, masterdata.ErrFiscalPeriodNotFound
+	if err := d.validateEntryReferencesLocked(entry); err != nil {
+		return nil, err
 	}
-	period, ok := d.periods[entry.PeriodID]
-	if !ok || period.CompanyID != entry.CompanyID {
-		return nil, masterdata.ErrFiscalPeriodNotFound
-	}
-	if period.State == masterdata.PeriodHardClosed {
+	if d.periods[entry.PeriodID].State == masterdata.PeriodHardClosed {
 		return nil, masterdata.ErrFiscalPeriodClosed
 	}
-	entryDate := entry.EntryDate
-	if entryDate.IsZero() {
-		entryDate = entry.Date
-	}
-	if period.Type == masterdata.FiscalPeriodTypeNormal && !entryDate.IsZero() &&
-		(entryDate.Before(period.StartDate) || entryDate.After(period.EndDate)) {
-		return nil, masterdata.ErrFiscalPeriodNotFound
-	}
-	company, ok := d.companies[entry.CompanyID]
-	if !ok {
-		return nil, masterdata.ErrInvalidCompany
-	}
+	company := d.companies[entry.CompanyID]
 	deltas := make(map[accountBalanceKey]accountBalance, len(entry.Lines))
 	for _, line := range entry.Lines {
-		account, ok := d.accounts[line.AccountID]
-		if !ok || account.CompanyID != entry.CompanyID {
-			return nil, masterdata.ErrAccountNotFound
-		}
 		debit, credit, currency := posting.LineFunctionalAmounts(line)
 		if currency != "" && currency != company.FunctionalCurrency {
 			return nil, posting.ErrFunctionalCurrencyMismatch
@@ -767,6 +751,41 @@ func (d *Driver) accountBalanceDeltasLocked(entry posting.JournalEntry) (map[acc
 		deltas[key] = delta
 	}
 	return deltas, nil
+}
+
+func (d *Driver) validateEntryReferencesLocked(entry posting.JournalEntry) error {
+	if entry.CompanyID == uuid.Nil {
+		return nil
+	}
+	if _, ok := d.companies[entry.CompanyID]; !ok {
+		return masterdata.ErrInvalidCompany
+	}
+	journal, ok := d.journals[entry.JournalID]
+	if !ok || journal.CompanyID != entry.CompanyID {
+		return masterdata.ErrJournalNotFound
+	}
+	if entry.PeriodID == uuid.Nil {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	period, ok := d.periods[entry.PeriodID]
+	if !ok || period.CompanyID != entry.CompanyID {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	entryDate := entry.EntryDate
+	if entryDate.IsZero() {
+		entryDate = entry.Date
+	}
+	if period.Type == masterdata.FiscalPeriodTypeNormal && !entryDate.IsZero() &&
+		(entryDate.Before(period.StartDate) || entryDate.After(period.EndDate)) {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	for _, line := range entry.Lines {
+		account, ok := d.accounts[line.AccountID]
+		if !ok || account.CompanyID != entry.CompanyID {
+			return masterdata.ErrAccountNotFound
+		}
+	}
+	return nil
 }
 
 func (d *Driver) CarryForwardBalancesForCompanyContext(
@@ -872,7 +891,8 @@ func (d *Driver) ListEntries(ctx context.Context, start, end time.Time) ([]posti
 		if date.IsZero() {
 			date = entry.Date
 		}
-		if entry.Status == posting.EntryPosted && (start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
+		if (entry.Status == posting.EntryPosted || entry.Status == posting.EntryReversed) &&
+			(start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
 			entries = append(entries, cloneEntry(entry))
 		}
 	}
@@ -890,7 +910,8 @@ func (d *Driver) ListEntriesForCompany(companyID uuid.UUID, start, end time.Time
 			date = entry.Date
 		}
 
-		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted &&
+		if entry.CompanyID == companyID &&
+			(entry.Status == posting.EntryPosted || entry.Status == posting.EntryReversed) &&
 			(start.IsZero() || !date.Before(start)) && (end.IsZero() || !date.After(end)) {
 			entries = append(entries, cloneEntry(entry))
 		}
@@ -1062,7 +1083,8 @@ func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uui
 	company, companyExists := d.companies[companyID]
 	entries := make([]posting.JournalEntry, 0)
 	for _, entry := range d.entries {
-		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted {
+		if entry.CompanyID == companyID &&
+			(entry.Status == posting.EntryPosted || entry.Status == posting.EntryReversed) {
 			entries = append(entries, cloneEntry(entry))
 		}
 	}
@@ -1092,7 +1114,9 @@ func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID
 		if entryDate.IsZero() {
 			entryDate = entry.Date
 		}
-		if entry.CompanyID == companyID && entry.Status == posting.EntryPosted && !entryDate.After(asOf) {
+		if entry.CompanyID == companyID &&
+			(entry.Status == posting.EntryPosted || entry.Status == posting.EntryReversed) &&
+			!entryDate.After(asOf) {
 			entries = append(entries, cloneEntry(entry))
 		}
 	}

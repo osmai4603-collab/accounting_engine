@@ -1,10 +1,18 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 )
 
 func setEnvHelper(t *testing.T, key, value string) {
@@ -34,10 +42,16 @@ func unsetEnvHelper(t *testing.T, key string) {
 }
 
 func clearEnv(t *testing.T) {
-	for _, k := range []string{"APP_ENV", "ENV", "ENVIRONMENT", "DATABASE_DSN", "ALLOW_IN_MEMORY", "GRPC_PORT", "HTTP_PORT"} {
+	for _, k := range []string{
+		"APP_ENV", "ENV", "ENVIRONMENT", "DATABASE_DSN", "ALLOW_IN_MEMORY", "GRPC_PORT", "HTTP_PORT",
+		"AUTH_MODE", "AUTH_SECRET", "AUTH_JWT_PUBLIC_KEY", "AUTH_JWT_PUBLIC_KEY_FILE",
+		"AUTH_JWT_ISSUER", "AUTH_JWT_AUDIENCE", "AUTH_CLOCK_SKEW",
+	} {
 		unsetEnvHelper(t, k)
 	}
 }
+
+const testAuthSecret = "0123456789abcdef0123456789abcdef"
 
 func TestProductionMissingDSNFailsClosed(t *testing.T) {
 	clearEnv(t)
@@ -84,6 +98,8 @@ func TestProductionValidPostgresDSN(t *testing.T) {
 	clearEnv(t)
 	setEnvHelper(t, "APP_ENV", "production")
 	setEnvHelper(t, "DATABASE_DSN", "postgres://user:secret@localhost:5432/ledger?sslmode=require")
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+	setEnvHelper(t, "AUTH_SECRET", testAuthSecret)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -94,6 +110,12 @@ func TestProductionValidPostgresDSN(t *testing.T) {
 	}
 	if cfg.IsInMemory() {
 		t.Fatal("expected IsInMemory() == false in production")
+	}
+	if !cfg.AuthEnabled() {
+		t.Fatal("expected authentication boundary enabled in production")
+	}
+	if cfg.AuthMode != serviceauth.ModeGatewayHMAC {
+		t.Fatalf("AuthMode = %q, want %q", cfg.AuthMode, serviceauth.ModeGatewayHMAC)
 	}
 }
 
@@ -233,3 +255,235 @@ func TestInvalidPortConfigurations(t *testing.T) {
 	}
 }
 
+func productionStorageEnv(t *testing.T) {
+	t.Helper()
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "production")
+	setEnvHelper(t, "DATABASE_DSN", "postgres://user:secret@localhost:5432/ledger?sslmode=require")
+}
+
+func TestProductionDefaultAuthModeRejected(t *testing.T) {
+	productionStorageEnv(t)
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("expected production to reject an unset AUTH_MODE")
+	}
+	if !errors.Is(err, ErrProductionAuthRequired) {
+		t.Fatalf("expected ErrProductionAuthRequired, got: %v", err)
+	}
+}
+
+func TestProductionExplicitNoneAuthModeRejected(t *testing.T) {
+	productionStorageEnv(t)
+	setEnvHelper(t, "AUTH_MODE", "none")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrProductionAuthRequired) {
+		t.Fatalf("expected ErrProductionAuthRequired for AUTH_MODE=none, got: %v", err)
+	}
+}
+
+func TestProductionAuthMissingMaterialRejected(t *testing.T) {
+	productionStorageEnv(t)
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrInvalidAuthConfig) {
+		t.Fatalf("expected ErrInvalidAuthConfig for missing AUTH_SECRET, got: %v", err)
+	}
+	assertSecretNotInError(t, err)
+}
+
+func TestProductionUnknownAuthModeRejected(t *testing.T) {
+	productionStorageEnv(t)
+	setEnvHelper(t, "AUTH_MODE", "anonymous")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrInvalidAuthConfig) {
+		t.Fatalf("expected ErrInvalidAuthConfig for unknown AUTH_MODE, got: %v", err)
+	}
+}
+
+func TestDevelopmentAuthDisabledByDefault(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("expected development to allow disabled auth, got: %v", err)
+	}
+	if cfg.AuthEnabled() {
+		t.Fatalf("AuthMode = %q, want disabled", cfg.AuthMode)
+	}
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		t.Fatalf("newServiceVerifier: %v", err)
+	}
+	if verifier != nil {
+		t.Fatal("expected a nil verifier when auth is disabled")
+	}
+}
+
+func TestDevelopmentSecureModeRequiresMaterial(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "jwt-hs256")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrInvalidAuthConfig) {
+		t.Fatalf("expected ErrInvalidAuthConfig for jwt-hs256 without a secret, got: %v", err)
+	}
+}
+
+func TestGatewayAuthConfigParsing(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+	setEnvHelper(t, "AUTH_SECRET", testAuthSecret)
+	setEnvHelper(t, "AUTH_CLOCK_SKEW", "45s")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AuthMode != serviceauth.ModeGatewayHMAC {
+		t.Fatalf("AuthMode = %q, want %q", cfg.AuthMode, serviceauth.ModeGatewayHMAC)
+	}
+	if cfg.AuthSecret != testAuthSecret {
+		t.Fatal("AUTH_SECRET was not loaded")
+	}
+	if cfg.AuthClockSkew != 45*time.Second {
+		t.Fatalf("AuthClockSkew = %s, want 45s", cfg.AuthClockSkew)
+	}
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		t.Fatalf("newServiceVerifier: %v", err)
+	}
+	if verifier == nil {
+		t.Fatal("expected a gateway verifier")
+	}
+}
+
+func TestNumericAuthClockSkewParsing(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+	setEnvHelper(t, "AUTH_SECRET", testAuthSecret)
+	setEnvHelper(t, "AUTH_CLOCK_SKEW", "90")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AuthClockSkew != 90*time.Second {
+		t.Fatalf("AuthClockSkew = %s, want 90s", cfg.AuthClockSkew)
+	}
+}
+
+func TestInvalidAuthClockSkewRejected(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+	setEnvHelper(t, "AUTH_SECRET", testAuthSecret)
+	setEnvHelper(t, "AUTH_CLOCK_SKEW", "soon")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrInvalidAuthConfig) {
+		t.Fatalf("expected ErrInvalidAuthConfig for invalid AUTH_CLOCK_SKEW, got: %v", err)
+	}
+}
+
+func TestJWTRS256ConfigParsingFromPublicKeyFile(t *testing.T) {
+	publicKeyPEM := generatePublicKeyPEM(t)
+	keyPath := filepath.Join(t.TempDir(), "jwt-public.pem")
+	if err := os.WriteFile(keyPath, []byte(publicKeyPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "jwt-rs256")
+	setEnvHelper(t, "AUTH_JWT_PUBLIC_KEY_FILE", keyPath)
+	setEnvHelper(t, "AUTH_JWT_ISSUER", "https://issuer.example")
+	setEnvHelper(t, "AUTH_JWT_AUDIENCE", "accounting-service")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !strings.Contains(cfg.AuthJWTPublicKey, "BEGIN PUBLIC KEY") {
+		t.Fatalf("expected public key contents, got %q", cfg.AuthJWTPublicKey)
+	}
+	if cfg.AuthJWTIssuer != "https://issuer.example" || cfg.AuthJWTAudience != "accounting-service" {
+		t.Fatalf("issuer/audience = %q/%q", cfg.AuthJWTIssuer, cfg.AuthJWTAudience)
+	}
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		t.Fatalf("newServiceVerifier: %v", err)
+	}
+	if verifier == nil {
+		t.Fatal("expected an RS256 verifier")
+	}
+}
+
+func TestInvalidJWTPublicKeyDoesNotLeakMaterial(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "jwt-rs256")
+	setEnvHelper(t, "AUTH_JWT_PUBLIC_KEY", "private-looking-material-that-must-not-leak")
+
+	_, err := LoadConfig()
+	if !errors.Is(err, ErrInvalidAuthConfig) {
+		t.Fatalf("expected ErrInvalidAuthConfig, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "private-looking-material") {
+		t.Fatalf("error leaked key material: %v", err)
+	}
+}
+
+func TestAuthSecretNotLeakedInErrors(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "development")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "AUTH_MODE", "gateway-hmac")
+	setEnvHelper(t, "AUTH_SECRET", "shortsecret")
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("expected a short secret to be rejected")
+	}
+	assertSecretNotInError(t, err)
+}
+
+func assertSecretNotInError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	for _, secret := range []string{testAuthSecret, "shortsecret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("error leaked secret %q: %v", secret, err)
+		}
+	}
+}
+
+func generatePublicKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}

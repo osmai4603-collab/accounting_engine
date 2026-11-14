@@ -2,6 +2,7 @@ package posting
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -47,6 +48,9 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 		return JournalEntry{}, false, err
 	}
 	request.ActorID = strings.TrimSpace(request.ActorID)
+	if request.ActorID == "" {
+		return JournalEntry{}, false, ErrReversalActorRequired
+	}
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	payloadHash, err := ReversalRequestHash(companyID, entryID, request)
 	if err != nil {
@@ -75,6 +79,16 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 		return JournalEntry{}, false, err
 	}
 	if original.ReversedEntryID != nil {
+		if request.IdempotencyKey != "" {
+			if reader, ok := e.repo.(IdempotentReversalReader); ok {
+				if existing, found, checkErr := reader.FindReversalByIdempotencyKeyContext(ctx, companyID, request.IdempotencyKey); checkErr == nil && found {
+					if existing.IdempotencyPayloadHash != payloadHash {
+						return JournalEntry{}, false, ErrIdempotencyConflict
+					}
+					return existing, true, nil
+				}
+			}
+		}
 		return JournalEntry{}, false, ErrEntryAlreadyReversed
 	}
 	if original.Status != EntryPosted {
@@ -82,8 +96,21 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	}
 
 	reversalDate := request.EffectiveDate
-	if reversalDate.IsZero() {
+	explicitDate := !reversalDate.IsZero()
+	if !explicitDate {
+		// Default policy: reversal takes effect now. A default date is not
+		// compared to the original because a future-dated original may still
+		// be reversed as soon as it is posted.
 		reversalDate = time.Now().UTC()
+	}
+	// A reversal may be posted in a later open period, but an explicitly
+	// chosen date may never predate the original entry it reverses: that would
+	// relocate the correction before the event being corrected. The comparison
+	// is by calendar date because accounting effective dates are day-granular.
+	reversalDate = reversalDate.UTC()
+	if originalDate := effectiveDate(&original); explicitDate && !originalDate.IsZero() &&
+		calendarDate(reversalDate).Before(calendarDate(originalDate)) {
+		return JournalEntry{}, false, ErrReversalDateBeforeOriginal
 	}
 	reference := strings.TrimSpace(request.Reference)
 	sourceModule := strings.TrimSpace(request.SourceSystem)
@@ -92,19 +119,29 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	}
 	originalID := original.ID
 	now := time.Now().UTC()
+	// The reversal is a new, independent accounting entry. It deliberately does
+	// not copy lifecycle or linkage state that must never be inherited:
+	// ApprovalFingerprint, SourceEventID, LegalNumber, SequenceNumber,
+	// attachments and reconciliation state. Those are re-established by the
+	// reversal workflow (approval) or stay with the original document.
 	reversal := JournalEntry{
-		CompanyID:              original.CompanyID,
-		ID:                     uuid.New(),
-		JournalID:              original.JournalID,
-		EntryDate:              reversalDate.UTC(),
-		Date:                   reversalDate.UTC(),
-		Status:                 EntryPosted,
-		Classification:         EntryClassReversing,
-		DocumentReference:      original.DocumentReference,
-		Reference:              original.Reference,
-		ReversalReference:      reference,
-		SourceModule:           sourceModule,
-		ReversalReason:         strings.TrimSpace(request.Reason),
+		CompanyID:         original.CompanyID,
+		ID:                uuid.New(),
+		JournalID:         original.JournalID,
+		EntryDate:         reversalDate,
+		Date:              reversalDate,
+		Status:            EntryPosted,
+		Classification:    EntryClassReversing,
+		DocumentReference: original.DocumentReference,
+		Reference:         original.Reference,
+		ReversalReference: reference,
+		SourceModule:      sourceModule,
+		ReversalReason:    strings.TrimSpace(request.Reason),
+		// Entry-level currency context mirrors the original so reports can
+		// reproduce the same transaction currency and exchange rate; the
+		// authoritative amounts remain the per-line functional layers.
+		TransactionCurrency:    original.TransactionCurrency,
+		ExchangeRate:           original.ExchangeRate,
 		CreatedBy:              request.ActorID,
 		CreatedAt:              now,
 		UpdatedAt:              now,
@@ -116,14 +153,20 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	}
 	for i, line := range original.Lines {
 		reversal.Lines[i] = JournalEntryLine{
-			CompanyID:           line.CompanyID,
-			ID:                  uuid.New(),
-			AccountID:           line.AccountID,
-			PartnerID:           line.PartnerID,
-			CostCenterID:        line.CostCenterID,
-			ProjectID:           line.ProjectID,
-			SegmentID:           line.SegmentID,
-			BusinessUnitID:      line.BusinessUnitID,
+			CompanyID:      line.CompanyID,
+			ID:             uuid.New(),
+			AccountID:      line.AccountID,
+			PartnerID:      line.PartnerID,
+			CostCenterID:   line.CostCenterID,
+			ProjectID:      line.ProjectID,
+			SegmentID:      line.SegmentID,
+			BusinessUnitID: line.BusinessUnitID,
+			// MatchingNumber is a documentary linking reference and is
+			// preserved on the reversal line so the pair stays matchable.
+			MatchingNumber: line.MatchingNumber,
+			// ReconciledAmount is intentionally reset to zero: a reversal is not
+			// a reconciliation event, and reversing an open item must be handled
+			// explicitly by the reconciliation/subledger workflow.
 			Debit:               line.Credit,
 			Credit:              line.Debit,
 			TransactionAmount:   line.TransactionAmount,
@@ -155,6 +198,16 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	defer e.mu.Unlock()
 	posted, err := repository.CreateAndPostReversalAtomicContext(ctx, original, reversal)
 	if err != nil {
+		if errors.Is(err, ErrEntryAlreadyReversed) && request.IdempotencyKey != "" {
+			if reader, ok := e.repo.(IdempotentReversalReader); ok {
+				if existing, found, checkErr := reader.FindReversalByIdempotencyKeyContext(ctx, companyID, request.IdempotencyKey); checkErr == nil && found {
+					if existing.IdempotencyPayloadHash != payloadHash {
+						return JournalEntry{}, false, ErrIdempotencyConflict
+					}
+					return existing, true, nil
+				}
+			}
+		}
 		return JournalEntry{}, false, err
 	}
 	return posted, posted.ID != reversal.ID, nil

@@ -12,7 +12,7 @@ COVERAGE_MIN ?= 54.1
 POSTGRES_URL ?= postgres://osm@localhost:5432/accounting_test?sslmode=disable&host=/var/run/postgresql
 export POSTGRES_URL
 
-.PHONY: ci fmt-check vet build test test-external-consumer test-external-adapter-consumer test-gapred api-compat published-module integration-service proto race coverage coverage-report security migrations clean
+.PHONY: ci fmt-check vet build test test-contract-parity test-external-consumer test-external-adapter-consumer test-gapred api-compat published-module integration-service proto race coverage coverage-report security migrations clean
 
 ci: fmt-check vet build test test-gapred api-compat published-module integration-service race coverage security migrations
 
@@ -27,6 +27,9 @@ build:
 
 test: test-external-consumer test-external-adapter-consumer
 	$(GO) test -count=1 ./...
+
+test-contract-parity:
+	$(GO) test -count=1 ./test/contract_parity
 
 test-external-consumer:
 	cd test/external_consumer && $(GO) test -count=1 ./...

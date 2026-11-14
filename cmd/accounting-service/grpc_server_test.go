@@ -199,9 +199,9 @@ func TestGRPCEventRequiresExplicitDateAndCurrency(t *testing.T) {
 		{name: "currency", mutate: func(request *accountingv1.ProcessEventRequest) { request.Currency = "" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := *base
-			test.mutate(&request)
-			if _, err := server.ProcessEvent(context.Background(), &request); status.Code(err) != codes.InvalidArgument {
+			request := proto.Clone(base).(*accountingv1.ProcessEventRequest)
+			test.mutate(request)
+			if _, err := server.ProcessEvent(context.Background(), request); status.Code(err) != codes.InvalidArgument {
 				t.Fatalf("ProcessEvent error = %v, want InvalidArgument", err)
 			}
 		})

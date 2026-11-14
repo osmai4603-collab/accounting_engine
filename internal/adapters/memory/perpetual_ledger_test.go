@@ -55,6 +55,8 @@ func newPerpetualLedgerFixture(t testing.TB) perpetualLedgerFixture {
 			t.Fatal(err)
 		}
 	}
+	journalID := uuid.New()
+	driver.journals[journalID] = journalRecord{ID: journalID, CompanyID: companyID}
 	amount, err := financialtypes.NewMoneyFromString("10.00", "USD")
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +66,7 @@ func newPerpetualLedgerFixture(t testing.TB) perpetualLedgerFixture {
 		t.Fatal(err)
 	}
 	return perpetualLedgerFixture{
-		driver: driver, companyID: companyID, journalID: uuid.New(), year: year,
+		driver: driver, companyID: companyID, journalID: journalID, year: year,
 		debitID: accounts[0].ID, creditID: accounts[1].ID, revenueID: accounts[2].ID,
 		amount: amount, zero: zero,
 	}
@@ -126,6 +128,29 @@ func TestPostingUpdatesMaterializedBalancesAndReversalOffsets(t *testing.T) {
 	}
 	if got := fixture.driver.balances[creditKey].periodCredit.Sub(fixture.driver.balances[creditKey].periodDebit); !got.IsZero() {
 		t.Fatalf("reversed credit account balance = %s, want zero", got)
+	}
+}
+
+func TestDraftRejectsJournalAndPeriodOutsideCompany(t *testing.T) {
+	fixture := newPerpetualLedgerFixture(t)
+	period := fixture.year.Periods[0]
+	entry := fixture.entry(period.StartDate.Add(time.Hour), period.ID,
+		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.debitID, Debit: fixture.amount, Credit: fixture.zero},
+		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.creditID, Debit: fixture.zero, Credit: fixture.amount},
+	)
+
+	wrongJournal := entry
+	wrongJournal.ID = uuid.New()
+	wrongJournal.JournalID = uuid.New()
+	if err := fixture.driver.SaveDraft(wrongJournal); !errors.Is(err, masterdata.ErrJournalNotFound) {
+		t.Fatalf("SaveDraft() with unknown journal error = %v, want ErrJournalNotFound", err)
+	}
+
+	wrongPeriod := entry
+	wrongPeriod.ID = uuid.New()
+	wrongPeriod.PeriodID = uuid.New()
+	if err := fixture.driver.SaveDraft(wrongPeriod); !errors.Is(err, masterdata.ErrFiscalPeriodNotFound) {
+		t.Fatalf("SaveDraft() with unknown period error = %v, want ErrFiscalPeriodNotFound", err)
 	}
 }
 

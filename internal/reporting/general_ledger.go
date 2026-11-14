@@ -70,7 +70,7 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 
 	openingDebit, openingCredit := decimal.Zero, decimal.Zero
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		date := entryEffectiveDate(entry)
@@ -99,7 +99,7 @@ func (e *GeneralLedgerEngine) Generate(accountID uuid.UUID, start, end time.Time
 		EndingBalance: opening,
 	}
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		date := entryEffectiveDate(entry)

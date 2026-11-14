@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 	"github.com/shopspring/decimal"
 )
@@ -50,7 +49,7 @@ func (e *Engine) GenerateDimensionProfitAndLoss(start, end time.Time, currency s
 	}
 	amounts := make(map[DimensionProfitKey]decimal.Decimal)
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		date := entryEffectiveDate(entry)

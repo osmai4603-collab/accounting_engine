@@ -16,7 +16,7 @@ type AlertNotifier interface {
 }
 
 type reconciliationLogRepository interface {
-	SaveReconciliationReport(context.Context, DiscrepancyReport) error
+	SaveReconciliationOutcome(context.Context, DiscrepancyReport, *ReconciliationException) error
 	SaveReconciliationCertificate(context.Context, ReconciliationCertificate) error
 }
 
@@ -80,9 +80,13 @@ func (d *ReconciliationDaemon) RunDailyCheckCertificate(ctx context.Context, com
 	}
 	var resultErr error
 	for _, report := range reports {
-		if err := writer.SaveReconciliationReport(ctx, report); err != nil {
+		var exception *ReconciliationException
+		if report.HasVariance() {
+			created := NewReconciliationException(report)
+			exception = &created
+		}
+		if err := writer.SaveReconciliationOutcome(ctx, report, exception); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("save %s reconciliation report: %w", report.Domain, err))
-			continue
 		}
 		if !report.HasVariance() {
 			continue

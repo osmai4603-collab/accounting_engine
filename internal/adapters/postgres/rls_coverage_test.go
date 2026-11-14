@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// rlsProtectedTables is the authoritative list of company-scoped financial
-// tables created by migration 202611100007_force_tenant_rls.sql. Every table
-// that stores ledger, master-data, governance, or reconciliation data must have
-// both RLS and FORCE RLS enabled and at least one policy.
+// rlsProtectedTables lists company-scoped financial tables across the
+// migration chain. Each table must have RLS, FORCE RLS, and a tenant policy.
 var rlsProtectedTables = []string{
 	"companies",
 	"accounts",
@@ -38,6 +36,10 @@ var rlsProtectedTables = []string{
 	"approval_steps",
 	"financial_dimension_values",
 	"posting_idempotency",
+	"subledger_reconciliation_exceptions",
+	"subledger_reconciliation_exception_events",
+	"subledger_reconciliation_logs",
+	"subledger_reconciliation_certificates",
 }
 
 // TestEveryFinancialTableHasForcedRLS is the continuous isolation guard

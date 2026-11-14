@@ -23,6 +23,7 @@ type Driver struct {
 
 var _ posting.Repository = (*Driver)(nil)
 var _ subledgers.Repository = (*Driver)(nil)
+var _ subledgers.ReconciliationExceptionRepository = (*Driver)(nil)
 var _ masterdata.ContextStorageRepository = (*Driver)(nil)
 var _ reporting.Repository = (*Driver)(nil)
 

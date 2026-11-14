@@ -166,4 +166,9 @@ func TestPostgresReversalFailureRollsBackDraftAndOriginalLink(t *testing.T) {
 	if reversalCount != 0 {
 		t.Fatalf("failed transaction left %d persisted reversal drafts", reversalCount)
 	}
+	logs := auditLogsForCompany(t, ctx, env.Driver, env.CompanyID)
+	if got := auditLogsWithAction(logs, "REVERSE", original.ID); got != 0 {
+		t.Fatalf("failed transaction left %d REVERSE audit records for original, want 0", got)
+	}
+	verifyAuditChain(t, logs)
 }

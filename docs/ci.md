@@ -20,7 +20,7 @@
 | المهمة | الاسم في GitHub | ما تفعله | شرط الفشل |
 | --- | --- | --- | --- |
 | `quality` | Format, vet, build | `gofmt -l`, `go vet ./...`, `go build ./...`, وبناء صورة Docker من `deployments/Dockerfile` | أي ملف غير منسق، أو تحذير vet، أو خطأ بناء |
-| `test` | Tests + coverage (PostgreSQL) | `go test -count=1 -coverprofile=coverage.out ./...` مع خدمة PostgreSQL | فشل أي اختبار أو انخفاض التغطية عن `54.1%` |
+| `test` | Tests + coverage (PostgreSQL) | `go test -count=1 -coverprofile=coverage.out ./...` مع خدمة PostgreSQL؛ يرفع تقرير Contract Parity كأثر | فشل أي اختبار أو انخفاض التغطية عن `54.1%` |
 | `race` | Race detector (PostgreSQL) | `go test -race -count=1 ./...` مع خدمة PostgreSQL | أي سباق بيانات |
 | `migrations` | Migration policy + upgrade (PostgreSQL) | `make migrations` — فحص الهجرات القابلة للعكس/الخطرة + دورة ترقية كاملة | هجرة غير قابلة للعكس، DDL خطير بلا موافقة، أو فشل الترقية |
 | `security` | Security scans | فحص أسرار محلي، `govulncheck`, `gosec -severity high`, `gitleaks` | سر مكشوف، ثغرة معروفة مؤثرة، أو نتيجة gosec عالية الخطورة |
@@ -81,6 +81,7 @@ make fmt-check   # gofmt فقط
 make vet         # go vet
 make build       # go build
 make test        # go test ./...
+make test-contract-parity # اختبارات التكافؤ وتوليد التقرير
 make race        # go test -race ./...
 make coverage    # coverage.out + فرض الحد الأدنى
 make migrations  # فحص الهجرات + اختبار الترقية

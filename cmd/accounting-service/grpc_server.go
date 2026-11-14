@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
@@ -28,7 +29,8 @@ type GRPCServer struct {
 	accountingv1.UnimplementedAccountingServiceServer
 	accountingv1.UnimplementedEventServiceServer
 	accountingv1.UnimplementedReportingServiceServer
-	engine sdk.Engine
+	engine           sdk.Engine
+	requirePrincipal bool
 }
 
 func StartGRPCServer(cfg Config, engine sdk.Engine) error {
@@ -36,13 +38,17 @@ func StartGRPCServer(cfg Config, engine sdk.Engine) error {
 }
 
 func RunGRPCServer(ctx context.Context, cfg Config, engine sdk.Engine) error {
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		return fmt.Errorf("service authentication configuration: %w", err)
+	}
 	addr := ":" + cfg.GRPCPort
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	grpcServer := newGRPCServer(engine)
+	grpcServer := newGRPCServerWithVerifier(engine, verifier)
 	log.Printf("Starting Standalone Accounting Service gRPC Daemon on %s", addr)
 
 	serverErrors := make(chan error, 1)
@@ -74,8 +80,23 @@ func RunGRPCServer(ctx context.Context, cfg Config, engine sdk.Engine) error {
 }
 
 func newGRPCServer(engine sdk.Engine) *grpc.Server {
-	server := grpc.NewServer()
-	service := &GRPCServer{engine: engine}
+	return newGRPCServerWithVerifier(engine, nil)
+}
+
+// newGRPCServerWithVerifier installs authentication interceptors when verifier
+// is non-nil. Reflection streams are protected by the same stream interceptor.
+func newGRPCServerWithVerifier(engine sdk.Engine, verifier serviceauth.Verifier) *grpc.Server {
+	options := make([]grpc.ServerOption, 0, 2)
+	requirePrincipal := verifier != nil
+	if verifier != nil {
+		boundary := &grpcAuthBoundary{verifier: verifier}
+		options = append(options,
+			grpc.UnaryInterceptor(boundary.unaryInterceptor),
+			grpc.StreamInterceptor(boundary.streamInterceptor),
+		)
+	}
+	server := grpc.NewServer(options...)
+	service := &GRPCServer{engine: engine, requirePrincipal: requirePrincipal}
 	accountingv1.RegisterAccountingServiceServer(server, service)
 	accountingv1.RegisterReportingServiceServer(server, service)
 	accountingv1.RegisterEventServiceServer(server, service)
@@ -98,12 +119,22 @@ func newGRPCServer(engine sdk.Engine) *grpc.Server {
 }
 
 func (s *GRPCServer) PostEntry(ctx context.Context, request *accountingv1.PostEntryRequest) (*accountingv1.PostEntryResponse, error) {
+	companyID, err := parseCompanyID(request.GetCompanyId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
+		return nil, err
+	}
 	return nil, status.Error(codes.InvalidArgument, "PostEntry requires a complete journal entry; this request only supplies company_id and description")
 }
 
 func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntryRequest) (*accountingv1.GetEntryResponse, error) {
 	companyID, err := parseCompanyID(request.GetCompanyId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
 		return nil, err
 	}
 	entryID, err := parseEntryID(request.GetEntryId())
@@ -123,6 +154,9 @@ func (s *GRPCServer) GetEntry(ctx context.Context, request *accountingv1.GetEntr
 func (s *GRPCServer) GetTrialBalance(ctx context.Context, request *accountingv1.GetTrialBalanceRequest) (*accountingv1.GetTrialBalanceResponse, error) {
 	companyID, err := parseCompanyID(request.GetCompanyId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
 		return nil, err
 	}
 	asOf, err := parseDate(request.GetAsOfDate())
@@ -148,6 +182,9 @@ func (s *GRPCServer) GetBalanceSheet(ctx context.Context, request *accountingv1.
 	if err != nil {
 		return nil, err
 	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
+		return nil, err
+	}
 	asOf, err := parseDate(request.GetAsOfDate())
 	if err != nil {
 		return nil, err
@@ -169,6 +206,9 @@ func (s *GRPCServer) GetBalanceSheet(ctx context.Context, request *accountingv1.
 func (s *GRPCServer) GetIncomeStatement(ctx context.Context, request *accountingv1.GetIncomeStatementRequest) (*accountingv1.GetIncomeStatementResponse, error) {
 	companyID, err := parseCompanyID(request.GetCompanyId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
 		return nil, err
 	}
 	start, err := parseDate(request.GetStartDate())
@@ -196,6 +236,9 @@ func (s *GRPCServer) GetIncomeStatement(ctx context.Context, request *accounting
 func (s *GRPCServer) ProcessEvent(ctx context.Context, request *accountingv1.ProcessEventRequest) (*accountingv1.ProcessEventResponse, error) {
 	companyID, err := parseCompanyID(request.GetCompanyId())
 	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeCompany(ctx, companyID); err != nil {
 		return nil, err
 	}
 	if request.GetEffectiveDate() == "" {
@@ -233,6 +276,22 @@ func (s *GRPCServer) ProcessEvent(ctx context.Context, request *accountingv1.Pro
 	}, nil
 }
 
+func (s *GRPCServer) authorizeCompany(ctx context.Context, companyID types.CompanyID) error {
+	principal, ok := publicapplication.PrincipalFromContext(ctx)
+	if !ok {
+		if s.requirePrincipal {
+			return status.Error(codes.Unauthenticated, "authentication required")
+		}
+		return nil
+	}
+	for _, allowed := range principal.CompanyIDs {
+		if allowed == companyID {
+			return nil
+		}
+	}
+	return status.Error(codes.PermissionDenied, "company access denied")
+}
+
 func grpcRequestMetadata(ctx context.Context, fallbackSource string) publicapplication.RequestMetadata {
 	incoming, _ := metadata.FromIncomingContext(ctx)
 	first := func(key string) string {
@@ -242,11 +301,19 @@ func grpcRequestMetadata(ctx context.Context, fallbackSource string) publicappli
 		}
 		return values[0]
 	}
-	return publicapplication.RequestMetadata{
-		CorrelationID:  first("x-correlation-id"),
-		IdempotencyKey: first("idempotency-key"),
-		SourceSystem:   headerOrDefault(first("x-source-system"), fallbackSource),
+	// Prefer metadata already injected by the authentication boundary and fill
+	// only missing fields so the boundary stays authoritative.
+	requestMetadata, _ := publicapplication.RequestMetadataFromContext(ctx)
+	if requestMetadata.CorrelationID == "" {
+		requestMetadata.CorrelationID = first("x-correlation-id")
 	}
+	if requestMetadata.IdempotencyKey == "" {
+		requestMetadata.IdempotencyKey = first("idempotency-key")
+	}
+	if requestMetadata.SourceSystem == "" {
+		requestMetadata.SourceSystem = headerOrDefault(first("x-source-system"), fallbackSource)
+	}
+	return requestMetadata
 }
 
 func firstNonEmpty(values ...string) string {

@@ -154,7 +154,7 @@ func (e *CashFlowEngine) GenerateDirect(start, end time.Time, currency string) (
 	}
 	report := CashFlow{StartDate: start, EndDate: end, Currency: currency}
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted || postingClassification(entry) == posting.EntryClassOpening {
+		if !isLedgerPosted(entry.Status) || postingClassification(entry) == posting.EntryClassOpening {
 			continue
 		}
 		entryDate := entryEffectiveDate(entry)

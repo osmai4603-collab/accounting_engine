@@ -157,6 +157,9 @@ func (b *EventBridge) ProcessContext(ctx context.Context, event EconomicEvent) (
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
 	}
+	if event.Date.IsZero() {
+		event.Date = event.CreatedAt
+	}
 	if event.Status == "" {
 		event.Status = EventReceived
 	}

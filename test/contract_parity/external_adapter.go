@@ -13,6 +13,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
@@ -50,7 +51,7 @@ type ExternalStore struct {
 
 	// Idempotency stores
 	storageIdem map[string]storage.IdempotencyRecord // "companyID/key" -> record
-	eventIdem   map[string]publicevents.Ingestion   // "companyID/source/key" -> ingestion
+	eventIdem   map[string]publicevents.Ingestion    // "companyID/source/key" -> ingestion
 	mappings    map[string]publicevents.AccountMapping
 }
 
@@ -75,21 +76,21 @@ func NewExternalStore() *ExternalStore {
 
 // Ensure interface assertions at compile time
 var (
-	_ storage.DraftStore             = (*ExternalStore)(nil)
-	_ storage.EntryReader            = (*ExternalStore)(nil)
-	_ storage.PostingWriter          = (*ExternalStore)(nil)
-	_ storage.SequenceAllocator      = (*ExternalStore)(nil)
-	_ storage.MasterDataReader       = (*ExternalStore)(nil)
-	_ storage.BalanceReader          = (*ExternalStore)(nil)
-	_ storage.AuditWriter            = (*ExternalStore)(nil)
-	_ storage.IdempotencyStore       = (*ExternalStore)(nil)
-	_ storage.ReportingStore         = (*ExternalStore)(nil)
-	_ storage.ExchangeRateSPI        = (*ExternalStore)(nil)
-	_ storage.TransactionRunner      = (*ExternalStore)(nil)
-	_ storage.UnitOfWorkRunner       = (*ExternalStore)(nil)
-	_ publicevents.IdempotencyStore  = (*ExternalStore)(nil)
-	_ publicevents.MappingStore      = (*ExternalStore)(nil)
-	_ publicmasterdata.Store         = (*ExternalStore)(nil)
+	_ storage.DraftStore            = (*ExternalStore)(nil)
+	_ storage.EntryReader           = (*ExternalStore)(nil)
+	_ storage.PostingWriter         = (*ExternalStore)(nil)
+	_ storage.SequenceAllocator     = (*ExternalStore)(nil)
+	_ storage.MasterDataReader      = (*ExternalStore)(nil)
+	_ storage.BalanceReader         = (*ExternalStore)(nil)
+	_ storage.AuditWriter           = (*ExternalStore)(nil)
+	_ storage.IdempotencyStore      = (*ExternalStore)(nil)
+	_ storage.ReportingStore        = (*ExternalStore)(nil)
+	_ storage.ExchangeRateSPI       = (*ExternalStore)(nil)
+	_ storage.TransactionRunner     = (*ExternalStore)(nil)
+	_ storage.UnitOfWorkRunner      = (*ExternalStore)(nil)
+	_ publicevents.IdempotencyStore = (*ExternalStore)(nil)
+	_ publicevents.MappingStore     = (*ExternalStore)(nil)
+	_ publicmasterdata.Store        = (*ExternalStore)(nil)
 )
 
 // Ports returns the public storage ports for constructing the SDK Engine.
@@ -188,11 +189,11 @@ func (s *ExternalStore) GetAccount(_ context.Context, companyID types.CompanyID,
 	defer s.mu.RUnlock()
 	accs, ok := s.accounts[companyID]
 	if !ok {
-		return publicmasterdata.Account{}, fmt.Errorf("%w: account %s", ErrExternalUnknownAccount, accountID)
+		return publicmasterdata.Account{}, fmt.Errorf("%w: %w: account %s", types.ErrAccountNotFound, ErrExternalUnknownAccount, accountID)
 	}
 	acc, ok := accs[accountID]
 	if !ok {
-		return publicmasterdata.Account{}, fmt.Errorf("%w: account %s", ErrExternalUnknownAccount, accountID)
+		return publicmasterdata.Account{}, fmt.Errorf("%w: %w: account %s", types.ErrAccountNotFound, ErrExternalUnknownAccount, accountID)
 	}
 	return acc, nil
 }
@@ -202,11 +203,11 @@ func (s *ExternalStore) GetAccountByCode(_ context.Context, companyID types.Comp
 	defer s.mu.RUnlock()
 	byCode, ok := s.byACode[companyID]
 	if !ok {
-		return publicmasterdata.Account{}, fmt.Errorf("%w: code %s", ErrExternalUnknownAccount, code)
+		return publicmasterdata.Account{}, fmt.Errorf("%w: %w: code %s", types.ErrAccountNotFound, ErrExternalUnknownAccount, code)
 	}
 	id, ok := byCode[code]
 	if !ok {
-		return publicmasterdata.Account{}, fmt.Errorf("%w: code %s", ErrExternalUnknownAccount, code)
+		return publicmasterdata.Account{}, fmt.Errorf("%w: %w: code %s", types.ErrAccountNotFound, ErrExternalUnknownAccount, code)
 	}
 	return s.accounts[companyID][id], nil
 }
@@ -254,11 +255,11 @@ func (s *ExternalStore) GetFiscalPeriod(_ context.Context, companyID types.Compa
 	defer s.mu.RUnlock()
 	periods, ok := s.periods[companyID]
 	if !ok {
-		return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w: period %s", ErrExternalUnknownPeriod, id)
+		return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w: %w: period %s", types.ErrFiscalPeriodNotFound, ErrExternalUnknownPeriod, id)
 	}
 	p, ok := periods[id]
 	if !ok {
-		return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w: period %s", ErrExternalUnknownPeriod, id)
+		return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w: %w: period %s", types.ErrFiscalPeriodNotFound, ErrExternalUnknownPeriod, id)
 	}
 	return p, nil
 }
@@ -275,7 +276,7 @@ func (s *ExternalStore) GetPeriodForDate(_ context.Context, companyID types.Comp
 			return p, nil
 		}
 	}
-	return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w for date %s", ErrExternalUnknownPeriod, date)
+	return publicmasterdata.FiscalPeriod{}, fmt.Errorf("%w: %w for date %s", types.ErrFiscalPeriodNotFound, ErrExternalUnknownPeriod, date)
 }
 
 // ------------------------------------------------------------- Drafts & Entries
@@ -288,6 +289,11 @@ func (s *ExternalStore) SaveDraft(_ context.Context, entry ledger.JournalEntry) 
 	}
 	if _, exists := s.entries[entry.ID]; exists {
 		return fmt.Errorf("%w: draft already posted %s", ErrExternalConflict, entry.ID)
+	}
+	for _, line := range entry.Lines {
+		if _, exists := s.accounts[entry.CompanyID][line.AccountID]; !exists {
+			return fmt.Errorf("%w: %w: account %s", types.ErrAccountNotFound, ErrExternalUnknownAccount, line.AccountID)
+		}
 	}
 	s.drafts[entry.ID] = cloneEntry(entry)
 	return nil
@@ -303,7 +309,7 @@ func (s *ExternalStore) GetEntry(_ context.Context, companyID types.CompanyID, e
 		if isDraft && draft.CompanyID == companyID {
 			return cloneEntry(draft), nil
 		}
-		return ledger.JournalEntry{}, fmt.Errorf("%w: entry %s", ErrExternalEntryNotFound, entryID)
+		return ledger.JournalEntry{}, fmt.Errorf("%w: %w: entry %s", publicapplication.ErrNotFound, ErrExternalEntryNotFound, entryID)
 	}
 	if entry.CompanyID != companyID {
 		return ledger.JournalEntry{}, fmt.Errorf("%w: company mismatch for %s", ErrExternalTenantMismatch, entryID)
@@ -318,6 +324,12 @@ func (s *ExternalStore) CommitPosting(_ context.Context, commit storage.PostingC
 	defer s.mu.Unlock()
 
 	entry := cloneEntry(commit.Entry)
+	if entry.SequenceNumber <= 0 {
+		key := fmt.Sprintf("%s/%s", entry.CompanyID, entry.JournalID)
+		entry.SequenceNumber = s.sequences[key] + 1
+		s.sequences[key] = entry.SequenceNumber
+		entry.EntryNumber = fmt.Sprintf("%d", entry.SequenceNumber)
+	}
 
 	// Validate period is not closed
 	if periods, ok := s.periods[entry.CompanyID]; ok {
@@ -351,6 +363,8 @@ func (s *ExternalStore) CommitPosting(_ context.Context, commit storage.PostingC
 		}
 
 		orig.Status = ledger.EntryReversed
+		reversedByID := entry.ID
+		orig.ReversedByID = &reversedByID
 		s.entries[origID] = cloneEntry(orig)
 
 		entry.Status = ledger.EntryPosted
@@ -436,6 +450,12 @@ func (s *ExternalStore) GetTrialBalance(_ context.Context, companyID types.Compa
 		}
 	}
 
+	for accountID := range s.accounts[companyID] {
+		if _, ok := byAccount[accountID]; !ok {
+			byAccount[accountID] = &totals{}
+		}
+	}
+
 	lines := make([]reporting.TrialBalanceLine, 0, len(byAccount))
 	totDebit := decimal.Zero
 	totCredit := decimal.Zero
@@ -456,21 +476,24 @@ func (s *ExternalStore) GetTrialBalance(_ context.Context, companyID types.Compa
 
 		code := uuid.UUID(accID).String()
 		name := uuid.UUID(accID).String()
+		accountType := ""
 		if accs, ok := s.accounts[companyID]; ok {
 			if acc, ok := accs[accID]; ok {
 				code = acc.Code
 				name = acc.Name
+				accountType = string(acc.Type)
 			}
 		}
 
 		lines = append(lines, reporting.TrialBalanceLine{
-			AccountID:     accID,
-			AccountCode:   code,
-			AccountName:   name,
-			PeriodDebit:   pDeb,
-			PeriodCredit:  pCred,
-			EndingDebit:   endDeb,
-			EndingCredit:  endCred,
+			AccountID:    accID,
+			AccountCode:  code,
+			AccountName:  name,
+			AccountType:  accountType,
+			PeriodDebit:  pDeb,
+			PeriodCredit: pCred,
+			EndingDebit:  endDeb,
+			EndingCredit: endCred,
 		})
 	}
 
@@ -498,44 +521,72 @@ func (s *ExternalStore) GetGeneralLedger(_ context.Context, companyID types.Comp
 	if c, ok := s.companies[companyID]; ok && c.FunctionalCurrency != "" {
 		currency = c.FunctionalCurrency
 	}
-	zero, _ := types.Zero(currency)
-
-	entries := make([]reporting.GeneralLedgerEntry, 0)
-	running := decimal.Zero
-
+	account, ok := s.accounts[companyID][accountID]
+	if !ok {
+		return reporting.GeneralLedgerReport{}, fmt.Errorf("%w: account %s", publicapplication.ErrNotFound, accountID)
+	}
+	type row struct {
+		entry ledger.JournalEntry
+		line  ledger.EntryLine
+	}
+	var opening decimal.Decimal
+	var rows []row
 	for _, entry := range s.entries {
-		if entry.CompanyID != companyID || entry.EffectiveDate.Before(start) || entry.EffectiveDate.After(end) {
+		if entry.CompanyID != companyID ||
+			(entry.Status != ledger.EntryPosted && entry.Status != ledger.EntryReversed) {
 			continue
 		}
-		if entry.Status != ledger.EntryPosted && entry.Status != ledger.EntryReversed {
+		if !end.IsZero() && entry.EffectiveDate.After(end) {
 			continue
 		}
 		for _, line := range entry.Lines {
 			if line.AccountID != accountID {
 				continue
 			}
-			running = running.Add(line.FunctionalDebit.Amount()).Sub(line.FunctionalCredit.Amount())
-			runMoney, _ := types.NewMoney(running, currency)
-			entries = append(entries, reporting.GeneralLedgerEntry{
-				EntryID:        entry.ID,
-				EntryNumber:    entry.EntryNumber,
-				EffectiveDate:  entry.EffectiveDate,
-				Description:    entry.Description,
-				Debit:          line.FunctionalDebit,
-				Credit:         line.FunctionalCredit,
-				RunningBalance: runMoney,
-			})
+			net := line.FunctionalDebit.Amount().Sub(line.FunctionalCredit.Amount())
+			if !start.IsZero() && entry.EffectiveDate.Before(start) {
+				opening = opening.Add(net)
+				continue
+			}
+			rows = append(rows, row{entry: entry, line: line})
 		}
 	}
 
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].entry.EffectiveDate.Equal(rows[j].entry.EffectiveDate) {
+			return uuid.UUID(rows[i].entry.ID).String() < uuid.UUID(rows[j].entry.ID).String()
+		}
+		return rows[i].entry.EffectiveDate.Before(rows[j].entry.EffectiveDate)
+	})
+
+	running := opening
+	entries := make([]reporting.GeneralLedgerEntry, 0, len(rows))
+	for _, row := range rows {
+		net := row.line.FunctionalDebit.Amount().Sub(row.line.FunctionalCredit.Amount())
+		running = running.Add(net)
+		runMoney, _ := types.NewMoney(running, currency)
+		entries = append(entries, reporting.GeneralLedgerEntry{
+			EntryID:        row.entry.ID,
+			EntryNumber:    row.entry.EntryNumber,
+			EffectiveDate:  row.entry.EffectiveDate,
+			Description:    row.entry.Description,
+			Debit:          row.line.FunctionalDebit,
+			Credit:         row.line.FunctionalCredit,
+			RunningBalance: runMoney,
+		})
+	}
+	openingMoney, _ := types.NewMoney(opening, currency)
+	endingMoney, _ := types.NewMoney(running, currency)
 	return reporting.GeneralLedgerReport{
 		CompanyID:      companyID,
 		AccountID:      accountID,
+		AccountCode:    account.Code,
+		AccountName:    account.Name,
 		StartDate:      start,
 		EndDate:        end,
-		OpeningBalance: zero,
+		OpeningBalance: openingMoney,
 		Entries:        entries,
-		EndingBalance:  zero,
+		EndingBalance:  endingMoney,
 	}, nil
 }
 
@@ -717,13 +768,13 @@ type externalUnitOfWork struct {
 	store *ExternalStore
 }
 
-func (u *externalUnitOfWork) Drafts() storage.DraftStore             { return u.store }
-func (u *externalUnitOfWork) Entries() storage.EntryReader           { return u.store }
-func (u *externalUnitOfWork) Posting() storage.PostingWriter         { return u.store }
-func (u *externalUnitOfWork) Sequences() storage.SequenceAllocator   { return u.store }
-func (u *externalUnitOfWork) Audit() storage.AuditWriter             { return u.store }
+func (u *externalUnitOfWork) Drafts() storage.DraftStore            { return u.store }
+func (u *externalUnitOfWork) Entries() storage.EntryReader          { return u.store }
+func (u *externalUnitOfWork) Posting() storage.PostingWriter        { return u.store }
+func (u *externalUnitOfWork) Sequences() storage.SequenceAllocator  { return u.store }
+func (u *externalUnitOfWork) Audit() storage.AuditWriter            { return u.store }
 func (u *externalUnitOfWork) Idempotency() storage.IdempotencyStore { return u.store }
-func (u *externalUnitOfWork) Balance() storage.BalanceReader         { return u.store }
+func (u *externalUnitOfWork) Balance() storage.BalanceReader        { return u.store }
 
 // ------------------------------------------------------------- Helpers
 

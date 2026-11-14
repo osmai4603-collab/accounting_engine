@@ -740,8 +740,12 @@ func (d *Driver) saveEntryTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		if result.RowsAffected() != 1 {
 			return posting.ErrEntryNotDraft
 		}
+		// A posted reversal is an own lifecycle event, not a second POST of the
+		// original document. Recording it as REVERSE keeps the audit trail
+		// semantically aligned with the original's reversal row.
 		action := "POST"
-		if entry.Status == posting.EntryReversed {
+		if entry.Status == posting.EntryReversed ||
+			entry.Classification == posting.EntryClassReversing {
 			action = "REVERSE"
 		}
 		return appendEntryAuditTx(ctx, tx, entry, action)

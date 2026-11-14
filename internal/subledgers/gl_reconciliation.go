@@ -665,7 +665,7 @@ func ControlAccountBalanceFromEntries(account masterdata.Account, entries []post
 	}
 	balance := decimal.Zero
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if entry.Status != posting.EntryPosted && entry.Status != posting.EntryReversed {
 			continue
 		}
 		if entry.CompanyID != account.CompanyID {

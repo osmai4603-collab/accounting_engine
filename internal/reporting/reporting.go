@@ -17,6 +17,10 @@ var ErrReportingAccountNotFound = errors.New("posted journal line references an 
 
 type accountSide struct{ debit, credit decimal.Decimal }
 
+func isLedgerPosted(status posting.EntryStatus) bool {
+	return status == posting.EntryPosted || status == posting.EntryReversed
+}
+
 func accountBalances(repository Repository, start, end time.Time, currency string) (map[uuid.UUID]accountSide, error) {
 	balances, available, err := readPeriodBalances(repository, start, end, currency, true)
 	if err != nil {
@@ -72,7 +76,7 @@ func accountBalancesFromEntries(
 	}
 	balances := make(map[uuid.UUID]accountSide)
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		for _, line := range entry.Lines {
@@ -229,7 +233,7 @@ func adjustedAccountBalance(side accountSide, account masterdata.Account) decima
 func postedEntriesInRange(entries []posting.JournalEntry, start, end time.Time) []posting.JournalEntry {
 	result := make([]posting.JournalEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		date := entryEffectiveDate(entry)

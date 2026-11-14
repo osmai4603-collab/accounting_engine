@@ -68,7 +68,7 @@ func (e *TrialBalanceEngine) GenerateMultiCurrency(
 	functionalByCurrency := make(map[uuid.UUID]map[string]decimal.Decimal)
 	valuationDate := endDate
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		date := entryEffectiveDate(entry)

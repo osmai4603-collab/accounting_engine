@@ -287,8 +287,8 @@ func (d *Driver) ListEntriesForCompany(ctx context.Context, companyID uuid.UUID,
 	result := make([]posting.JournalEntry, 0)
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT entry FROM account_moves
-			WHERE company_id=$1 AND status=$2 AND entry_date BETWEEN $3 AND $4
-			ORDER BY entry_date`, companyID, posting.EntryPosted, start, end)
+			WHERE company_id=$1 AND status IN ($2,$3) AND entry_date BETWEEN $4 AND $5
+			ORDER BY entry_date`, companyID, posting.EntryPosted, posting.EntryReversed, start, end)
 		if err != nil {
 			return err
 		}

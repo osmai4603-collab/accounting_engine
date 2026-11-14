@@ -172,7 +172,7 @@ func rejectOpeningMoveAfterPriorActivity(repository Repository, yearStart time.T
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Status == posting.EntryPosted {
+		if isLedgerPosted(entry.Status) {
 			return ErrOpeningMoveNotRequired
 		}
 	}

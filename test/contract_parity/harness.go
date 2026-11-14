@@ -2,9 +2,11 @@ package contractparity
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -119,11 +121,17 @@ func NewPostgresHarness(t *testing.T, f UnifiedFixture) *AdapterHarness {
 
 	adminPool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
+		if os.Getenv("POSTGRES_URL") != "" {
+			t.Fatalf("postgres: parse configured test database URL: %v", err)
+		}
 		t.Skipf("postgres: connect to test database skipped: %v", err)
 		return nil
 	}
 	if err := adminPool.Ping(ctx); err != nil {
 		adminPool.Close()
+		if os.Getenv("POSTGRES_URL") != "" {
+			t.Fatalf("postgres: ping configured test database: %v", err)
+		}
 		t.Skipf("postgres: ping test database skipped: %v", err)
 		return nil
 	}
@@ -215,11 +223,38 @@ func ForEachAdapter(t *testing.T, name string, testFn func(t *testing.T, h *Adap
 
 	for _, tc := range adapters {
 		t.Run(tc.name+"/"+name, func(t *testing.T) {
+			start := time.Now()
+			var capabilities storage.AdapterCapabilities
+			defer func() {
+				differences := []string(nil)
+				unexpected := []string(nil)
+				if capabilities.AdapterName != "" {
+					differences = []string{
+						fmt.Sprintf("durability=%t", capabilities.GuaranteesDurability),
+						fmt.Sprintf("foreign_keys=%t", capabilities.EnforcesForeignKeys),
+						fmt.Sprintf("serializable=%t", capabilities.SupportsSerializable),
+						fmt.Sprintf("savepoints=%t", capabilities.SupportsSavepoints),
+					}
+				}
+				if t.Failed() {
+					unexpected = []string{"contract assertions failed; see the corresponding go test output"}
+				}
+				GlobalReporter.Record(ScenarioResult{
+					ScenarioName:          name,
+					AdapterName:           tc.name,
+					Passed:                !t.Failed() && !t.Skipped(),
+					Skipped:               t.Skipped(),
+					CapabilityDifferences: differences,
+					UnexpectedDifferences: unexpected,
+					ExecutionDuration:     time.Since(start),
+				})
+			}()
 			fixture := NewUnifiedFixture()
 			h := tc.ctor(t, fixture)
 			if h == nil {
 				return
 			}
+			capabilities = h.Capabilities
 			defer h.Cleanup()
 			testFn(t, h, fixture)
 		})

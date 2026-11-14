@@ -64,6 +64,8 @@ func ClassifyError(err error) (apperrors.Code, apperrors.Category) {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return apperrors.CodeInfrastructure, apperrors.Infrastructure
 	case errors.Is(err, ErrInvalidEntry),
+		errors.Is(err, ErrReversalDateBeforeOriginal),
+		errors.Is(err, ErrReversalActorRequired),
 		errors.Is(err, ErrEntryHashUnavailable),
 		errors.Is(err, ErrAdjustmentPeriodAuthorizationRequired),
 		errors.Is(err, ErrFunctionalCurrencyMismatch),

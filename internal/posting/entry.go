@@ -2,8 +2,6 @@ package posting
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +17,8 @@ var (
 	ErrEntryNotPosted             = errors.New("journal entry is not posted")
 	ErrEntryAlreadyReversed       = errors.New("journal entry already reversed")
 	ErrInvalidReversal            = errors.New("invalid reversal entry")
+	ErrReversalDateBeforeOriginal = errors.New("reversal effective date is before the original entry effective date")
+	ErrReversalActorRequired      = errors.New("reversal actor is required")
 	ErrIdempotencyConflict        = errors.New("idempotency key was reused with a different reversal request")
 	ErrMissingTransactionCurrency = errors.New("transaction currency is required")
 	ErrMissingFunctionalCurrency  = errors.New("functional currency is required")
@@ -85,6 +85,12 @@ func (l JournalEntryLine) Validate() error {
 }
 
 func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) (financialtypes.Money, error)) error {
+	if l.AccountID == uuid.Nil {
+		return ErrInvalidEntry
+	}
+	if err := ValidateDimensionPointers(l); err != nil {
+		return err
+	}
 	resolved, err := normalizeLineCurrencies(l)
 	if err != nil {
 		return err
@@ -129,6 +135,9 @@ func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) 
 	if err != nil {
 		return err
 	}
+	if expected.Currency() != resolved.FunctionalDebit.Currency() {
+		return financialtypes.ErrCurrencyMismatch
+	}
 	actual := resolved.FunctionalDebit
 	if resolved.FunctionalCredit.Amount().IsPositive() {
 		actual = resolved.FunctionalCredit
@@ -140,6 +149,9 @@ func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) 
 	}
 	if err != nil {
 		return err
+	}
+	if actual.Currency() != resolved.FunctionalDebit.Currency() {
+		return financialtypes.ErrCurrencyMismatch
 	}
 	if !expected.Equal(actual) {
 		return financialtypes.ErrInvalidAmount
@@ -211,8 +223,25 @@ func LineFunctionalAmounts(line JournalEntryLine) (decimal.Decimal, decimal.Deci
 }
 
 func NewJournalEntry(journalID uuid.UUID, date time.Time, createdBy string, lines []JournalEntryLine) (JournalEntry, error) {
+	if journalID == uuid.Nil {
+		return JournalEntry{}, ErrMissingJournalID
+	}
+	if date.IsZero() {
+		return JournalEntry{}, ErrZeroEntryDate
+	}
+	var companyID uuid.UUID
+	for _, l := range lines {
+		if l.CompanyID != uuid.Nil {
+			if companyID == uuid.Nil {
+				companyID = l.CompanyID
+			} else if companyID != l.CompanyID {
+				return JournalEntry{}, ErrCompanyMismatch
+			}
+		}
+	}
 	entry := JournalEntry{
 		ID:             uuid.New(),
+		CompanyID:      companyID,
 		JournalID:      journalID,
 		EntryDate:      date.UTC(),
 		Date:           date.UTC(),
@@ -233,59 +262,7 @@ func (e *JournalEntry) Validate() error {
 }
 
 func (e *JournalEntry) ValidateWithRounding(round func(financialtypes.Money) (financialtypes.Money, error)) error {
-	if len(e.Lines) < 2 {
-		return ErrMinimumLines
-	}
-	if e.SourceEventID != nil && *e.SourceEventID == uuid.Nil {
-		return ErrInvalidEntry
-	}
-	if e.Classification != "" {
-		switch e.Classification {
-		case EntryClassRegular, EntryClassAdjusting, EntryClassClosing, EntryClassOpening, EntryClassReversing:
-		default:
-			return ErrInvalidEntry
-		}
-	}
-
-	totals := make(map[string]decimal.Decimal)
-	hasDebit, hasCredit, layered := false, false, false
-	for _, line := range e.Lines {
-		if err := line.ValidateWithRounding(round); err != nil {
-			return err
-		}
-		resolved, err := normalizeLineCurrencies(line)
-		if err != nil {
-			return err
-		}
-		if e.CompanyID != uuid.Nil && line.CompanyID != uuid.Nil && line.CompanyID != e.CompanyID {
-			return ErrInvalidEntry
-		}
-		if line.AccountID == uuid.Nil {
-			return ErrInvalidEntry
-		}
-		hasDebit = hasDebit || resolved.FunctionalDebit.Amount().IsPositive()
-		hasCredit = hasCredit || resolved.FunctionalCredit.Amount().IsPositive()
-		currency := resolved.FunctionalDebit.Currency()
-		totals[currency] = totals[currency].Add(
-			resolved.FunctionalDebit.Amount().Sub(resolved.FunctionalCredit.Amount()),
-		)
-		layered = layered || hasExplicitCurrencyLayers(line)
-	}
-	if !hasDebit || !hasCredit {
-		return ErrMinimumLines
-	}
-	if len(totals) != 1 {
-		return financialtypes.ErrCurrencyMismatch
-	}
-	for _, total := range totals {
-		if !total.IsZero() {
-			if layered {
-				return fmt.Errorf("%w: %w", ErrFunctionalBalanceMismatch, financialtypes.ErrUnbalancedMove)
-			}
-			return financialtypes.ErrUnbalancedMove
-		}
-	}
-	return nil
+	return ValidateEntryWithRounding(e, round)
 }
 
 func NormalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
@@ -293,14 +270,21 @@ func NormalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 }
 
 func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
+	if line.Debit.IsNegative() || line.Credit.IsNegative() ||
+		line.AmountCurrency.IsNegative() || line.ForeignAmount.IsNegative() {
+		return JournalEntryLine{}, financialtypes.ErrNegativeAmountProhibited
+	}
+	if line.Debit.Amount().IsPositive() && line.Credit.Amount().IsPositive() {
+		return JournalEntryLine{}, ErrLineMustHaveOneSide
+	}
 	resolved := line
 	legacySide := line.Debit
 	if legacySide.Amount().IsZero() {
 		legacySide = line.Credit
 	}
-	transactionCurrency := strings.ToUpper(strings.TrimSpace(line.TransactionCurrency))
+	transactionCurrency := line.TransactionCurrency
 	if transactionCurrency == "" {
-		transactionCurrency = strings.ToUpper(strings.TrimSpace(line.Currency))
+		transactionCurrency = line.Currency
 	}
 	if transactionCurrency == "" && line.TransactionAmount.Currency() != "" {
 		transactionCurrency = line.TransactionAmount.Currency()
@@ -308,17 +292,18 @@ func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 	if transactionCurrency == "" && legacySide.Currency() != "" {
 		transactionCurrency = legacySide.Currency()
 	}
-	if transactionCurrency == "" && !line.ForeignAmount.IsZero() {
-		transactionCurrency = line.TransactionCurrency
-	}
-	if line.Currency != "" && transactionCurrency != "" &&
-		!strings.EqualFold(strings.TrimSpace(line.Currency), transactionCurrency) {
-		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
-	}
-	if _, ok := financialtypes.LookupCurrency(transactionCurrency); !ok {
-		if transactionCurrency == "" {
-			return JournalEntryLine{}, ErrMissingTransactionCurrency
+	if line.Currency != "" {
+		if err := ValidateISOCurrencyCode(line.Currency); err != nil {
+			return JournalEntryLine{}, financialtypes.ErrInvalidCurrency
 		}
+		if transactionCurrency != "" && line.Currency != transactionCurrency {
+			return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
+		}
+	}
+	if transactionCurrency == "" {
+		return JournalEntryLine{}, ErrMissingTransactionCurrency
+	}
+	if err := ValidateISOCurrencyCode(transactionCurrency); err != nil {
 		return JournalEntryLine{}, financialtypes.ErrInvalidCurrency
 	}
 
@@ -329,7 +314,7 @@ func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 			transactionAmount = legacySide
 		case !line.ForeignAmount.IsZero():
 			var err error
-			transactionAmount, err = financialtypes.NewMoney(line.ForeignAmount.Abs(), transactionCurrency)
+			transactionAmount, err = financialtypes.NewMoney(line.ForeignAmount, transactionCurrency)
 			if err != nil {
 				return JournalEntryLine{}, err
 			}
@@ -341,7 +326,7 @@ func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 	if transactionAmount.Currency() != transactionCurrency {
 		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
 	}
-	if !line.ForeignAmount.IsZero() && !line.ForeignAmount.Abs().Equal(transactionAmount.Amount()) {
+	if !line.ForeignAmount.IsZero() && !line.ForeignAmount.Equal(transactionAmount.Amount()) {
 		return JournalEntryLine{}, financialtypes.ErrCurrencyMismatch
 	}
 
@@ -367,6 +352,9 @@ func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 	if functionalCurrency == "" {
 		return JournalEntryLine{}, ErrMissingFunctionalCurrency
 	}
+	if err := ValidateISOCurrencyCode(functionalCurrency); err != nil {
+		return JournalEntryLine{}, financialtypes.ErrInvalidCurrency
+	}
 	if functionalDebit.Currency() == "" {
 		var err error
 		functionalDebit, err = financialtypes.Zero(functionalCurrency)
@@ -383,6 +371,9 @@ func normalizeLineCurrencies(line JournalEntryLine) (JournalEntryLine, error) {
 	}
 
 	exchangeRate := line.ExchangeRate
+	if exchangeRate.IsNegative() {
+		return JournalEntryLine{}, ErrInvalidExchangeRate
+	}
 	if exchangeRate.IsZero() {
 		if hasExplicitCurrencyLayers(line) {
 			return JournalEntryLine{}, ErrInvalidExchangeRate

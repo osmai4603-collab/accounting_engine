@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
-	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/reporting/taxonomy"
 	"github.com/shopspring/decimal"
 )
@@ -279,7 +278,7 @@ func entriesRequireTranslation(repository Repository, asOf time.Time, currency s
 		return false, err
 	}
 	for _, entry := range entries {
-		if entry.Status != posting.EntryPosted {
+		if !isLedgerPosted(entry.Status) {
 			continue
 		}
 		for _, line := range entry.Lines {

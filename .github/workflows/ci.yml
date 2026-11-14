@@ -87,6 +87,14 @@ jobs:
           cache: true
       - name: go test with coverage
         run: go test -count=1 -coverprofile=coverage.out ./...
+      - name: upload contract parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-parity-report
+          path: test/contract_parity/parity_report.md
+          if-no-files-found: warn
+          retention-days: 14
       - name: external consumer contract
         run: make test-external-consumer
       - name: gapred tagged tests

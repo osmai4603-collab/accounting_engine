@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
@@ -50,17 +51,33 @@ func RunServerContext(ctx context.Context, cfg Config, engine sdk.Engine, health
 }
 
 func runServerContext(ctx context.Context, cfg Config, engine sdk.Engine, health func(context.Context) error) error {
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		return fmt.Errorf("service authentication configuration: %w", err)
+	}
 	listener, err := net.Listen("tcp", ":"+cfg.HTTPPort)
 	if err != nil {
 		return err
 	}
 
-	server := newHTTPServer(cfg, engine, health)
+	server := newHTTPServerWithVerifier(cfg, engine, verifier, health)
 	log.Printf("Starting Standalone Accounting Service HTTP Daemon on %s", server.Addr)
 	return serveHTTP(ctx, server, listener)
 }
 
 func newHTTPServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.Context) error) *http.Server {
+	verifier, err := newServiceVerifier(cfg)
+	if err != nil {
+		logAuthConfigurationError(err)
+		return &http.Server{
+			Addr:    ":" + cfg.HTTPPort,
+			Handler: configurationErrorHandler{reason: err},
+		}
+	}
+	return newHTTPServerWithVerifier(cfg, engine, verifier, healthChecks...)
+}
+
+func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceauth.Verifier, healthChecks ...func(context.Context) error) *http.Server {
 	var health func(context.Context) error
 	if len(healthChecks) > 0 {
 		health = healthChecks[0]
@@ -99,9 +116,14 @@ func newHTTPServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.C
 	mux.HandleFunc("/api/v1/trial-balance", srv.handleTrialBalance)
 	mux.HandleFunc("/api/v1/events", srv.handleEvents)
 
+	var handler http.Handler = mux
+	if boundary := newHTTPAuthBoundary(cfg, verifier); boundary != nil {
+		handler = boundary.middleware(handler)
+	}
+
 	return &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -146,9 +168,13 @@ func (s *Server) handleEntries(w http.ResponseWriter, r *http.Request) {
 		writeRequestDecodeError(w, err)
 		return
 	}
+	if err := authorizeCompany(r.Context(), entry.CompanyID); err != nil {
+		writeApplicationError(w, err)
+		return
+	}
 	started := time.Now()
 	s.metrics.IncPostingAttempts()
-	ctx := publicapplication.WithRequestMetadata(r.Context(), requestMetadataFromHTTP(r, "http"))
+	ctx := withHTTPRequestMetadata(r, "http")
 	posted, err := s.engine.Ledger().PostEntry(ctx, entry)
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {
@@ -178,6 +204,10 @@ func (s *Server) handleTrialBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	companyID := types.CompanyID(parsedCompanyID)
+	if err := authorizeCompany(r.Context(), companyID); err != nil {
+		writeApplicationError(w, err)
+		return
+	}
 	tb, err := s.engine.Reporting().GetTrialBalance(r.Context(), companyID, time.Now().UTC(), currency)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -197,9 +227,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeRequestDecodeError(w, err)
 		return
 	}
+	if err := authorizeCompany(r.Context(), ev.CompanyID); err != nil {
+		writeApplicationError(w, err)
+		return
+	}
 	started := time.Now()
 	s.metrics.IncPostingAttempts()
-	ctx := publicapplication.WithRequestMetadata(r.Context(), requestMetadataFromHTTP(r, "accounting-service"))
+	ctx := withHTTPRequestMetadata(r, "accounting-service")
 	entry, err := s.engine.Events().ProcessEvent(ctx, ev)
 	s.metrics.ObservePostingDuration(time.Since(started).Seconds())
 	if err != nil {

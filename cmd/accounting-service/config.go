@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 )
 
 // Environment denotes the operational environment tier.
@@ -27,22 +29,53 @@ var (
 	ErrInvalidEnvironment     = errors.New("invalid APP_ENV: must be production, development, or test")
 	ErrInvalidPort            = errors.New("invalid port configuration")
 	ErrInvalidPostgresDSN     = errors.New("invalid PostgreSQL DSN: must begin with postgres:// or postgresql://")
+	ErrProductionAuthRequired = errors.New("production environment requires an explicit secure AUTH_MODE (gateway-hmac, jwt-hs256, or jwt-rs256); anonymous HTTP/gRPC access is prohibited")
+	ErrInvalidAuthConfig      = errors.New("invalid service authentication configuration")
 )
+
+// defaultAuthClockSkew bounds accepted credential clock drift.
+const defaultAuthClockSkew = time.Minute
 
 var dsnKVPasswordRegex = regexp.MustCompile(`(?i)(password\s*=\s*)([^\s]+)`)
 
 // Config contains runtime service settings.
 type Config struct {
-	AppEnv         Environment
-	GRPCPort       string
-	HTTPPort       string
-	Database       string // DSN or "memory"
-	RequireTLS     bool
-	DBMaxConns     int
-	DBMinConns     int
-	DBMaxConnIdle  time.Duration
-	DBMaxConnLife  time.Duration
-	AllowInMemory  bool
+	AppEnv        Environment
+	GRPCPort      string
+	HTTPPort      string
+	Database      string // DSN or "memory"
+	RequireTLS    bool
+	DBMaxConns    int
+	DBMinConns    int
+	DBMaxConnIdle time.Duration
+	DBMaxConnLife time.Duration
+	AllowInMemory bool
+
+	// Service boundary authentication. Embedded Library deployments never read
+	// these fields; they apply only to the optional Standalone Service.
+	AuthMode         string
+	AuthSecret       string
+	AuthJWTPublicKey string
+	AuthJWTIssuer    string
+	AuthJWTAudience  string
+	AuthClockSkew    time.Duration
+}
+
+// AuthEnabled reports whether a transport authentication boundary is selected.
+func (c Config) AuthEnabled() bool {
+	return serviceauth.NormalizeMode(c.AuthMode) != serviceauth.ModeNone
+}
+
+// authConfig maps service settings onto the transport-neutral verifier config.
+func (c Config) authConfig() serviceauth.Config {
+	return serviceauth.Config{
+		Mode:            c.AuthMode,
+		Secret:          c.AuthSecret,
+		JWTPublicKeyPEM: c.AuthJWTPublicKey,
+		JWTIssuer:       c.AuthJWTIssuer,
+		JWTAudience:     c.AuthJWTAudience,
+		ClockSkew:       c.AuthClockSkew,
+	}
 }
 
 // ParseEnvironment normalizes environment strings.
@@ -125,6 +158,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: %q", ErrInvalidEnvironment, c.AppEnv)
 	}
 
+	if err := c.validateAuth(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateAuth enforces fail-closed service boundary authentication. Embedded
+// Library deployments do not build a Config, so they are unaffected.
+func (c Config) validateAuth() error {
+	mode := serviceauth.NormalizeMode(c.AuthMode)
+	if c.AppEnv == EnvProduction && mode == serviceauth.ModeNone {
+		return ErrProductionAuthRequired
+	}
+	if _, err := serviceauth.NewVerifier(c.authConfig()); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidAuthConfig, err)
+	}
 	return nil
 }
 
@@ -179,15 +229,41 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
+	authMode := serviceauth.NormalizeMode(os.Getenv("AUTH_MODE"))
+
+	authSecret := os.Getenv("AUTH_SECRET")
+
+	authPublicKey := strings.TrimSpace(os.Getenv("AUTH_JWT_PUBLIC_KEY"))
+	if authPublicKey == "" {
+		if keyFile := strings.TrimSpace(os.Getenv("AUTH_JWT_PUBLIC_KEY_FILE")); keyFile != "" {
+			contents, err := os.ReadFile(keyFile)
+			if err != nil {
+				return Config{}, fmt.Errorf("%w: cannot read AUTH_JWT_PUBLIC_KEY_FILE", ErrInvalidAuthConfig)
+			}
+			authPublicKey = strings.TrimSpace(string(contents))
+		}
+	}
+
+	authClockSkew, err := parseAuthClockSkew(os.Getenv("AUTH_CLOCK_SKEW"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
-		AppEnv:        appEnv,
-		GRPCPort:      grpcPort,
-		HTTPPort:      httpPort,
-		Database:      db,
-		RequireTLS:    requireTLS,
-		DBMaxConns:    maxConns,
-		DBMinConns:    minConns,
-		AllowInMemory: allowMemory,
+		AppEnv:           appEnv,
+		GRPCPort:         grpcPort,
+		HTTPPort:         httpPort,
+		Database:         db,
+		RequireTLS:       requireTLS,
+		DBMaxConns:       maxConns,
+		DBMinConns:       minConns,
+		AllowInMemory:    allowMemory,
+		AuthMode:         authMode,
+		AuthSecret:       authSecret,
+		AuthJWTPublicKey: authPublicKey,
+		AuthJWTIssuer:    strings.TrimSpace(os.Getenv("AUTH_JWT_ISSUER")),
+		AuthJWTAudience:  strings.TrimSpace(os.Getenv("AUTH_JWT_AUDIENCE")),
+		AuthClockSkew:    authClockSkew,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -195,4 +271,24 @@ func LoadConfig() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseAuthClockSkew(raw string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultAuthClockSkew, nil
+	}
+	if duration, err := time.ParseDuration(trimmed); err == nil {
+		if duration < 0 {
+			return 0, fmt.Errorf("%w: AUTH_CLOCK_SKEW cannot be negative", ErrInvalidAuthConfig)
+		}
+		return duration, nil
+	}
+	if seconds, err := strconv.Atoi(trimmed); err == nil {
+		if seconds < 0 {
+			return 0, fmt.Errorf("%w: AUTH_CLOCK_SKEW cannot be negative", ErrInvalidAuthConfig)
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+	return 0, fmt.Errorf("%w: AUTH_CLOCK_SKEW must be a Go duration (for example 60s) or a number of seconds", ErrInvalidAuthConfig)
 }
