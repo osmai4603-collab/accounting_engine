@@ -57,6 +57,7 @@ internal/sdkapplication ──────┘
 | `BalanceReader` | لا | رصيد حساب حتى تاريخ | يطبق العملة الوظيفية والتاريخ بشكل حتمي |
 | `AuditWriter.AppendAudit` | لا | سجل تدقيق ثابت | يرفض UPDATE/DELETE على مستوى التخزين |
 | `IdempotencyStore` | لا | حجز/إكمال مفاتيح التكرار | `Claim` ذري؛ إكمال مع نفس معاملة العملية |
+| `Events` (`publicevents.Stores`) | لا | Idempotency وMappings أحداث Public | هوية `(شركة, مصدر, مفتاح)` دائمة؛ اختلاف البصمة = تعارض؛ لا Fallback داخل العملية |
 | `TransactionRunner` | لا | تنفيذ مجموعة عمليات | لا يكشف `pgx.Tx` أو `sql.Tx` |
 | `PrivateExtensions` | لا | قدرات خاصة بالموائم | المحرك لا يعتمد على أي مفتاح فيه |
 
@@ -110,26 +111,93 @@ GetPeriodForDate(ctx, companyID, date) (FiscalPeriod, error)
 
 ## 5. عقود التكامل (`pkg/spi/events`)
 
-- `Ingestion`: سجل Idempotency دائم (مفتاح، بصمة، حالة، قيد النتيجة).
+- `Ingestion`: سجل Idempotency دائم. هويته المركبة
+  `(CompanyID, SourceSystem, IdempotencyKey)`؛ المصدر الافتراضي `event` حتى
+  تبقى المفاتيح السابقة صالحة. يحتوي أيضًا على `PayloadHash` و
+  `PayloadHashVersion` وحالة دورة الحياة و`FailureClass` ولقطة القيد الناتج.
+- حالات دورة الحياة الأساسية: `started`, `completed`, `retryable_failure`,
+  `terminal_failure`. القيم القديمة `processing`, `processed`, `failed` تبقى
+  مقروءة ومكافئة عبر `NormalizeStatus` و`IsCompleted`/`IsStarted`/
+  `IsRetryableFailure`/`IsTerminalFailure`. الفشل `transient` قابل لإعادة
+  المحاولة، و`terminal` يمنعها نهائيًا.
 - `MappingStore`: خريطة نوع حدث ← دفتر/حساب مدين/دائن/قالب وصف.
-- `IdempotencyStore`: `Claim`/`Complete`/`Fail` مع حالات صريحة.
+- `IdempotencyStore`: التوقيعات المستقرة `Claim`/`Complete`/`Fail` دون تغيير.
+- `ScopedIdempotencyStore` (اختياري): قراءة حسب المصدر، إكمال يتحقق من بصمة
+  الحمولة، وفشل مصنّف. `ClassifiedIdempotencyStore` (اختياري) يضيف تصنيف
+  الفشل صراحة. المحرك يفضّل القدرات الأغنى إن وجدت، وإلا يستخدم التوقيعات
+  المستقرة للمصدر الافتراضي.
+- `Stores`: يجمع `Idempotency` و`Mappings` ويُعرض عبر `storage.Ports.Events`.
+  غياب المتجر الدائم خطأ صريح (`ErrDependencyUnavailable` +
+  `sdk.ErrIdempotencyStateUnavailable`) ولا يوجد Fallback داخل العملية.
+- البصمة تُحسب في `pkg/sdk` بإصدار تطبيع معلن
+  (`PublicEventPayloadHashVersion = "v1"`). نفس المفتاح + نفس البصمة يعيد
+  النتيجة الأصلية، واختلاف البصمة يعيد تعارضًا دون استبدال السجل.
+- العملية الجارية تنتظر ضمن سياسة محدودة (افتراضيًا 2s بفاصل 25ms، وقابلة
+  للضبط عبر `WithEventIdempotencyWaitPolicy`) ثم تعيد
+  `ErrIdempotencyInProgress`. إعادة المحاولة مسموحة للأخطاء المؤقتة فقط،
+  وبعد فحص الحالة المرحّلة فعليًا.
+- مسار `WithCoreStorage` القديم يبقى محافظًا على مفردات الحالات السابقة
+  (`processing`/`processed`/`failed`) ولا يُرقّي السجلات تلقائيًا.
 
 هذه قدرات اختيارية؛ غيابها يمنع التكامل الآلي ولا يفعّل تخمين الحسابات.
 
 ## 6. مثال موائم خارجي
 
-الاختبار `test/external_consumer/ports_adapter_test.go` ينفذ `storage.Ports`
-بالكامل **خارج** الوحدة، دون استيراد `internal` أو SQL، ثم:
+`test/external_adapter_consumer` وحدة Go مستقلة (module منفصل) تنفذ Public SPI
+بالكامل وتشغّل سيناريو محاسبيًا كاملًا دون استيراد `internal/` أو
+`storage/memory` أو `storage/postgres`:
+
+- **Storage Ports:** `DraftStore`, `EntryReader`, `PostingWriter`,
+  `SequenceAllocator`, `MasterDataReader` من `pkg/spi/storage`.
+- **Reporting Capability:** `ReportingStore`؛ ينفذ `GetTrialBalance` و
+  `GetGeneralLedger` من القيود المرحّلة (بما فيها العكوس)، ويرجع
+  `ErrReportNotSupported` صريحًا للتقارير غير المنفذة.
+- **Currency Source:** `ExchangeRateSPI` بسيط للعملة الوظيفية USD.
+
+الموائم لا يولّد معرفات أساسية ولا ينفذ قواعد المحاسبة: يستنسخ رأس القيد
+وسطوره عند القراءة والكتابة، ويفرض نطاق الشركة على كل Port، ويخصص تسلسلًا
+حتميًا لكل دفتر، ويجري انتقال حالة الأصل/العكس تحت قفل كتابة واحد.
+
+نقطة التركيب الخارجية تمرر الموائم فقط:
 
 ```go
-engine, err := sdk.NewBuilder(sdk.WithStoragePorts(storage.Ports{
-    Drafts: adapter, Entries: adapter, Posting: adapter,
-    Sequences: adapter, MasterData: adapter,
-})).Build(ctx)
+ports := store.Ports() // Drafts, Entries, Posting, Sequences, MasterData
+useCases, err := sdk.NewApplicationService(ports)
+engine, err := sdk.NewBuilder(
+    sdk.WithStoragePorts(ports),
+    sdk.WithReporting(store), // قدرة منفصلة، وليست جزءًا إلزاميًا من Ports
+).Build(ctx)
 ```
 
-ويُرحّل قيدًا فعليًا ويقرأه. هذا يثبت أن Application Layer تُبنى من Ports العامة
-ولا تطلب من التخزين إنشاء Service.
+ثم يُنفذ `CreateDraft`/`Validate`/`Post`/`GetEntry` عبر
+`pkg/spi/application.Service`، و`GetEntry`/`ReverseEntry`/`GetTrialBalance`
+عبر `pkg/sdk.Engine`.
+
+**العكس الذري عبر العقد العام:** لا يستطيع موائم خارجي تنفيذ الواجهة الداخلية
+`portbridge.atomicReversalPostingPort` لأن توقيعها يستخدم أنواع
+`internal/posting`. لذلك يعتمد `portbridge.Repository` الآن على
+`PostingWriter.CommitPosting` كمسار عام بديل:
+
+```go
+commit := storage.PostingCommit{
+    Entry:           reversalEntry,
+    Operation:       storage.OperationReverse,
+    OriginalEntryID: &originalID,
+    ActorID:         actorID,
+    Reason:          reason,
+}
+```
+
+على الموائم عندها التحقق داخل قفل واحد من أن الأصل موجود ومرحّل وغير معكوس،
+ثم حفظ العكس وتحديث حالة الأصل و`ReversedByID` ذريًا. مسار العكس المرتبط
+بمفتاح Idempotency غير الفارغ يبقى غير مدعوم للموائمات العامة، ويسجّل ذلك في
+`docs/ard/ARD-P3-05.md`.
+
+**فحص الاستهلاك:** `scripts/check_external_adapter_consumer.sh` يبني ويختبر
+الوحدة ويفشل عند أي import محظور. الاختبار `TestNoForbiddenImports` يحلل كل
+ملفات `.go` ويمنع `internal/` و`storage/memory` و`storage/postgres` ويشترط أن
+تكون كل استيرادات وحدة المحرك تحت `pkg/`. الوضع `--published` ينسخ الوحدة،
+يحذف `replace`، ويبنيها من Module Proxy بلا استيراد داخلي.
 
 ## 7. الثبات والتوافق
 
@@ -143,7 +211,7 @@ engine, err := sdk.NewBuilder(sdk.WithStoragePorts(storage.Ports{
 | الفجوة | الأثر | المهمة |
 | --- | --- | --- |
 | لا يوجد Port لقراءة الدفتر بالرمز | بناء قيد حدث بقاعدة فيها `JournalCode` يحتاج MasterDataReader موسّعًا | `P2-06` |
-| Idempotency الحدث غير موصول بـ `storage.IdempotencyStore` في وضع Ports | وضع Ports يستخدم Idempotency داخل العملية فقط | `P2-06` |
+| ~~Idempotency الحدث غير موصول في وضع Ports~~ | أُغلق في `P3-04`: `storage.Ports.Events` يجعل السجل دائمًا ومحصورًا بالمصدر؛ لا Fallback داخل العملية | `P3-04` |
 | `ReverseWithReasonContext` يحفظ مسودة ثم يرحّل العكس في معاملتين | مسودة يتيمة عند فشل الترحيل | `P2-05` |
 | `application.Service` غير موصول بـ SDK | الأوامر/التفويض غير مطبقة على المسار العام | `P2-01`, `P2-02` |
 | Standards تتطلب `WithCoreStorage` | لا تعمل في وضع Ports | `P3-02` |

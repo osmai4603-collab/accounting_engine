@@ -12,6 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
+	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
@@ -192,7 +193,7 @@ func runPublicEventIngestionRecovery(t *testing.T, core legacy.CoreLedgerStore, 
 	if err != nil || !found {
 		t.Fatalf("read recovered idempotency record: found=%t err=%v", found, err)
 	}
-	if record.Status != "processed" || record.EntryID != uuid.UUID(entryID) {
+	if !publicevents.IsCompleted(record.Status) || record.EntryID != uuid.UUID(entryID) {
 		t.Fatalf("recovered idempotency record = status %q, entry %s", record.Status, record.EntryID)
 	}
 	if record.Entry.ID != entryID || record.Entry.Status != ledger.EntryPosted {
@@ -277,7 +278,7 @@ func runPublicEventIngestionRecovery(t *testing.T, core legacy.CoreLedgerStore, 
 	if err != nil || !found {
 		t.Fatalf("read completed retry: found=%t err=%v", found, err)
 	}
-	if completedRetry.Status != "processed" || completedRetry.FailureReason != "" ||
+	if !publicevents.IsCompleted(completedRetry.Status) || completedRetry.FailureReason != "" ||
 		completedRetry.EntryID != uuid.UUID(entryID) || completedRetry.Entry.ID != entryID ||
 		completedRetry.Entry.Status != ledger.EntryPosted {
 		t.Fatalf("completed retry state = %+v, want persisted posted entry %s with no failure", completedRetry, entryID)

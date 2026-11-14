@@ -14,3 +14,4 @@ type EngineDiagnostics struct {
 	// DisabledReasons maps inactive capabilities or modules to the reason why they are unavailable.
 	DisabledReasons map[string]string `json:"disabled_reasons,omitempty"`
 }
+

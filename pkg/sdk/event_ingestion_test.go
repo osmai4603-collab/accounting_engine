@@ -128,6 +128,13 @@ func (s *eventUseCaseRecorder) CreateDraft(_ context.Context, command publicappl
 	}}, nil
 }
 
+func (s *eventUseCaseRecorder) CreateDraftWithID(_ context.Context, command publicapplication.CreateDraftCommand, entryID types.JournalEntryID) (publicapplication.EntryResult, error) {
+	s.create = command
+	return publicapplication.EntryResult{Entry: ledger.JournalEntry{
+		ID: entryID, CompanyID: command.CompanyID, Status: ledger.EntryDraft,
+	}}, nil
+}
+
 func (s *eventUseCaseRecorder) Validate(context.Context, publicapplication.ValidateEntryCommand) error {
 	return nil
 }
@@ -151,7 +158,10 @@ func TestProcessEventUsesApplicationCommandsAndTrustedContext(t *testing.T) {
 	companyID := types.NewCompanyID()
 	now := time.Date(2026, time.November, 14, 0, 0, 0, 0, time.UTC)
 	recorder := &eventUseCaseRecorder{}
-	service := &defaultEventService{useCases: recorder}
+	// Event ingestion with a caller-supplied idempotency key requires a durable
+	// store; use the memory adapter so this test can focus on context
+	// propagation instead of persistence.
+	service := &defaultEventService{useCases: recorder, idempotencyStore: memory.New()}
 	principal := publicapplication.Principal{ActorID: "host-actor", CompanyIDs: []types.CompanyID{companyID}}
 	ctx := publicapplication.WithPrincipal(context.Background(), principal)
 	ctx = publicapplication.WithRequestMetadata(ctx, publicapplication.RequestMetadata{

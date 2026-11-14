@@ -37,6 +37,7 @@ var rlsProtectedTables = []string{
 	"approval_requests",
 	"approval_steps",
 	"financial_dimension_values",
+	"posting_idempotency",
 }
 
 // TestEveryFinancialTableHasForcedRLS is the continuous isolation guard

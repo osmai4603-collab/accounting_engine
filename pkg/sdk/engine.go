@@ -17,13 +17,16 @@ type Engine interface {
 	Governance() GovernanceService
 	Events() EventIngestionService
 	Standards() StandardsService
+	Scheduler() standards.SchedulerPort
 	Close() error
+	CloseWithContext(ctx context.Context) error
 }
 
 type StandardsService interface {
 	Registry() *standards.Registry
 	Diagnostics() standards.EngineDiagnostics
 	HasCapability(cap standards.Capability) bool
+	Scheduler() standards.SchedulerPort
 }
 
 type LedgerService interface {

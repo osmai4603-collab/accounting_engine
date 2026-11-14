@@ -17,23 +17,41 @@ import (
 )
 
 var (
-	ErrIdempotencyKeyConflict     = errors.New("idempotency key already used with a different payload")
-	ErrIdempotencyInProgress      = errors.New("idempotency key processing is in progress")
-	ErrEventMappingNotFound       = errors.New("no account mapping registered for event type")
-	ErrExchangeRateUnavailable    = errors.New("exchange rate source is unavailable")
-	ErrEventDimensionsUnsupported = errors.New("event dimensions cannot be resolved to approved master data")
-	ErrEventPayloadUnsupported    = errors.New("event payload requires a template that explicitly maps payload fields")
-	ErrIdempotencyRecordNotFound  = publicevents.ErrRecordNotFound
-	ErrIdempotencyStateConflict   = publicevents.ErrStateConflict
+	ErrIdempotencyKeyConflict      = errors.New("idempotency key already used with a different payload")
+	ErrIdempotencyInProgress       = errors.New("idempotency key processing is in progress")
+	ErrIdempotencyTerminalFailure  = errors.New("idempotency key previously failed terminally")
+	ErrIdempotencyStateUnavailable = errors.New("durable event idempotency store is unavailable")
+	ErrEventMappingNotFound        = errors.New("no account mapping registered for event type")
+	ErrExchangeRateUnavailable     = errors.New("exchange rate source is unavailable")
+	ErrEventDimensionsUnsupported  = errors.New("event dimensions cannot be resolved to approved master data")
+	ErrEventPayloadUnsupported     = errors.New("event payload requires a template that explicitly maps payload fields")
+	ErrIdempotencyRecordNotFound   = publicevents.ErrRecordNotFound
+	ErrIdempotencyStateConflict    = publicevents.ErrStateConflict
 )
 
 type PublicEventIngestion = publicevents.Ingestion
 type PublicEventAccountMapping = publicevents.AccountMapping
 type PublicEventIdempotencyStore = publicevents.IdempotencyStore
+type PublicEventScopedIdempotencyStore = publicevents.ScopedIdempotencyStore
 type PublicEventMappingStore = publicevents.MappingStore
+
+// PublicEventPayloadHashVersion is the normalization version recorded with
+// every canonical payload hash produced by the SDK.
+const PublicEventPayloadHashVersion = publicEventPayloadHashVersion
+
+const publicEventPayloadHashVersion = "v1"
+
+// Public ingestion status constants mirrored for SDK consumers.
+const (
+	IngestionStatusStarted          = publicevents.StatusStarted
+	IngestionStatusCompleted        = publicevents.StatusCompleted
+	IngestionStatusRetryableFailure = publicevents.StatusRetryableFailure
+	IngestionStatusTerminalFailure  = publicevents.StatusTerminalFailure
+)
 
 func publicEventFingerprint(event events.AccountingEvent, rule events.PostingRule) (string, error) {
 	payload := struct {
+		HashVersion   string               `json:"hash_version"`
 		EventType     string               `json:"event_type"`
 		EventID       string               `json:"event_id"`
 		CompanyID     types.CompanyID      `json:"company_id"`
@@ -45,7 +63,8 @@ func publicEventFingerprint(event events.AccountingEvent, rule events.PostingRul
 		JournalDraft  *ledger.JournalEntry `json:"journal_draft"`
 		Rule          events.PostingRule   `json:"rule"`
 	}{
-		EventType: event.EventType, EventID: event.EventID, CompanyID: event.CompanyID,
+		HashVersion: publicEventPayloadHashVersion,
+		EventType:   event.EventType, EventID: event.EventID, CompanyID: event.CompanyID,
 		LedgerID: strings.TrimSpace(event.LedgerID), EffectiveDate: event.EffectiveDate.UTC(),
 		Amount: event.Amount, Dimensions: event.Dimensions, Payload: event.Payload,
 		JournalDraft: event.JournalDraft, Rule: rule,

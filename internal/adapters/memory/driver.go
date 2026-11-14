@@ -12,11 +12,13 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 	"github.com/shopspring/decimal"
 )
 
 type Driver struct {
 	mu                         sync.RWMutex
+	readOnly                   bool
 	accounts                   map[uuid.UUID]masterdata.Account
 	versions                   map[uuid.UUID][]masterdata.AccountVersion
 	centers                    map[uuid.UUID]masterdata.CostCenter
@@ -39,6 +41,8 @@ type Driver struct {
 	contracts                  map[uuid.UUID]map[uuid.UUID]ifrs15.Contract
 	policies                   map[string][]policy.VersionedPolicy
 	audit                      []*governance.FinancialAuditLog
+	auditRecords               []storage.AuditRecord
+	idempotency                map[memoryIdempotencyKey]storage.IdempotencyRecord
 	rates                      *valuation.RateRegistry
 }
 
@@ -94,6 +98,7 @@ func New() *Driver {
 		bank:             make(map[string][]subledgers.BankItem),
 		contracts:        make(map[uuid.UUID]map[uuid.UUID]ifrs15.Contract),
 		policies:         make(map[string][]policy.VersionedPolicy),
+		idempotency:      make(map[memoryIdempotencyKey]storage.IdempotencyRecord),
 		rates:            valuation.NewRateRegistry(),
 	}
 }

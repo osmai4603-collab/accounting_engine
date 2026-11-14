@@ -44,3 +44,4 @@ func ActorFromContext(ctx context.Context) (string, bool) {
 	val, ok := ctx.Value(actorContextKey).(string)
 	return val, ok
 }
+

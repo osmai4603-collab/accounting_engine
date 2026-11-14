@@ -238,6 +238,26 @@ func (r *Registry) GetDescriptor(id ModuleID) (ModuleDescriptor, bool) {
 	return desc, ok
 }
 
+// RegisterCapability explicitly maps a capability to a provider module ID or system service.
+func (r *Registry) RegisterCapability(cap Capability, providerID ModuleID) {
+	if cap != "" {
+		r.capabilities[cap] = providerID
+	}
+}
+
+// SetDisabledReason records why a capability or module is inactive or disabled.
+func (r *Registry) SetDisabledReason(key string, reason string) {
+	if key != "" && reason != "" {
+		r.disabledReasons[key] = reason
+	}
+}
+
+// GetDisabledReason retrieves the disabled reason for a key.
+func (r *Registry) GetDisabledReason(key string) (string, bool) {
+	reason, ok := r.disabledReasons[key]
+	return reason, ok
+}
+
 // HasCapability reports whether a capability is actively provided by a registered module.
 func (r *Registry) HasCapability(cap Capability) bool {
 	_, ok := r.capabilities[cap]
@@ -340,3 +360,4 @@ func compareSemVer(v1, v2 string) int {
 	}
 	return 0
 }
+

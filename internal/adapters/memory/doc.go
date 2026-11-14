@@ -9,7 +9,14 @@
 // discarded.
 //
 // Create the driver, pass it to the application engine, and retain it for the
-// duration of the workflow. Company scoping and atomic operations follow the
-// methods implemented by the driver. This package does not open external
-// resources and does not provide database migration behavior.
+// duration of the workflow. Public unit-of-work callbacks are serialized by a
+// process-local lock and commit staged posting, sequence, balance, audit, and
+// idempotency changes together; callback errors, cancellation, and panics
+// discard those staged changes. Sequence values are monotonic within each
+// company and journal and are not consumed by rolled-back unit of work.
+//
+// Memory cannot establish durability, PostgreSQL isolation or constraints,
+// row-level security, or coordination with another process. Use it only when
+// selected explicitly for tests and development. This package does not open
+// external resources or provide database migration behavior.
 package memory

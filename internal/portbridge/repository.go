@@ -145,15 +145,63 @@ func (r *Repository) FindReversalByIdempotencyKeyContext(
 	return port.FindReversalByIdempotencyKeyContext(ctx, companyID, key)
 }
 
+// CreateAndPostReversalAtomicContext creates and posts a reversal through the
+// public PostingWriter port.
+//
+// The internal driver adapters expose an additional engine-specific atomic
+// reversal port so they can persist drafts and audit rows in one database
+// transaction. An external adapter that only implements the public storage
+// ports cannot implement that port (its signature is expressed in internal
+// types), so when it is unavailable the commit is delegated to the public
+// PostingWriter.CommitPosting with OperationReverse. The adapter is then
+// responsible for performing the original/reversal transition atomically.
 func (r *Repository) CreateAndPostReversalAtomicContext(
 	ctx context.Context,
 	original, reversal posting.JournalEntry,
 ) (posting.JournalEntry, error) {
-	port, ok := r.Ports.Posting.(atomicReversalPostingPort)
-	if !ok {
-		return posting.JournalEntry{}, posting.ErrAtomicReversalRequired
+	if r.Ports.Posting == nil {
+		return posting.JournalEntry{}, errors.New("portbridge: posting writer is not configured")
 	}
-	return port.CreateAndPostReversalAtomicContext(ctx, original, reversal)
+	if original.ID == uuid.Nil || reversal.OriginalEntryID == nil || *reversal.OriginalEntryID != original.ID {
+		return posting.JournalEntry{}, posting.ErrInvalidReversal
+	}
+	if port, ok := r.Ports.Posting.(atomicReversalPostingPort); ok {
+		return port.CreateAndPostReversalAtomicContext(ctx, original, reversal)
+	}
+	return r.commitPublicReversal(ctx, reversal)
+}
+
+// commitPublicReversal is the public-port fallback for adapters that expose
+// only storage.PostingWriter. The application layer has already built,
+// validated and balanced the reversal; this method only carries the commit
+// intent to the adapter and maps the persisted result back.
+func (r *Repository) commitPublicReversal(ctx context.Context, reversal posting.JournalEntry) (posting.JournalEntry, error) {
+	publicReversal, err := ToPublicEntry(reversal)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	originalID := types.JournalEntryID(*reversal.OriginalEntryID)
+	result, err := r.Ports.Posting.CommitPosting(ctx, storage.PostingCommit{
+		Entry:           publicReversal,
+		Operation:       storage.OperationReverse,
+		OriginalEntryID: &originalID,
+		ActorID:         reversal.PostedBy,
+		Reason:          reversal.ReversalReason,
+		CorrelationID:   correlationFromContext(ctx),
+	})
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if result.ID == (types.JournalEntryID{}) {
+		return posting.JournalEntry{}, errors.New("portbridge: posting writer returned an empty reversal entry")
+	}
+	if result.CompanyID != publicReversal.CompanyID || result.ID != publicReversal.ID {
+		return posting.JournalEntry{}, fmt.Errorf(
+			"portbridge: posting writer returned a different reversal (%s/%s)",
+			result.CompanyID, result.ID,
+		)
+	}
+	return ToInternalEntry(result, EntryOptions{})
 }
 
 // Ensure the adapter never silently accepts a legacy core store contract.

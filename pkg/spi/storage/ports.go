@@ -7,6 +7,7 @@ import (
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/shopspring/decimal"
 )
@@ -164,7 +165,11 @@ type Ports struct {
 	Idempotency IdempotencyStore
 	TxRunner    TransactionRunner
 	UOWRunner   UnitOfWorkRunner
-	Private     PrivateExtensions
+	// Events exposes the optional public event-ingestion stores. When empty,
+	// event ingestion rejects caller-supplied idempotency keys instead of
+	// falling back to process-local memory.
+	Events  publicevents.Stores
+	Private PrivateExtensions
 }
 
 // PrivateExtensions lets an adapter expose engine-specific optional

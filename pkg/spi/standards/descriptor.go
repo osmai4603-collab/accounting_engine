@@ -8,6 +8,22 @@ type ModuleID string
 // provided by one or more modules (e.g., "revenue_recognition", "deferred_tax").
 type Capability string
 
+const (
+	CapLedgerPosting       Capability = "ledger_posting"
+	CapMasterData          Capability = "masterdata_management"
+	CapReporting           Capability = "reporting"
+	CapGovernance          Capability = "governance"
+	CapAuditTrail          Capability = "audit_trail"
+	CapApproval            Capability = "approval_fingerprint"
+	CapCurrencyTranslation Capability = "currency_translation"
+	CapScheduledJobs       Capability = "scheduled_jobs"
+
+	CapRevenueRecognition Capability = "revenue_recognition"
+	CapDeferredTax         Capability = "deferred_tax"
+	CapLeaseAccounting     Capability = "lease_accounting"
+	CapFinancialInstruments Capability = "financial_instruments"
+)
+
 // Requirement describes a dependency of a module on another module.
 type Requirement struct {
 	// ID is the target module's machine-readable identifier.
@@ -43,3 +59,4 @@ type DescribedModule interface {
 	StandardModule
 	Descriptor() ModuleDescriptor
 }
+

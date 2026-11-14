@@ -319,29 +319,3 @@ func (d *Driver) WithCompanyTx(ctx context.Context, companyID uuid.UUID, fn func
 	finished = true
 	return nil
 }
-
-func (d *Driver) beginCompanyTx(ctx context.Context, companyID uuid.UUID) (pgx.Tx, error) {
-	if companyID == uuid.Nil {
-		return nil, errors.New("company transaction requires company id")
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
-		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			return nil, errors.Join(err, fmt.Errorf("rollback tenant context transaction: %w", rollbackErr))
-		}
-		return nil, err
-	}
-	traceparent := TraceparentFromContext(ctx)
-	if traceparent != "" {
-		if _, err := tx.Exec(ctx, "SELECT set_config('app.traceparent', $1, true)", traceparent); err != nil {
-			if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-				return nil, errors.Join(err, fmt.Errorf("rollback traceparent context transaction: %w", rollbackErr))
-			}
-			return nil, err
-		}
-	}
-	return newTracedTx(tx, traceparent), nil
-}

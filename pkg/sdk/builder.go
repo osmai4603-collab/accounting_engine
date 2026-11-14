@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"text/template"
@@ -16,6 +17,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
+	publicevents "github.com/osmai4603-collab/accounting_engine/pkg/spi/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
@@ -37,18 +39,25 @@ import (
 //
 // Mixing both sources is rejected during preflight.
 type EngineBuilder struct {
-	coreStore       legacy.CoreLedgerStore
-	ports           storage.Ports
-	portsConfigured bool
-	reportingStore  storage.ReportingStore
-	governanceStore storage.GovernanceStore
-	authorizer      publicapplication.Authorizer
+	coreStore         legacy.CoreLedgerStore
+	ports             storage.Ports
+	portsConfigured   bool
+	reportingStore    storage.ReportingStore
+	governanceStore   storage.GovernanceStore
+	authorizer        publicapplication.Authorizer
 	standards         []standards.StandardModule
 	standardsRegistry *standards.Registry
 	postingConfig     PostingConfig
-	postingCaps     storage.PostingCapabilities
-	optsErrs        []error
+	postingCaps       storage.PostingCapabilities
+	eventWaitTimeout  time.Duration
+	eventWaitInterval time.Duration
+	optsErrs          []error
 }
+
+const (
+	defaultEventIdempotencyWaitTimeout  = 2 * time.Second
+	defaultEventIdempotencyWaitInterval = 25 * time.Millisecond
+)
 
 type Option func(*EngineBuilder) error
 
@@ -130,6 +139,24 @@ func WithPostingCapabilities(capabilities storage.PostingCapabilities) Option {
 	}
 }
 
+// WithEventIdempotencyWaitPolicy bounds how long ProcessEvent waits for a
+// concurrent owner of the same idempotency key to finish before it either
+// recovers the committed result or reports ErrIdempotencyInProgress. A zero
+// timeout uses the conservative default.
+func WithEventIdempotencyWaitPolicy(timeout, interval time.Duration) Option {
+	return func(b *EngineBuilder) error {
+		if timeout < 0 {
+			return errors.New("event idempotency wait timeout must not be negative")
+		}
+		if interval < 0 {
+			return errors.New("event idempotency wait interval must not be negative")
+		}
+		b.eventWaitTimeout = timeout
+		b.eventWaitInterval = interval
+		return nil
+	}
+}
+
 func WithStandard(module standards.StandardModule) Option {
 	return func(b *EngineBuilder) error {
 		if module == nil {
@@ -165,6 +192,8 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	router := events.NewRouter()
 	var publicMasterData publicmasterdata.Store
 	var useCases publicapplication.Service
+	var idempotencyStore PublicEventIdempotencyStore
+	var mappingStore PublicEventMappingStore
 
 	if b.portsConfigured {
 		app, err := sdkapplication.NewApplicationFromPortsWithPostingCapabilities(
@@ -174,6 +203,11 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 			return nil, fmt.Errorf("application layer: %w", err)
 		}
 		useCases = sdkapplication.NewPublicService(app, b.authorizer)
+		idempotencyStore = b.ports.Events.Idempotency
+		mappingStore = b.ports.Events.Mappings
+		if store, ok := b.ports.MasterData.(publicmasterdata.Store); ok {
+			publicMasterData = store
+		}
 	} else {
 		app, err := sdkapplication.NewApplicationFromCoreWithPostingCapabilities(
 			b.coreStore, b.postingConfig.internal(), b.postingCaps,
@@ -187,11 +221,36 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		}); ok {
 			publicMasterData = provider.MasterDataStore()
 		}
+		if store, ok := b.coreStore.(PublicEventIdempotencyStore); ok {
+			// The legacy core-store path predates the canonical lifecycle and
+			// source scoping. Narrow the capability so this path keeps writing
+			// its historical status vocabulary instead of silently upgrading
+			// stored records to the new canonical values.
+			idempotencyStore = legacyPublicEventStore{PublicEventIdempotencyStore: store}
+		}
+		mappingStore, _ = b.coreStore.(PublicEventMappingStore)
 	}
+
+	scheduler := standards.NewDefaultScheduler()
 
 	moduleErrs := b.initializeStandards(ctx, router)
 	if len(moduleErrs) > 0 {
 		return nil, errors.Join(moduleErrs...)
+	}
+
+	// Mark scheduler ready after successful initialization of core dependencies and modules
+	scheduler.SetReady(true)
+
+	// Register scheduled jobs from active modules
+	for _, mod := range b.standards {
+		if mod == nil {
+			continue
+		}
+		if err := mod.RunScheduledJobs(ctx, scheduler); err != nil {
+			if b.standardsRegistry != nil {
+				b.standardsRegistry.SetDisabledReason(fmt.Sprintf("module:%s:jobs", mod.Name()), err.Error())
+			}
+		}
 	}
 
 	inst := &engineInstance{
@@ -200,6 +259,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		governanceStore:   b.governanceStore,
 		standards:         b.standards,
 		standardsRegistry: b.standardsRegistry,
+		scheduler:         scheduler,
 		eventRouter:       router,
 		eventService:      &defaultEventService{}, // initialized below
 		publicMasterData:  publicMasterData,
@@ -209,10 +269,14 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 
 	inst.eventService = &defaultEventService{
 		store:            b.coreStore,
+		idempotencyStore: idempotencyStore,
+		mappingStore:     mappingStore,
 		router:           router,
 		publicMasterData: inst.publicMasterData,
 		useCases:         inst.useCases,
 		requirePrincipal: inst.requirePrincipal,
+		waitTimeout:      b.eventWaitTimeout,
+		waitInterval:     b.eventWaitInterval,
 	}
 
 	return inst, nil
@@ -234,8 +298,32 @@ func (b *EngineBuilder) preflight() []error {
 		}
 	}
 
+	if b.standardsRegistry == nil {
+		b.standardsRegistry = standards.NewRegistry()
+	}
+
+	// Core Capabilities
+	b.standardsRegistry.RegisterCapability(standards.CapLedgerPosting, "engine_core")
+	b.standardsRegistry.RegisterCapability(standards.CapMasterData, "engine_core")
+
+	// Preflight validation for Reporting capability dependencies
+	if b.reportingStore != nil || (b.portsConfigured && b.ports.Balance != nil && b.ports.MasterData != nil && b.ports.Entries != nil) {
+		b.standardsRegistry.RegisterCapability(standards.CapReporting, "reporting_service")
+	} else {
+		b.standardsRegistry.SetDisabledReason("capability:reporting", "reporting data sources missing (BalanceReader, MasterDataReader, EntryReader or ReportingStore)")
+	}
+
+	// Preflight validation for Governance capability dependencies
+	if b.governanceStore != nil || (b.portsConfigured && b.ports.Audit != nil) {
+		b.standardsRegistry.RegisterCapability(standards.CapGovernance, "governance_service")
+		b.standardsRegistry.RegisterCapability(standards.CapAuditTrail, "governance_service")
+		b.standardsRegistry.RegisterCapability(standards.CapApproval, "governance_service")
+	} else {
+		b.standardsRegistry.SetDisabledReason("capability:governance", "governance required stores missing (AuditWriter or GovernanceStore)")
+	}
+
 	if len(b.standards) > 0 {
-		registry := standards.NewRegistry()
+		registry := b.standardsRegistry
 		for _, mod := range b.standards {
 			if mod == nil {
 				errs = append(errs, errors.New("standard module is nil"))
@@ -273,23 +361,42 @@ func (b *EngineBuilder) preflight() []error {
 }
 
 // initializeStandards runs Initialize and RegisterRules only after preflight
-// succeeded.
+// succeeded. If initialization fails on any module, all previously initialized
+// modules are rolled back in reverse topological order.
 func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.Router) []error {
-	var errs []error
+	var initializedMods []standards.StandardModule
+
+	rollback := func(initErr error) []error {
+		var combinedErrs []error
+		combinedErrs = append(combinedErrs, initErr)
+
+		// Rollback initialized modules in reverse topological order
+		for i := len(initializedMods) - 1; i >= 0; i-- {
+			mod := initializedMods[i]
+			if closeErr := mod.Close(ctx); closeErr != nil {
+				combinedErrs = append(combinedErrs, fmt.Errorf("module %s rollback close failed: %w", mod.Name(), closeErr))
+			}
+		}
+		return combinedErrs
+	}
+
 	for _, mod := range b.standards {
 		if mod == nil {
 			continue
 		}
 		name := mod.Name()
 		if err := mod.Initialize(ctx, b.coreStore); err != nil {
-			errs = append(errs, fmt.Errorf("standard module %s: initialization failed: %w", name, err))
-			continue
+			initErr := fmt.Errorf("standard module %s: initialization failed: %w", name, err)
+			return rollback(initErr)
 		}
+		initializedMods = append(initializedMods, mod)
+
 		if err := mod.RegisterRules(router); err != nil {
-			errs = append(errs, fmt.Errorf("standard module %s: rule registration failed: %w", name, err))
+			ruleErr := fmt.Errorf("standard module %s: rule registration failed: %w", name, err)
+			return rollback(ruleErr)
 		}
 	}
-	return errs
+	return nil
 }
 
 type engineInstance struct {
@@ -298,11 +405,15 @@ type engineInstance struct {
 	governanceStore   storage.GovernanceStore
 	standards         []standards.StandardModule
 	standardsRegistry *standards.Registry
+	scheduler         standards.SchedulerPort
 	eventRouter       *events.Router
 	eventService      *defaultEventService
 	publicMasterData  publicmasterdata.Store
 	useCases          publicapplication.Service
 	requirePrincipal  bool
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (e *engineInstance) Ledger() LedgerService {
@@ -324,12 +435,20 @@ func (e *engineInstance) Events() EventIngestionService {
 	return e.eventService
 }
 
+func (e *engineInstance) Scheduler() standards.SchedulerPort {
+	return e.scheduler
+}
+
 func (e *engineInstance) Standards() StandardsService {
-	return &defaultStandardsService{registry: e.standardsRegistry}
+	return &defaultStandardsService{
+		registry:  e.standardsRegistry,
+		scheduler: e.scheduler,
+	}
 }
 
 type defaultStandardsService struct {
-	registry *standards.Registry
+	registry  *standards.Registry
+	scheduler standards.SchedulerPort
 }
 
 func (s *defaultStandardsService) Registry() *standards.Registry {
@@ -350,19 +469,32 @@ func (s *defaultStandardsService) HasCapability(cap standards.Capability) bool {
 	return s.registry.HasCapability(cap)
 }
 
+func (s *defaultStandardsService) Scheduler() standards.SchedulerPort {
+	return s.scheduler
+}
+
 func (e *engineInstance) Close() error {
-	var errs []error
-	// Close standard modules in reverse topological order so dependents clean up first.
-	for i := len(e.standards) - 1; i >= 0; i-- {
-		mod := e.standards[i]
-		if err := mod.Close(context.Background()); err != nil {
-			errs = append(errs, fmt.Errorf("module %s close failed: %w", mod.Name(), err))
+	return e.CloseWithContext(context.Background())
+}
+
+func (e *engineInstance) CloseWithContext(ctx context.Context) error {
+	e.closeOnce.Do(func() {
+		var errs []error
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
 		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+		// Close standard modules in reverse topological order so dependents clean up first.
+		for i := len(e.standards) - 1; i >= 0; i-- {
+			mod := e.standards[i]
+			if err := mod.Close(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("module %s close failed: %w", mod.Name(), err))
+			}
+		}
+		if len(errs) > 0 {
+			e.closeErr = errors.Join(errs...)
+		}
+	})
+	return e.closeErr
 }
 
 type defaultLedgerService struct {
@@ -472,14 +604,18 @@ func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, e
 }
 
 type defaultEventService struct {
-	store            legacy.CoreLedgerStore
+	store legacy.CoreLedgerStore
+	// idempotencyStore/mappingStore are resolved once by the builder. Keeping
+	// them explicit makes WithStoragePorts use the adapter's durable stores
+	// instead of silently relying on process-local state.
+	idempotencyStore PublicEventIdempotencyStore
+	mappingStore     PublicEventMappingStore
 	router           *events.Router
 	publicMasterData publicmasterdata.Store
 	useCases         publicapplication.Service
 	requirePrincipal bool
-	mu               sync.Mutex
-	keys             map[string]ledger.JournalEntry
-	inflight         map[string]struct{}
+	waitTimeout      time.Duration
+	waitInterval     time.Duration
 }
 
 func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.AccountingEvent) (ledger.JournalEntry, error) {
@@ -514,8 +650,7 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 	requestContext := eventCommandContext(ctx, event, s.requirePrincipal)
 	key := requestContext.IdempotencyKey
 	companyUUID := uuid.UUID(event.CompanyID)
-	idemStore, _ := s.store.(PublicEventIdempotencyStore)
-	mapStore, _ := s.store.(PublicEventMappingStore)
+	idemStore, mapStore := s.eventStores()
 
 	// B.4: resolve mapping (configurable per company/ledger) or accept ready draft.
 	var (
@@ -605,136 +740,398 @@ func (s *defaultEventService) ProcessEvent(ctx context.Context, event events.Acc
 		return ledger.JournalEntry{}, fmt.Errorf("fingerprint accounting event: %w", err)
 	}
 
-	// B.2: durable idempotency when key+store available.
-	if key != "" && idemStore != nil && companyUUID != uuid.Nil {
-		rec := PublicEventIngestion{
-			CompanyID: companyUUID, IdempotencyKey: key, EventType: event.EventType,
-			PayloadHash: fp, EntryID: uuid.UUID(entry.ID), Entry: entry, Status: "processing",
+	if key == "" {
+		// No caller-supplied idempotency key: this is a single posting request.
+		return s.postEventEntry(ctx, entry, requestContext)
+	}
+
+	// Idempotent event ingestion is durable-only. Falling back to a local map
+	// would silently lose the guarantee across restarts and instances.
+	if idemStore == nil {
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrDependencyUnavailable,
+			"durable event idempotency store is not configured",
+			ErrIdempotencyStateUnavailable,
+		)
+	}
+	sourceSystem := publicevents.NormalizeSourceSystem(requestContext.SourceSystem)
+	if sourceSystem != publicevents.DefaultSourceSystem {
+		if _, ok := idemStore.(PublicEventScopedIdempotencyStore); !ok {
+			return ledger.JournalEntry{}, wrapEventError(
+				publicapplication.ErrDependencyUnavailable,
+				"idempotency store does not support source-system scoping",
+				ErrIdempotencyStateUnavailable,
+			)
 		}
-		existing, claimed, cErr := idemStore.ClaimPublicEventIngestion(ctx, rec)
-		if cErr != nil {
-			return ledger.JournalEntry{}, cErr
+	}
+
+	rec := PublicEventIngestion{
+		CompanyID:          companyUUID,
+		IdempotencyKey:     key,
+		SourceSystem:       sourceSystem,
+		EventType:          event.EventType,
+		PayloadHash:        fp,
+		PayloadHashVersion: publicEventPayloadHashVersion,
+		EntryID:            uuid.UUID(entry.ID),
+		Entry:              entry,
+		Status:             publicevents.StatusStarted,
+	}
+	existing, claimed, cErr := idemStore.ClaimPublicEventIngestion(ctx, rec)
+	if cErr != nil {
+		if errors.Is(cErr, storage.ErrUniqueConstraint) {
+			return ledger.JournalEntry{}, wrapEventError(
+				publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
+			)
 		}
-		if claimed && existing.EntryID != uuid.Nil {
-			if uuid.UUID(existing.Entry.ID) != uuid.Nil {
-				entry = existing.Entry
-			} else if existing.EntryID != uuid.UUID(entry.ID) {
-				recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
-				if gErr != nil {
-					return ledger.JournalEntry{}, fmt.Errorf("load event idempotency retry entry: %w", gErr)
+		return ledger.JournalEntry{}, cErr
+	}
+	if !claimed {
+		return s.handleExistingIngestion(ctx, idemStore, companyUUID, sourceSystem, key, fp, existing, entry, requestContext)
+	}
+	return s.executeClaimedIngestion(ctx, idemStore, companyUUID, sourceSystem, key, fp, existing, entry, requestContext)
+}
+
+// eventStores resolves the durable event stores, falling back to a legacy core
+// store capability for WithCoreStorage callers.
+// legacyPublicEventStore exposes only the stable idempotency surface of a
+// WithCoreStorage implementation. Hiding optional scoped/classified
+// capabilities keeps the legacy path byte-compatible with pre-P3-04 status
+// values ("processing", "processed", "failed").
+type legacyPublicEventStore struct {
+	PublicEventIdempotencyStore
+}
+
+func (s *defaultEventService) eventStores() (PublicEventIdempotencyStore, PublicEventMappingStore) {
+	idemStore := s.idempotencyStore
+	mappingStore := s.mappingStore
+	if idemStore == nil && s.store != nil {
+		idemStore, _ = s.store.(PublicEventIdempotencyStore)
+	}
+	if mappingStore == nil && s.store != nil {
+		mappingStore, _ = s.store.(PublicEventMappingStore)
+	}
+	return idemStore, mappingStore
+}
+
+func (s *defaultEventService) waitPolicy() (time.Duration, time.Duration) {
+	timeout := s.waitTimeout
+	if timeout <= 0 {
+		timeout = defaultEventIdempotencyWaitTimeout
+	}
+	interval := s.waitInterval
+	if interval <= 0 {
+		interval = defaultEventIdempotencyWaitInterval
+	}
+	return timeout, interval
+}
+
+func (s *defaultEventService) executeClaimedIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key, payloadHash string,
+	record PublicEventIngestion,
+	entry ledger.JournalEntry,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	working := entry
+	if record.EntryID != uuid.Nil {
+		working.ID = types.JournalEntryID(record.EntryID)
+	}
+	if uuid.UUID(record.Entry.ID) != uuid.Nil {
+		// Prefer the exact snapshot reserved by the claim. For a reclaimed
+		// record this preserves the original draft/entry identity.
+		working = record.Entry
+	}
+	if uuid.UUID(working.ID) != uuid.Nil {
+		// Re-check before doing anything: a previous attempt (or another
+		// process) may already have committed the entry.
+		current, getErr := s.fetchPostedEntry(ctx, entry.CompanyID, working.ID, requestContext)
+		if getErr == nil && uuid.UUID(current.ID) != uuid.Nil {
+			if current.Status == ledger.EntryPosted {
+				if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, current); err != nil {
+					return ledger.JournalEntry{}, fmt.Errorf("complete recovered event idempotency record: %w", err)
 				}
-				entry = recovered
+				return current, nil
 			}
-		}
-		if !claimed {
-			if existing.Status == "processed" && existing.EntryID != uuid.Nil {
-				if existing.PayloadHash != "" && existing.PayloadHash != fp {
-					return ledger.JournalEntry{}, publicapplication.NewError(
-						publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
-					)
-				}
-				posted, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
-				if gErr != nil {
-					return ledger.JournalEntry{}, fmt.Errorf("load completed event idempotency result: %w", gErr)
-				}
-				if posted.Status != ledger.EntryPosted {
-					return ledger.JournalEntry{}, publicapplication.NewError(
-						publicapplication.ErrConflict, "completed event entry is not posted", ErrIdempotencyInProgress,
-					)
-				}
-				return posted, nil
+			if current.Status == ledger.EntryDraft {
+				working = current
 			}
-			if existing.PayloadHash != "" && existing.PayloadHash != fp {
-				return ledger.JournalEntry{}, publicapplication.NewError(
+		} else if getErr != nil && !errors.Is(getErr, publicapplication.ErrNotFound) {
+			return ledger.JournalEntry{}, fmt.Errorf("check event entry before retry: %w", getErr)
+		}
+	}
+
+	posted, postErr := s.postEventEntry(ctx, working, requestContext)
+	if postErr != nil {
+		if recovered, ok := s.recoverPostedEntry(ctx, entry.CompanyID, working.ID, requestContext); ok {
+			if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, recovered); err != nil {
+				return ledger.JournalEntry{}, fmt.Errorf("complete committed event idempotency record: %w", err)
+			}
+			return recovered, nil
+		}
+		failureClass := classifyEventFailure(postErr)
+		if failErr := s.failIngestion(ctx, idemStore, companyID, sourceSystem, key, failureClass, postErr.Error()); failErr != nil {
+			return ledger.JournalEntry{}, errors.Join(postErr, fmt.Errorf("mark event idempotency record failed: %w", failErr))
+		}
+		return ledger.JournalEntry{}, postErr
+	}
+	if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, posted); err != nil {
+		// The entry is committed but the record could not be completed. Leave
+		// the record in started state so a retry verifies and completes it
+		// instead of posting again.
+		return ledger.JournalEntry{}, fmt.Errorf("complete event idempotency record after posting: %w", err)
+	}
+	return posted, nil
+}
+
+func (s *defaultEventService) handleExistingIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key, payloadHash string,
+	existing PublicEventIngestion,
+	entry ledger.JournalEntry,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	if existing.PayloadHash != "" && existing.PayloadHash != payloadHash {
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
+		)
+	}
+	switch publicevents.NormalizeStatus(existing.Status) {
+	case publicevents.StatusCompleted:
+		return s.completedIngestionResult(ctx, existing, requestContext)
+	case publicevents.StatusTerminalFailure:
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict,
+			"idempotency key previously failed terminally",
+			ErrIdempotencyTerminalFailure,
+		)
+	case publicevents.StatusRetryableFailure:
+		// The adapter normally reclaims retryable records during Claim. If it
+		// does not, the caller may retry after the recorded transient failure.
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrDependencyUnavailable,
+			"previous event ingestion attempt failed transiently; retry the event",
+			errors.Join(ErrIdempotencyInProgress, failureReasonError(existing)),
+		)
+	case publicevents.StatusStarted:
+		rec, terminal, waitErr := s.waitForIngestion(ctx, idemStore, companyID, sourceSystem, key)
+		if waitErr != nil {
+			return ledger.JournalEntry{}, waitErr
+		}
+		if terminal {
+			if rec.PayloadHash != "" && rec.PayloadHash != payloadHash {
+				return ledger.JournalEntry{}, wrapEventError(
 					publicapplication.ErrConflict, "idempotency key conflicts with a different event", ErrIdempotencyKeyConflict,
 				)
 			}
-			if existing.Status == "processing" {
-				recoveryEntry := existing.Entry
-				if uuid.UUID(recoveryEntry.ID) == uuid.Nil && existing.EntryID != uuid.Nil {
-					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(existing.EntryID), requestContext)
-					if gErr != nil {
-						return ledger.JournalEntry{}, errors.Join(ErrIdempotencyInProgress, gErr)
-					}
-					if recovered.Status != ledger.EntryPosted {
-						return ledger.JournalEntry{}, publicapplication.NewError(
-							publicapplication.ErrConflict, "event ingestion is still in progress", ErrIdempotencyInProgress,
-						)
-					}
-					recoveryEntry = recovered
-				}
-				if uuid.UUID(recoveryEntry.ID) == uuid.Nil {
-					return ledger.JournalEntry{}, publicapplication.NewError(
-						publicapplication.ErrConflict, "event ingestion is still in progress", ErrIdempotencyInProgress,
-					)
-				}
-				posted, pErr := s.postEventEntry(ctx, recoveryEntry, requestContext)
-				if pErr != nil {
-					recovered, gErr := s.fetchPostedEntry(ctx, event.CompanyID, types.JournalEntryID(recoveryEntry.ID), requestContext)
-					if gErr != nil || recovered.Status != ledger.EntryPosted {
-						return ledger.JournalEntry{}, publicapplication.NewError(
-							publicapplication.ErrConflict, "event ingestion is still in progress",
-							errors.Join(ErrIdempotencyInProgress, pErr, gErr),
-						)
-					}
-					posted = recovered
-				}
-				if err := idemStore.CompletePublicEventIngestion(ctx, companyUUID, key, posted); err != nil {
-					return posted, fmt.Errorf("complete recovered event idempotency record: %w", err)
-				}
-				return posted, nil
+			switch publicevents.NormalizeStatus(rec.Status) {
+			case publicevents.StatusCompleted:
+				return s.completedIngestionResult(ctx, rec, requestContext)
+			case publicevents.StatusTerminalFailure:
+				return ledger.JournalEntry{}, wrapEventError(
+					publicapplication.ErrConflict,
+					"idempotency key previously failed terminally",
+					ErrIdempotencyTerminalFailure,
+				)
 			}
-			return ledger.JournalEntry{}, publicapplication.NewError(publicapplication.ErrConflict, "idempotency key is in an invalid state", nil)
 		}
-		posted, pErr := s.postEventEntry(ctx, entry, requestContext)
-		if pErr != nil {
-			if failErr := idemStore.FailPublicEventIngestion(ctx, companyUUID, key, pErr.Error()); failErr != nil {
-				return ledger.JournalEntry{}, errors.Join(pErr, fmt.Errorf("mark event idempotency record failed: %w", failErr))
-			}
-			return ledger.JournalEntry{}, pErr
+		// The wait policy expired: take over recovery only when the record has
+		// a concrete entry identity, so at most one entry can ever exist.
+		return s.recoverStartedIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, existing, entry, requestContext)
+	default:
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "idempotency key is in an invalid state", ErrIdempotencyStateConflict,
+		)
+	}
+}
+
+// waitForIngestion polls the durable record until it reaches a terminal state
+// or the configured wait budget expires. It returns terminal=true only when the
+// record reached a state that can be answered without taking over recovery.
+func (s *defaultEventService) waitForIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key string,
+) (PublicEventIngestion, bool, error) {
+	timeout, interval := s.waitPolicy()
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			return PublicEventIngestion{}, false, nil
 		}
-		if err := idemStore.CompletePublicEventIngestion(ctx, companyUUID, key, posted); err != nil {
-			return posted, fmt.Errorf("complete event idempotency record after posting: %w", err)
+		select {
+		case <-ctx.Done():
+			return PublicEventIngestion{}, false, ctx.Err()
+		case <-time.After(interval):
+		}
+		rec, found, err := s.getIngestion(ctx, idemStore, companyID, sourceSystem, key)
+		if err != nil {
+			return PublicEventIngestion{}, false, err
+		}
+		if !found {
+			return PublicEventIngestion{}, false, nil
+		}
+		switch publicevents.NormalizeStatus(rec.Status) {
+		case publicevents.StatusCompleted, publicevents.StatusTerminalFailure,
+			publicevents.StatusRetryableFailure:
+			return rec, true, nil
+		}
+	}
+}
+
+func (s *defaultEventService) recoverStartedIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key, payloadHash string,
+	existing PublicEventIngestion,
+	entry ledger.JournalEntry,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	recovery := entry
+	if existing.EntryID != uuid.Nil {
+		recovery.ID = types.JournalEntryID(existing.EntryID)
+	}
+	if uuid.UUID(existing.Entry.ID) != uuid.Nil {
+		recovery = existing.Entry
+	}
+	if uuid.UUID(recovery.ID) == uuid.Nil {
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "event ingestion is still in progress", ErrIdempotencyInProgress,
+		)
+	}
+	if posted, ok := s.recoverPostedEntry(ctx, entry.CompanyID, recovery.ID, requestContext); ok {
+		if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, posted); err != nil {
+			return ledger.JournalEntry{}, fmt.Errorf("complete recovered event idempotency record: %w", err)
 		}
 		return posted, nil
 	}
-
-	// In-process idempotency fallback (non-durable backends).
-	if key != "" {
-		s.mu.Lock()
-		if s.keys == nil {
-			s.keys = make(map[string]ledger.JournalEntry)
+	posted, postErr := s.postEventEntry(ctx, recovery, requestContext)
+	if postErr != nil {
+		if recovered, ok := s.recoverPostedEntry(ctx, entry.CompanyID, recovery.ID, requestContext); ok {
+			if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, recovered); err != nil {
+				return ledger.JournalEntry{}, fmt.Errorf("complete recovered event idempotency record: %w", err)
+			}
+			return recovered, nil
 		}
-		if s.inflight == nil {
-			s.inflight = make(map[string]struct{})
-		}
-		if existing, ok := s.keys[key]; ok {
-			s.mu.Unlock()
-			return existing, nil
-		}
-		if _, busy := s.inflight[key]; busy {
-			s.mu.Unlock()
-			return ledger.JournalEntry{}, errors.New("duplicate idempotency key is being processed")
-		}
-		s.inflight[key] = struct{}{}
-		s.mu.Unlock()
-		defer func() {
-			s.mu.Lock()
-			delete(s.inflight, key)
-			s.mu.Unlock()
-		}()
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "event ingestion is still in progress",
+			errors.Join(ErrIdempotencyInProgress, postErr),
+		)
 	}
-
-	posted, err := s.postEventEntry(ctx, entry, requestContext)
-	if err != nil {
-		return ledger.JournalEntry{}, err
-	}
-	if key != "" {
-		s.mu.Lock()
-		s.keys[key] = posted
-		s.mu.Unlock()
+	if err := s.completeIngestion(ctx, idemStore, companyID, sourceSystem, key, payloadHash, posted); err != nil {
+		return ledger.JournalEntry{}, fmt.Errorf("complete recovered event idempotency record: %w", err)
 	}
 	return posted, nil
+}
+
+func (s *defaultEventService) completedIngestionResult(
+	ctx context.Context,
+	record PublicEventIngestion,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, error) {
+	if record.EntryID == uuid.Nil {
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "completed event record has no entry id", ErrIdempotencyInProgress,
+		)
+	}
+	posted, err := s.fetchPostedEntry(ctx, types.CompanyID(record.CompanyID), types.JournalEntryID(record.EntryID), requestContext)
+	if err != nil {
+		return ledger.JournalEntry{}, fmt.Errorf("load completed event idempotency result: %w", err)
+	}
+	if posted.Status != ledger.EntryPosted {
+		return ledger.JournalEntry{}, wrapEventError(
+			publicapplication.ErrConflict, "completed event entry is not posted", ErrIdempotencyInProgress,
+		)
+	}
+	return posted, nil
+}
+
+func (s *defaultEventService) recoverPostedEntry(
+	ctx context.Context,
+	companyID types.CompanyID,
+	entryID types.JournalEntryID,
+	requestContext publicapplication.Context,
+) (ledger.JournalEntry, bool) {
+	if uuid.UUID(entryID) == uuid.Nil {
+		return ledger.JournalEntry{}, false
+	}
+	entry, err := s.fetchPostedEntry(ctx, companyID, entryID, requestContext)
+	if err != nil || uuid.UUID(entry.ID) == uuid.Nil || entry.Status != ledger.EntryPosted {
+		return ledger.JournalEntry{}, false
+	}
+	return entry, true
+}
+
+func (s *defaultEventService) getIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key string,
+) (PublicEventIngestion, bool, error) {
+	if scoped, ok := idemStore.(PublicEventScopedIdempotencyStore); ok {
+		return scoped.GetPublicEventIngestionForSource(ctx, companyID, sourceSystem, key)
+	}
+	return idemStore.GetPublicEventIngestion(ctx, companyID, key)
+}
+
+func (s *defaultEventService) completeIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key, payloadHash string,
+	entry ledger.JournalEntry,
+) error {
+	if scoped, ok := idemStore.(PublicEventScopedIdempotencyStore); ok {
+		return scoped.CompletePublicEventIngestionForSource(ctx, companyID, sourceSystem, key, payloadHash, entry)
+	}
+	return idemStore.CompletePublicEventIngestion(ctx, companyID, key, entry)
+}
+
+func (s *defaultEventService) failIngestion(
+	ctx context.Context,
+	idemStore PublicEventIdempotencyStore,
+	companyID uuid.UUID,
+	sourceSystem, key, failureClass, reason string,
+) error {
+	if classified, ok := idemStore.(publicevents.ClassifiedIdempotencyStore); ok {
+		return classified.FailPublicEventIngestionClassified(ctx, companyID, sourceSystem, key, failureClass, reason)
+	}
+	if scoped, ok := idemStore.(PublicEventScopedIdempotencyStore); ok {
+		return scoped.FailPublicEventIngestionForSource(ctx, companyID, sourceSystem, key, failureClass, reason)
+	}
+	return idemStore.FailPublicEventIngestion(ctx, companyID, key, reason)
+}
+
+func classifyEventFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	if storage.IsRetryable(err) ||
+		errors.Is(err, storage.ErrTransactionAborted) ||
+		errors.Is(err, publicapplication.ErrDependencyUnavailable) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+		return publicevents.FailureClassTransient
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return publicevents.FailureClassTransient
+	}
+	// Default to terminal: never re-run an operation whose failure is not
+	// known to be transient.
+	return publicevents.FailureClassTerminal
+}
+
+func failureReasonError(record PublicEventIngestion) error {
+	if strings.TrimSpace(record.FailureReason) == "" {
+		return nil
+	}
+	return errors.New(record.FailureReason)
 }
 
 func wrapEventError(kind error, message string, cause error) error {
