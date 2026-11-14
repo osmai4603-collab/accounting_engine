@@ -8,6 +8,20 @@ ALTER TABLE public_event_ingestions
     DROP CONSTRAINT IF EXISTS chk_public_event_ingestion_failure_class;
 ALTER TABLE public_event_ingestions
     DROP CONSTRAINT IF EXISTS chk_public_event_ingestion_status;
+
+-- Map canonical values back to their legacy equivalents before restoring the
+-- narrower status domain; otherwise rows written after the upgrade would make
+-- the rollback fail.
+UPDATE public_event_ingestions
+   SET status = CASE status
+                    WHEN 'started' THEN 'processing'
+                    WHEN 'completed' THEN 'processed'
+                    WHEN 'retryable_failure' THEN 'failed'
+                    WHEN 'terminal_failure' THEN 'failed'
+                    ELSE status
+                END
+ WHERE status IN ('started', 'completed', 'retryable_failure', 'terminal_failure');
+
 ALTER TABLE public_event_ingestions
     ADD CONSTRAINT chk_public_event_ingestion_status
     CHECK (status IN ('processing', 'processed', 'failed'));

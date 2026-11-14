@@ -96,12 +96,27 @@ atomic, without leaking PostgreSQL types into the public contracts.
      idempotency surface so existing records keep their
      `processing`/`processed`/`failed` vocabulary.
 
+## Limitations
+
+- Memory storage is durable only for the lifetime of the process. It is the
+  test/development adapter; PostgreSQL provides cross-process durability.
+- Claiming the key, committing the accounting entry and completing the
+  idempotency record cannot share one database transaction through the frozen
+  public `PostingWriter` port. The engine instead reserves the entry identity
+  before posting and verifies committed state before any retry, so a crash at
+  any point leaves a `started` record that the next attempt completes without
+  creating a second entry.
+- Rolling back the schema migration restores the narrower
+  `(company_id, idempotency_key)` primary key. If several source systems share
+  an equal key for one company, the operator must resolve those rows first.
+
 ## Verification
 
 - `pkg/sdk/event_idempotency_test.go` covers concurrent same-key callers,
   different-payload conflicts, restart replay, explicit failure without a
-  durable store, transient failure before commit, and failure after commit but
-  before the response.
+  durable store, bounded waiting followed by `ErrIdempotencyInProgress`,
+  terminal-failure retry rejection, transient failure before commit, and
+  failure after commit but before the response.
 - `internal/adapters/memory/public_events_test.go` covers transitions,
   source-system independence, payload mismatch, retryable reclaim, concurrent
   claims and cloned snapshots.

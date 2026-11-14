@@ -424,10 +424,16 @@ func (e *engineInstance) Ledger() LedgerService {
 }
 
 func (e *engineInstance) Reporting() ReportingService {
+	if e.reportingStore == nil {
+		return &disabledReportingService{}
+	}
 	return &defaultReportingService{store: e.reportingStore}
 }
 
 func (e *engineInstance) Governance() GovernanceService {
+	if e.governanceStore == nil {
+		return &disabledGovernanceService{}
+	}
 	return &defaultGovernanceService{store: e.governanceStore}
 }
 
@@ -497,6 +503,30 @@ func (e *engineInstance) CloseWithContext(ctx context.Context) error {
 	return e.closeErr
 }
 
+type disabledReportingService struct{}
+
+func (d *disabledReportingService) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
+	return reporting.TrialBalance{}, types.ErrCapabilityNotImplemented
+}
+func (d *disabledReportingService) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
+	return reporting.BalanceSheetReport{}, types.ErrCapabilityNotImplemented
+}
+func (d *disabledReportingService) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
+	return reporting.IncomeStatementReport{}, types.ErrCapabilityNotImplemented
+}
+func (d *disabledReportingService) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
+	return reporting.GeneralLedgerReport{}, types.ErrCapabilityNotImplemented
+}
+
+type disabledGovernanceService struct{}
+
+func (d *disabledGovernanceService) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
+	return types.ErrCapabilityNotImplemented
+}
+func (d *disabledGovernanceService) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
+	return "", types.ErrCapabilityNotImplemented
+}
+
 type defaultLedgerService struct {
 	useCases         publicapplication.Service
 	requirePrincipal bool
@@ -559,28 +589,28 @@ type defaultReportingService struct {
 
 func (s *defaultReportingService) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
 	if s.store == nil {
-		return reporting.TrialBalance{}, errors.New("reporting store not configured")
+		return reporting.TrialBalance{}, fmt.Errorf("%w: reporting store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.GetTrialBalance(ctx, companyID, asOf, currency)
 }
 
 func (s *defaultReportingService) GetBalanceSheet(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.BalanceSheetReport, error) {
 	if s.store == nil {
-		return reporting.BalanceSheetReport{}, errors.New("reporting store not configured")
+		return reporting.BalanceSheetReport{}, fmt.Errorf("%w: reporting store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.GetBalanceSheet(ctx, companyID, asOf, currency)
 }
 
 func (s *defaultReportingService) GetIncomeStatement(ctx context.Context, companyID types.CompanyID, start, end time.Time, currency string) (reporting.IncomeStatementReport, error) {
 	if s.store == nil {
-		return reporting.IncomeStatementReport{}, errors.New("reporting store not configured")
+		return reporting.IncomeStatementReport{}, fmt.Errorf("%w: reporting store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.GetIncomeStatement(ctx, companyID, start, end, currency)
 }
 
 func (s *defaultReportingService) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
 	if s.store == nil {
-		return reporting.GeneralLedgerReport{}, errors.New("reporting store not configured")
+		return reporting.GeneralLedgerReport{}, fmt.Errorf("%w: reporting store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.GetGeneralLedger(ctx, companyID, accountID, start, end)
 }
@@ -591,14 +621,14 @@ type defaultGovernanceService struct {
 
 func (s *defaultGovernanceService) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
 	if s.store == nil {
-		return errors.New("governance store not configured")
+		return fmt.Errorf("%w: governance store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.RecordAuditLog(ctx, eventID, details)
 }
 
 func (s *defaultGovernanceService) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
 	if s.store == nil {
-		return "", errors.New("governance store not configured")
+		return "", fmt.Errorf("%w: governance store not configured", types.ErrCapabilityNotImplemented)
 	}
 	return s.store.GetApprovalFingerprint(ctx, entryID)
 }
@@ -992,7 +1022,11 @@ func (s *defaultEventService) recoverStartedIngestion(
 	entry ledger.JournalEntry,
 	requestContext publicapplication.Context,
 ) (ledger.JournalEntry, error) {
-	recovery := entry
+	// Recovery must use only the identity reserved by the durable claim. The
+	// incoming event belongs to this caller and may describe a different draft;
+	// taking over an in-flight record without a reserved identity could create
+	// a second entry for the same key.
+	recovery := ledger.JournalEntry{}
 	if existing.EntryID != uuid.Nil {
 		recovery.ID = types.JournalEntryID(existing.EntryID)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
 func TestHTTPHandlersReturnBadRequestForInvalidInput(t *testing.T) {
@@ -202,8 +203,10 @@ func (e *serviceTestEngine) Events() sdk.EventIngestionService {
 	}
 	return serviceTestEvents{}
 }
-func (e *serviceTestEngine) Standards() sdk.StandardsService { return nil }
-func (e *serviceTestEngine) Close() error                    { return nil }
+func (e *serviceTestEngine) Standards() sdk.StandardsService            { return nil }
+func (e *serviceTestEngine) Scheduler() standards.SchedulerPort         { return nil }
+func (e *serviceTestEngine) Close() error                               { return nil }
+func (e *serviceTestEngine) CloseWithContext(ctx context.Context) error { return nil }
 
 type serviceTestLedger struct {
 	err error

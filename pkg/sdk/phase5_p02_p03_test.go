@@ -95,14 +95,24 @@ func TestP5_02_Preflight_ReportingAndGovernanceDisabledReasons(t *testing.T) {
 	}
 }
 
+type mockGovStore struct{}
+
+func (m *mockGovStore) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {
+	return nil
+}
+
+func (m *mockGovStore) GetApprovalFingerprint(ctx context.Context, entryID types.JournalEntryID) (string, error) {
+	return "fp", nil
+}
+
 func TestP5_02_Preflight_ActiveCapabilities(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
-	governanceStore := memory.NewGovernanceAdapter()
+	governanceStore := &mockGovStore{}
 
 	engine, err := NewBuilder(
 		WithCoreStorage(store),
-		WithGovernanceStore(governanceStore),
+		WithGovernance(governanceStore),
 	).Build(ctx)
 	if err != nil {
 		t.Fatalf("failed to build engine: %v", err)

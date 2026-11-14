@@ -91,4 +91,4 @@
 4. `internal/sdkapplication.PostEntry` → posts `entry.CreatedBy` كـ poster (P2-04/P2-05).
 5. `internal/sdkapplication.ReverseEntry` → يستخدم `reason` كـ creator/poster (P2-05).
 6. `storage/postgres.NewLedgerApplication` → ينشئ Application Service من داخل Adapter (P3-02).
-7. Event ingestion fallback idempotency في الذاكرة (P3-04).
+7. ~~Event ingestion fallback idempotency في الذاكرة~~ (P3-04): أُغلق؛ السجل دائم عبر `storage.Ports.Events` بهوية `(شركة, مصدر, مفتاح)` وبصمة حمولة مُصدّرة، ولا يوجد Fallback داخل العملية.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -24,7 +25,10 @@ func main() {
 }
 
 func run() error {
-	cfg := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("configuration failure: %w", err)
+	}
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancel(signalCtx)
@@ -41,17 +45,17 @@ func run() error {
 		return healthCtx.Err()
 	}
 
-	if cfg.Database == "memory" || cfg.Database == "" {
+	if cfg.IsInMemory() {
 		memStore := memory.New()
 		coreStore = memStore
 		reportingStore = memStore
 		governanceStore = memStore
 		closeStore = func() error { return nil }
-		log.Println("Using In-Memory storage backend")
+		log.Printf("Starting service in %s environment with in-memory storage", cfg.AppEnv)
 	} else {
 		pgDriver, err := postgres.New(ctx, cfg.Database)
 		if err != nil {
-			return err
+			return fmt.Errorf("connect to PostgreSQL (%s): %w", SanitizeDSN(cfg.Database), err)
 		}
 		coreStore = pgDriver
 		reportingStore = pgDriver
@@ -68,7 +72,7 @@ func run() error {
 			defer pingCancel()
 			return pgDriver.Pool().Ping(pingCtx)
 		}
-		log.Println("Using PostgreSQL storage backend")
+		log.Printf("Starting service in %s environment with PostgreSQL storage (%s)", cfg.AppEnv, SanitizeDSN(cfg.Database))
 	}
 	defer func() {
 		if err := closeStore(); err != nil {

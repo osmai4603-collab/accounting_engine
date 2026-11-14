@@ -23,6 +23,14 @@ Every engine use case defines a strict atomic boundary:
 | **Save Draft** | 1. Validation of company, account, and fiscal period<br/>2. Draft persistence | `READ COMMITTED` | Draft rejected if company/account/period metadata is invalid. |
 | **Event Ingestion** | 1. Idempotency claim with Canonical Payload Hash<br/>2. Use case execution (Draft/Post)<br/>3. Response payload & status persistence | Inherited from use case (Post/Reverse) | Re-delivery with identical key and payload returns identical result without duplicate posting. Divergent payload returns conflict error. |
 
+**Event ingestion boundary (P3-04):** the idempotency claim and completion are
+atomic operations of the durable event store (`storage.Ports.Events`), while
+the accounting entry is posted through the public `PostingWriter` transaction.
+The claim reserves the entry identity before posting, and every retry checks
+whether that entry is already committed before posting again. A crash between
+claim and completion therefore leaves a `started` record that is recovered
+without creating a second entry; it does not rely on process-local state.
+
 ---
 
 ## 3. Concurrency, Locking, and Deadlock Prevention

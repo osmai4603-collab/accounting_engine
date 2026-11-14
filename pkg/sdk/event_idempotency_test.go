@@ -126,6 +126,17 @@ func (f *publicEventFixture) event(key string) events.AccountingEvent {
 	}
 }
 
+func (f *publicEventFixture) assertNoPosting(t *testing.T) {
+	t.Helper()
+	balance, err := f.driver.GetTrialBalance(context.Background(), f.companyID, f.effective, "USD")
+	if err != nil {
+		t.Fatalf("read trial balance: %v", err)
+	}
+	if !balance.TotalDebit.Amount().IsZero() || !balance.TotalCredit.Amount().IsZero() {
+		t.Fatalf("unexpected posting: debit %s / credit %s", balance.TotalDebit, balance.TotalCredit)
+	}
+}
+
 func (f *publicEventFixture) assertSinglePosting(t *testing.T) {
 	t.Helper()
 	balance, err := f.driver.GetTrialBalance(context.Background(), f.companyID, f.effective, "USD")
@@ -272,6 +283,60 @@ func TestPublicEventIngestionRejectsKeyWithoutDurableStore(t *testing.T) {
 	if !balance.TotalDebit.Amount().IsZero() || !balance.TotalCredit.Amount().IsZero() {
 		t.Fatalf("missing durable store still posted: debit %s credit %s", balance.TotalDebit, balance.TotalCredit)
 	}
+}
+
+func TestPublicEventIngestionWaitsForInFlightThenReportsInProgress(t *testing.T) {
+	fixture := newPublicEventFixture(t)
+	ports := fixture.driver.Ports()
+	scoped, ok := ports.Events.Idempotency.(sdk.PublicEventScopedIdempotencyStore)
+	if !ok {
+		t.Fatal("memory idempotency store does not implement the scoped capability")
+	}
+	companyUUID := uuid.UUID(fixture.companyID)
+	if _, claimed, err := scoped.ClaimPublicEventIngestion(context.Background(), publicevents.Ingestion{
+		CompanyID: companyUUID, IdempotencyKey: "in-flight-key", EventType: "sale",
+		Status: publicevents.StatusStarted,
+	}); err != nil || !claimed {
+		t.Fatalf("seed in-flight record: claimed=%t err=%v", claimed, err)
+	}
+
+	engine := buildEventEngine(t, ports,
+		sdk.WithEventIdempotencyWaitPolicy(20*time.Millisecond, 5*time.Millisecond))
+	_, err := engine.Events().ProcessEvent(context.Background(), fixture.event("in-flight-key"))
+	if !errors.Is(err, sdk.ErrIdempotencyInProgress) {
+		t.Fatalf("ProcessEvent error = %v, want %v", err, sdk.ErrIdempotencyInProgress)
+	}
+	if !errors.Is(err, publicapplication.ErrConflict) {
+		t.Fatalf("ProcessEvent error = %v, want conflict taxonomy", err)
+	}
+	fixture.assertNoPosting(t)
+}
+
+func TestPublicEventIngestionRejectsTerminalFailureRetry(t *testing.T) {
+	fixture := newPublicEventFixture(t)
+	ports := fixture.driver.Ports()
+	companyUUID := uuid.UUID(fixture.companyID)
+	if _, claimed, err := ports.Events.Idempotency.ClaimPublicEventIngestion(context.Background(), publicevents.Ingestion{
+		CompanyID: companyUUID, IdempotencyKey: "terminal-key", EventType: "sale",
+		Status: publicevents.StatusStarted,
+	}); err != nil || !claimed {
+		t.Fatalf("seed terminal record: claimed=%t err=%v", claimed, err)
+	}
+	if err := ports.Events.Idempotency.(publicevents.ScopedIdempotencyStore).FailPublicEventIngestionForSource(
+		context.Background(), companyUUID, publicevents.DefaultSourceSystem, "terminal-key",
+		publicevents.FailureClassTerminal, "invalid account mapping"); err != nil {
+		t.Fatalf("record terminal failure: %v", err)
+	}
+
+	engine := buildEventEngine(t, ports)
+	_, err := engine.Events().ProcessEvent(context.Background(), fixture.event("terminal-key"))
+	if !errors.Is(err, sdk.ErrIdempotencyTerminalFailure) {
+		t.Fatalf("ProcessEvent error = %v, want %v", err, sdk.ErrIdempotencyTerminalFailure)
+	}
+	if !errors.Is(err, publicapplication.ErrConflict) {
+		t.Fatalf("ProcessEvent error = %v, want conflict taxonomy", err)
+	}
+	fixture.assertNoPosting(t)
 }
 
 type flakyPostingPort struct {

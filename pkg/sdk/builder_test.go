@@ -395,13 +395,11 @@ func TestBuilder_OptionalCapabilitiesFailExplicitly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build engine: %v", err)
 	}
-	if _, err := engine.Reporting().GetTrialBalance(context.Background(), types.NewCompanyID(), time.Now(), "USD"); err == nil ||
-		!strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("Reporting error = %v, want explicit not-configured error", err)
+	if _, err := engine.Reporting().GetTrialBalance(context.Background(), types.NewCompanyID(), time.Now(), "USD"); !errors.Is(err, types.ErrCapabilityNotImplemented) {
+		t.Fatalf("Reporting error = %v, want %v", err, types.ErrCapabilityNotImplemented)
 	}
-	if err := engine.Governance().RecordAuditLog(context.Background(), "event", nil); err == nil ||
-		!strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("Governance error = %v, want explicit not-configured error", err)
+	if err := engine.Governance().RecordAuditLog(context.Background(), "event", nil); !errors.Is(err, types.ErrCapabilityNotImplemented) {
+		t.Fatalf("Governance error = %v, want %v", err, types.ErrCapabilityNotImplemented)
 	}
 }
 
