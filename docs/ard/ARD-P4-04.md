@@ -134,7 +134,7 @@ PASS
 ok github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres 10.994s
 ```
 
-نجحت اختبارات وحدة `internal/posting` واختبارات PostgreSQL ذات الصلة في مساحة العمل الحالية. تعذر تكرار تشغيل PostgreSQL في المحاولة الأخيرة لأن اختبار `P4-05` غير ذي الصلة لا يُجمّع حاليًا بسبب استيراد `context` مفقود؛ لم يُعدّل ضمن هذه المهمة.
+نجحت اختبارات وحدة `internal/posting` واختبارات PostgreSQL ذات الصلة على الحالة النهائية لمساحة العمل.
 
 ---
 

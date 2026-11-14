@@ -183,13 +183,14 @@ func TestDraftRejectsJournalAndPeriodOutsideCompany(t *testing.T) {
 func TestFailedPostingDoesNotChangeMaterializedBalances(t *testing.T) {
 	fixture := newPerpetualLedgerFixture(t)
 	period := fixture.year.Periods[0]
-	entry := fixture.entry(period.StartDate.Add(time.Hour), uuid.New(),
+	entry := fixture.entry(period.StartDate.Add(time.Hour), period.ID,
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.debitID, Debit: fixture.amount, Credit: fixture.zero},
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.creditID, Debit: fixture.zero, Credit: fixture.amount},
 	)
 	if err := fixture.driver.SaveDraft(entry); err != nil {
 		t.Fatal(err)
 	}
+	delete(fixture.driver.periods, period.ID)
 	entry.Status = posting.EntryPosted
 	if _, err := fixture.driver.PostAndSequence(entry); !errors.Is(err, masterdata.ErrFiscalPeriodNotFound) {
 		t.Fatalf("posting with unknown period error = %v, want fiscal period not found", err)
@@ -201,12 +202,12 @@ func TestFailedPostingDoesNotChangeMaterializedBalances(t *testing.T) {
 
 func TestFailedBulkPostingDoesNotPartiallyUpdateBalances(t *testing.T) {
 	fixture := newPerpetualLedgerFixture(t)
-	period := fixture.year.Periods[0]
-	valid := fixture.entry(period.StartDate.Add(time.Hour), period.ID,
+	firstPeriod, secondPeriod := fixture.year.Periods[0], fixture.year.Periods[1]
+	valid := fixture.entry(firstPeriod.StartDate.Add(time.Hour), firstPeriod.ID,
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.debitID, Debit: fixture.amount, Credit: fixture.zero},
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.creditID, Debit: fixture.zero, Credit: fixture.amount},
 	)
-	invalid := fixture.entry(period.StartDate.Add(2*time.Hour), uuid.New(),
+	invalid := fixture.entry(secondPeriod.StartDate.Add(2*time.Hour), secondPeriod.ID,
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.debitID, Debit: fixture.amount, Credit: fixture.zero},
 		posting.JournalEntryLine{ID: uuid.New(), AccountID: fixture.creditID, Debit: fixture.zero, Credit: fixture.amount},
 	)
@@ -216,6 +217,8 @@ func TestFailedBulkPostingDoesNotPartiallyUpdateBalances(t *testing.T) {
 	if err := fixture.driver.SaveDraft(invalid); err != nil {
 		t.Fatal(err)
 	}
+	secondPeriod.CompanyID = uuid.New()
+	fixture.driver.periods[secondPeriod.ID] = secondPeriod
 	valid.Status = posting.EntryPosted
 	invalid.Status = posting.EntryPosted
 	if err := fixture.driver.PostBulk(context.Background(), []posting.JournalEntry{valid, invalid}); !errors.Is(err, masterdata.ErrFiscalPeriodNotFound) {

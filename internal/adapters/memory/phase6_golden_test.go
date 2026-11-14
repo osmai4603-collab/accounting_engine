@@ -11,6 +11,8 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -92,6 +94,12 @@ func TestPhase6GoldenIAS16IAS36FixedAssetLifecycle(t *testing.T) {
 	}
 
 	assetID, journalID := uuid.New(), uuid.New()
+	if err := driver.MasterDataStore().CreateJournal(ctx, publicmasterdata.Journal{
+		ID: publicmasterdata.JournalID(journalID), CompanyID: types.CompanyID(companyID),
+		Code: "GEN", Name: "General",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	asset := subledgers.FixedAsset{
 		CompanyID: companyID, ID: assetID,
 		AssetAccountID: accounts["asset"], AccumulatedAccountID: accounts["accumulated"],

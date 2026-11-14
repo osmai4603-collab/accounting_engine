@@ -11,6 +11,8 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 )
 
 func TestFinancialDimensionsAreCompanyScopedAndActive(t *testing.T) {
@@ -63,6 +65,12 @@ func TestPostedInvoiceRequiresControlAccountAndSavesWithPostedEntry(t *testing.T
 	companyID, controlID, revenueID, journalID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: "T2", LegalName: "Phase Two", FunctionalCurrency: "USD", PresentationCurrency: "USD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.MasterDataStore().CreateJournal(ctx, publicmasterdata.Journal{
+		ID: publicmasterdata.JournalID(journalID), CompanyID: types.CompanyID(companyID),
+		Code: "GEN", Name: "General",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +144,12 @@ func TestPostEntryWithOpenLineIsAtomic(t *testing.T) {
 	if err := driver.CreateCompany(ctx, masterdata.Company{
 		ID: companyID, Code: "T2-ATOMIC", LegalName: "Atomic Posting",
 		FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.MasterDataStore().CreateJournal(ctx, publicmasterdata.Journal{
+		ID: publicmasterdata.JournalID(journalID), CompanyID: types.CompanyID(companyID),
+		Code: "GEN", Name: "General",
 	}); err != nil {
 		t.Fatal(err)
 	}

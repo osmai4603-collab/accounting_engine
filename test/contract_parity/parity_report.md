@@ -1,26 +1,26 @@
 # Contract Parity Report — P3-07
 
-- **Generated (UTC):** 2026-11-14T20:46:27Z
+- **Generated (UTC):** 2026-11-14T21:35:00Z
 - **Adapters:** Memory, External SPI adapter, PostgreSQL (when `POSTGRES_URL` is configured).
 
 | Scenario | Adapter | Result | Duration |
 | :--- | :--- | :---: | ---: |
 | CapabilitiesMatrix | external | PASS | 0s |
 | CapabilitiesMatrix | memory | PASS | 0s |
-| CapabilitiesMatrix | postgres | PASS | 486ms |
+| CapabilitiesMatrix | postgres | PASS | 1.13s |
 | CoreLifecycle | external | PASS | 0s |
 | CoreLifecycle | memory | PASS | 1ms |
-| CoreLifecycle | postgres | PASS | 877ms |
-| CrossAdapterSemanticEquivalence | all | FAIL | 0s |
+| CoreLifecycle | postgres | PASS | 724ms |
+| CrossAdapterSemanticEquivalence | all | FAIL | 1ms |
 | EventIdempotency | external | PASS | 0s |
 | EventIdempotency | memory | PASS | 1ms |
-| EventIdempotency | postgres | PASS | 524ms |
+| EventIdempotency | postgres | PASS | 1.472s |
 | ReversalLifecycle | external | PASS | 0s |
-| ReversalLifecycle | memory | PASS | 0s |
-| ReversalLifecycle | postgres | PASS | 579ms |
+| ReversalLifecycle | memory | PASS | 1ms |
+| ReversalLifecycle | postgres | PASS | 722ms |
 | SemanticErrorsAndInvariants | external | PASS | 0s |
-| SemanticErrorsAndInvariants | memory | PASS | 1ms |
-| SemanticErrorsAndInvariants | postgres | PASS | 723ms |
+| SemanticErrorsAndInvariants | memory | PASS | 0s |
+| SemanticErrorsAndInvariants | postgres | PASS | 1.749s |
 
 - **Totals:** 15 passed, 1 failed, 0 skipped.
 

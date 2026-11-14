@@ -38,10 +38,12 @@ Targeted tests cover:
 - Memory persistence, actor/reason history, company isolation, and stale-transition rejection.
 - PostgreSQL migration reversibility and adapter compilation.
 
-Run:
+Executed targeted checks:
 
 ```sh
-go test ./internal/subledgers ./internal/adapters/memory ./internal/adapters/postgres
+go test -count=1 ./internal/subledgers
+go test -count=1 ./internal/adapters/memory -run '^(TestReconciliationExceptionLifecyclePersistsActorAndReason|TestSavingDiscrepancyReportCreatesItsException)$'
+go test ./internal/adapters/postgres -run '^(TestEveryMigrationHasRollback|TestMigrationsHaveReversiblePairs|TestDangerousMigrationsRequireApproval|TestEveryFinancialTableHasForcedRLS|TestP405ReconciliationExceptionLifecycleIsAtomicAndCompanyScoped)$' -count=1
 ```
 
 `TestP405ReconciliationExceptionLifecycleIsAtomicAndCompanyScoped` and

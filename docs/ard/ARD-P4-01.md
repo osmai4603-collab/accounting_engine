@@ -23,8 +23,11 @@
 go test ./internal/posting/...
 ok   github.com/osmai4603-collab/accounting_engine/internal/posting
 
+go test ./internal/adapters/memory/...
+ok   github.com/osmai4603-collab/accounting_engine/internal/adapters/memory
+
 go test ./internal/adapters/postgres/... -run 'Test(P404|PostgresReversal|MigrationsHaveReversiblePairs|DangerousMigrationsRequireApproval)'
 ok   github.com/osmai4603-collab/accounting_engine/internal/adapters/postgres
 ```
 
-اختبار رفض الدفتر أو الفترة أو الحساب التابع لشركة أخرى أضيف إلى اختبارات موائم الذاكرة. نجح بناء موائم الذاكرة، لكن تعذر تشغيل الاختبارات كاملة بسبب تعديل نحوي جارٍ في اختبار `P4-05` غير متعلق بهذه المهمة؛ لم يُعدّل ذلك الملف. كما تعذر إعادة تشغيل حزمة PostgreSQL في المحاولة الأخيرة بسبب حذف استيراد `context` من اختبار `P4-05` منفصل، بعد نجاح التشغيل المستهدف أعلاه.
+اختبار رفض الدفتر أو الفترة أو الحساب التابع لشركة أخرى أضيف إلى اختبارات موائم الذاكرة. اجتازت أوامر الاختبار الثلاثة جميعها على الحالة النهائية لمساحة العمل.

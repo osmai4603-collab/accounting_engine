@@ -70,7 +70,6 @@ type Repository interface {
 	ConditionalBankItemRepository
 	ConditionalBankItemsAndDraftRepository
 	ControlAccountReader
-	ReconciliationExceptionRepository
 }
 
 type EventRepository interface {
