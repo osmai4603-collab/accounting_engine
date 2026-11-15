@@ -29,18 +29,21 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 			Amendments:    []string{"Not configured; host must select applicable amendments"},
 			EffectiveDate: "Not configured; host must supply the applicable effective date",
 			Jurisdiction:  "Not configured; host must identify its reporting jurisdiction",
-			Scope:         "Limited: lessee initial measurement and dated liability/ROU amortization schedules for supplied lease terms.",
+			Scope:         "Limited: lessee initial measurement, dated liability/ROU schedules, and non-separate modification remeasurement for supplied lease terms. Does not implement lessor accounting or contract identification.",
 			SupportedRequirements: []standards.StandardRequirement{
 				{ID: "IFRS16-INITIAL-01", Summary: "Measure initial lease liability and right-of-use asset from supplied payment terms and discount rate.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/lease.go:NewLeaseContract", TestEvidence: "internal/ifrs16/lease_test.go"},
 				{ID: "IFRS16-SCHEDULE-01", Summary: "Calculate dated interest, principal, liability, and ROU depreciation schedules.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/lease.go:LeaseContract.AmortizationSchedule", TestEvidence: "internal/ifrs16/lease_test.go"},
+				{ID: "IFRS16-MODIFICATION-01", Summary: "Remeasure supplied remaining cash flows for a non-separate modification using a supplied revised discount rate and supplied carrying amounts.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/lease.go:LeaseContract.RecalculateModification", TestEvidence: "internal/ifrs16/lease_test.go:TestModificationRecalculationAndEntry"},
 			},
 			UnimplementedRequirements: []standards.StandardRequirement{
 				{ID: "IFRS16-LESSOR-ACCOUNTING", Summary: "Lessor accounting workflows.", Status: standards.RequirementNotImplemented},
-				{ID: "IFRS16-POSTING-WORKFLOW", Summary: "Persistent lease workflow with configured journal mapping and application-layer posting.", Status: standards.RequirementNotImplemented},
+				{ID: "IFRS16-POSTING-WORKFLOW", Summary: "Persistent lease workflow with durable retry handling and application-layer posting.", Status: standards.RequirementNotImplemented},
 			},
 			Exclusions: []string{
-				"Lessor accounting, lease identification, completeness of the lease population, and host contract lifecycle.",
-				"Production journal mapping, persistence, and posting through the application service.",
+				"Lessor accounting, lease identification, completeness of the lease population, options and lease-term judgments, non-lease components, variable payments, and completeness/accuracy of supplied cash flows.",
+				"Short-term and low-value exemptions are not implemented; no exemption eligibility decision is made.",
+				"Index/rate reassessments, separate lease modifications, impairment, foreign-currency accounting, and full termination/transition accounting.",
+				"Production persistence and posting through the application service; EntryBuilder only resolves configured accounts and creates deterministic drafts when a host capability is supplied.",
 			},
 		},
 		Workflows: []standards.WorkflowDescriptor{
@@ -59,6 +62,14 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 				Steps:          []string{"calculate period interest and principal", "roll forward the liability", "calculate ROU depreciation"},
 				Outputs:        []string{"dated liability and ROU schedule"},
 				RequirementIDs: []string{"IFRS16-SCHEDULE-01"},
+			},
+			{
+				ID: "lease-modification-remeasurement", Name: "Lease modification remeasurement",
+				Summary:        "Remeasure a non-separate modification from host-supplied remaining payments, carrying amounts, and revised discount rate; not a legal modification assessment.",
+				Inputs:         []string{"effective date", "remaining lease payments", "revised discount rate", "liability carrying amount", "ROU carrying amount"},
+				Steps:          []string{"validate remaining payment dates and currency", "discount remaining payments on Actual/365", "adjust liability and ROU; recognize excess liability reduction as gain"},
+				Outputs:        []string{"remeasured liability", "ROU adjustment", "modification gain where applicable"},
+				RequirementIDs: []string{"IFRS16-MODIFICATION-01"},
 			},
 		},
 	}

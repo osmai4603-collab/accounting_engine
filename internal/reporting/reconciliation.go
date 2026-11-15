@@ -12,9 +12,11 @@ import (
 )
 
 var (
-	ErrBalanceReconciliationUnavailable = errors.New("balance reconciliation is not supported by this repository")
-	ErrInvalidReconciliationScope       = errors.New("company, fiscal period, and currency are required for reconciliation")
-	ErrBalanceDriftDetected             = errors.New("balance reconciliation drift detected")
+	ErrBalanceReconciliationUnavailable    = errors.New("balance reconciliation is not supported by this repository")
+	ErrBalanceReconciliationDetailRequired = errors.New("detailed balance reconciliation source data is required")
+	ErrBalanceReconciliationNoData         = errors.New("balance reconciliation returned no comparable accounts")
+	ErrInvalidReconciliationScope          = errors.New("company, fiscal period, and currency are required for reconciliation")
+	ErrBalanceDriftDetected                = errors.New("balance reconciliation drift detected")
 )
 
 // BalanceReconciliationRepository is the assert-only contract: it either
@@ -99,6 +101,9 @@ func (e *BalanceReconciliationEngine) Reconcile(
 	if ctx == nil {
 		return ReconciliationReport{}, errors.New("reconciliation context is required")
 	}
+	if e == nil || e.repository == nil {
+		return ReconciliationReport{}, fmt.Errorf("%w: reconciliation repository", ErrReportingDependencyMissing)
+	}
 	if err := ctx.Err(); err != nil {
 		return ReconciliationReport{}, err
 	}
@@ -108,10 +113,19 @@ func (e *BalanceReconciliationEngine) Reconcile(
 	if reporter, ok := e.repository.(BalanceReconciliationReporter); ok {
 		report, err := reporter.BuildBalanceReconciliationReport(ctx, companyID, fiscalPeriodID, currencyID)
 		if err != nil {
-			e.metrics.SetReconciliationDiscrepancyCount(1)
+			e.setDiscrepancyCount(1)
 			return ReconciliationReport{}, fmt.Errorf("reconcile account balances: %w", err)
 		}
-		e.metrics.SetReconciliationDiscrepancyCount(len(report.Drifts))
+		e.setDiscrepancyCount(len(report.Drifts))
+		if report.CompanyID != companyID || report.FiscalPeriodID != fiscalPeriodID || report.CurrencyID != currencyID {
+			return ReconciliationReport{}, fmt.Errorf("%w: returned scope does not match request", ErrInvalidReconciliationScope)
+		}
+		if report.AccountsChecked <= 0 {
+			return ReconciliationReport{}, ErrBalanceReconciliationNoData
+		}
+		if report.ZeroDrift && len(report.Drifts) != 0 {
+			return ReconciliationReport{}, fmt.Errorf("%w: zero-drift result contains account exceptions", ErrBalanceDriftDetected)
+		}
 		return report, report.Err()
 	}
 	repository, ok := e.repository.(BalanceReconciliationRepository)
@@ -119,17 +133,15 @@ func (e *BalanceReconciliationEngine) Reconcile(
 		return ReconciliationReport{}, ErrBalanceReconciliationUnavailable
 	}
 	if err := repository.AssertBalancesMatchMoves(ctx, companyID, fiscalPeriodID, currencyID); err != nil {
-		e.metrics.SetReconciliationDiscrepancyCount(1)
+		e.setDiscrepancyCount(1)
 		return ReconciliationReport{}, fmt.Errorf("reconcile account balances: %w", err)
 	}
-	e.metrics.SetReconciliationDiscrepancyCount(0)
-	return ReconciliationReport{
-		CompanyID:       companyID,
-		FiscalPeriodID:  fiscalPeriodID,
-		CurrencyID:      currencyID,
-		AccountsChecked: 0,
-		Drifts:          nil,
-		ZeroDrift:       true,
-		GeneratedAt:     time.Now().UTC(),
-	}, nil
+	e.setDiscrepancyCount(0)
+	return ReconciliationReport{}, ErrBalanceReconciliationDetailRequired
+}
+
+func (e *BalanceReconciliationEngine) setDiscrepancyCount(count int) {
+	if e != nil && e.metrics != nil {
+		e.metrics.SetReconciliationDiscrepancyCount(count)
+	}
 }

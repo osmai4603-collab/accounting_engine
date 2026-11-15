@@ -10,12 +10,13 @@ import (
 )
 
 var (
-	ErrInvalidContract     = errors.New("invalid lease contract")
-	ErrInvalidPayment      = errors.New("invalid lease payment")
-	ErrInvalidAccounts     = errors.New("invalid lease journal accounts")
-	ErrInvalidCarrying     = errors.New("invalid lease carrying amount")
-	ErrNegativeLiability   = errors.New("lease payment exceeds accrued liability")
-	ErrDepreciationUnavail = errors.New("no depreciation due for this period")
+	ErrInvalidContract        = errors.New("invalid lease contract")
+	ErrInvalidPayment         = errors.New("invalid lease payment")
+	ErrInvalidAccounts        = errors.New("invalid lease journal accounts")
+	ErrInvalidCarrying        = errors.New("invalid lease carrying amount")
+	ErrNegativeLiability      = errors.New("lease payment exceeds accrued liability")
+	ErrDepreciationUnavail    = errors.New("no depreciation due for this period")
+	ErrLeaseReferenceRequired = errors.New("lease reference is required for entry generation")
 )
 
 var (
@@ -33,6 +34,7 @@ type LeasePayment struct {
 
 // LeaseContract contains the inputs and calculated commencement balances for a lease.
 type LeaseContract struct {
+	Reference             string          `json:"reference,omitempty"`
 	CommencementDate      time.Time       `json:"commencement_date"`
 	Currency              string          `json:"currency"`
 	AnnualDiscountRate    decimal.Decimal `json:"annual_discount_rate"`
@@ -47,6 +49,7 @@ type LeaseContract struct {
 
 // SchedulePeriod is one dated liability and ROU depreciation roll-forward.
 type SchedulePeriod struct {
+	LeaseReference          string
 	Period                  int
 	DueDate                 time.Time
 	Payment                 types.Money
@@ -57,6 +60,13 @@ type SchedulePeriod struct {
 	ROUDepreciation         types.Money
 	AccumulatedDepreciation types.Money
 	ClosingROUAsset         types.Money
+}
+
+// WithReference returns a copy identified by the caller's stable contract key.
+// The reference is required when generating journal drafts.
+func (c LeaseContract) WithReference(reference string) LeaseContract {
+	c.Reference = reference
+	return c
 }
 
 // NewLeaseContract validates lease terms and calculates commencement balances.
@@ -200,6 +210,7 @@ func (c LeaseContract) AmortizationSchedule() ([]SchedulePeriod, error) {
 			}
 		}
 		result = append(result, SchedulePeriod{
+			LeaseReference:          c.Reference,
 			Period:                  i + 1,
 			DueDate:                 payment.DueDate,
 			Payment:                 payment.Amount,

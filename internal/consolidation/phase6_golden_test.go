@@ -30,6 +30,12 @@ func TestPhase6GoldenConsolidationHoldingThreeSubsidiaries(t *testing.T) {
 		ParentEntityID:    parentID,
 		ReportingCurrency: "USD",
 		Period:            ReportingPeriod{StartDate: periodStart, EndDate: periodEnd},
+		Policies: Policies{
+			AccountingPolicyID: "group-accounting-v1", ControlPolicyID: "group-control-v1",
+			CurrencyTranslationPolicyID: "ias21-group-v1", EliminationPolicyID: "group-eliminations-v1",
+			IntercompanyPolicyID: "group-intercompany-v1", EliminationScope: PolicyScopeConfigured,
+			IntercompanyScope: PolicyScopeConfigured,
+		},
 		Entities: []Entity{
 			{ID: parentID, FunctionalCurrency: "USD"},
 			{ID: eurID, FunctionalCurrency: "EUR"},
@@ -98,18 +104,21 @@ func TestPhase6GoldenConsolidationHoldingThreeSubsidiaries(t *testing.T) {
 	group.Ownerships = []Ownership{
 		{
 			ParentEntityID: parentID, SubsidiaryEntityID: eurID, Percentage: dec("1"),
+			ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-eur-control",
 			AcquisitionDate: historicalDate, Consideration: dec("300"), FairValueNetAssets: dec("250"),
 			InvestmentAccountID: "investment-eur", GoodwillAccountID: "goodwill",
 			NCIAccountID: "nci", ParentRetainedEarningsAccountID: "retained",
 		},
 		{
 			ParentEntityID: parentID, SubsidiaryEntityID: gbpID, Percentage: dec("0.8"),
+			ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-gbp-control",
 			AcquisitionDate: historicalDate, Consideration: dec("100"), FairValueNetAssets: dec("100"),
 			InvestmentAccountID: "investment-gbp", GoodwillAccountID: "goodwill",
 			NCIAccountID: "nci", ParentRetainedEarningsAccountID: "retained",
 		},
 		{
 			ParentEntityID: parentID, SubsidiaryEntityID: jpyID, Percentage: dec("0.6"),
+			ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-jpy-control",
 			AcquisitionDate: historicalDate, Consideration: dec("50"), FairValueNetAssets: dec("60"),
 			InvestmentAccountID: "investment-jpy", GoodwillAccountID: "goodwill",
 			NCIAccountID: "nci", ParentRetainedEarningsAccountID: "retained",

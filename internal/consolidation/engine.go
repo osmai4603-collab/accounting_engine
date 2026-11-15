@@ -176,6 +176,16 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 	if !nonblank(group.ID) || !nonblank(group.ParentEntityID) {
 		return fail("group and parent entity IDs are required")
 	}
+	if !nonblank(group.Policies.AccountingPolicyID) ||
+		!nonblank(group.Policies.ControlPolicyID) ||
+		!nonblank(group.Policies.CurrencyTranslationPolicyID) ||
+		!nonblank(group.Policies.EliminationPolicyID) ||
+		!nonblank(group.Policies.IntercompanyPolicyID) ||
+		(group.Policies.EliminationScope != PolicyScopeNone && group.Policies.EliminationScope != PolicyScopeConfigured) ||
+		(group.Policies.IntercompanyScope != PolicyScopeNone && group.Policies.IntercompanyScope != PolicyScopeConfigured) {
+		return validatedGroup{}, fmt.Errorf("%w: policy identifiers and explicit elimination/intercompany scopes are required",
+			ErrMissingConsolidationPolicy)
+	}
 	if !validCurrency(group.ReportingCurrency) {
 		return fail("invalid reporting currency %q", group.ReportingCurrency)
 	}
@@ -281,6 +291,10 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 	}
 
 	for _, ownership := range group.Ownerships {
+		if !nonblank(ownership.ControlBasis) || !nonblank(ownership.ControlEvidenceReference) {
+			return validatedGroup{}, fmt.Errorf("%w: control basis and evidence reference are required for subsidiary %q",
+				ErrMissingConsolidationPolicy, ownership.SubsidiaryEntityID)
+		}
 		if ownership.ParentEntityID == ownership.SubsidiaryEntityID || ownership.SubsidiaryEntityID == group.ParentEntityID ||
 			!nonblank(ownership.SubsidiaryEntityID) {
 			return fail("ownership must link distinct entities in the group")
@@ -354,6 +368,14 @@ func validateGroup(group Group, tbs []TrialBalance) (validatedGroup, error) {
 	}
 	if err := validateRules(group, result); err != nil {
 		return validatedGroup{}, err
+	}
+	hasEliminationRules := len(group.Rules.IntercompanyBalances) > 0 ||
+		len(group.Rules.IntercompanyTrading) > 0 || len(group.Rules.UnrealizedInventory) > 0
+	hasIntercompanyRules := len(group.Rules.IntercompanyBalances) > 0 || len(group.Rules.IntercompanyTrading) > 0
+	if (group.Policies.EliminationScope == PolicyScopeConfigured) != hasEliminationRules ||
+		(group.Policies.IntercompanyScope == PolicyScopeConfigured) != hasIntercompanyRules {
+		return validatedGroup{}, fmt.Errorf("%w: declared elimination/intercompany scope does not match configured rules",
+			ErrMissingConsolidationPolicy)
 	}
 	return result, nil
 }

@@ -17,6 +17,11 @@
 // unbalanced or unreconciled conditions are surfaced through results or
 // errors rather than concealed.
 //
+// RequirementsForReport and ValidateReportRequirements expose the ledger,
+// account-taxonomy, and conditional currency-rate dependencies before
+// activation. A missing repository or empty/unusable account taxonomy is an
+// error, not a successful empty report.
+//
 // Engine can be connected to the policy unit to resolve an omitted statement
 // currency to the company's effective presentation currency. Explicit
 // translation currencies are checked against the policy's allowed currencies.

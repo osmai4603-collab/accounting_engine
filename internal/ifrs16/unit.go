@@ -1,6 +1,7 @@
 package ifrs16
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,14 +39,19 @@ func (u *Unit) ModifyLeaseContext(
 // ClosePeriod returns balanced payment/interest and depreciation journal drafts
 // for all schedule periods due by the requested date.
 func (u *Unit) ClosePeriod(
+	ctx context.Context,
 	contract LeaseContract,
 	through time.Time,
-	accounts LeaseAccounts,
+	builder *EntryBuilder,
+	mappingID string,
 	companyID, journalID uuid.UUID,
 	createdBy string,
 ) ([]posting.JournalEntry, error) {
-	if u == nil || through.IsZero() {
+	if u == nil || through.IsZero() || builder == nil {
 		return nil, ErrInvalidContract
+	}
+	if contract.Reference == "" {
+		return nil, ErrLeaseReferenceRequired
 	}
 	schedule, err := contract.AmortizationSchedule()
 	if err != nil {
@@ -56,11 +62,11 @@ func (u *Unit) ClosePeriod(
 		if period.DueDate.After(through) {
 			continue
 		}
-		payment, err := BuildPaymentEntry(period, accounts, companyID, journalID, createdBy)
+		payment, err := builder.BuildPaymentEntry(ctx, period, companyID, journalID, mappingID, createdBy)
 		if err != nil {
 			return nil, err
 		}
-		depreciation, err := BuildDepreciationEntry(period, accounts, companyID, journalID, createdBy)
+		depreciation, err := builder.BuildDepreciationEntry(ctx, period, companyID, journalID, mappingID, createdBy)
 		if err != nil {
 			return nil, err
 		}

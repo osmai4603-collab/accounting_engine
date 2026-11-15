@@ -202,6 +202,7 @@ func TestConsolidateSupportsNestedOwnershipChain(t *testing.T) {
 		AccountMapping{EntityID: grandchildID, SourceAccountID: "equity", GroupAccountID: "sub-equity", RateClass: RateHistorical, HistoricalDate: dt(2024, 1, 1)})
 	group.Ownerships = append(group.Ownerships, Ownership{
 		ParentEntityID: subCompanyID, SubsidiaryEntityID: grandchildID, Percentage: dec("1"),
+		ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-grandchild-control",
 		AcquisitionDate: dt(2024, 1, 1), Consideration: dec("10"), FairValueNetAssets: dec("10"),
 		InvestmentAccountID: "investment", GoodwillAccountID: "goodwill",
 		NCIAccountID: "parent-equity", ParentRetainedEarningsAccountID: "retained",
@@ -263,6 +264,26 @@ func TestConsolidateRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestConsolidateRequiresExplicitPolicyAndControlEvidence(t *testing.T) {
+	group, tbs := basicFixture()
+	group.Policies.IntercompanyPolicyID = ""
+	if _, err := NewEngine(nil).Consolidate(group, tbs); !errors.Is(err, ErrMissingConsolidationPolicy) {
+		t.Fatalf("missing policy error = %v", err)
+	}
+
+	group, tbs = basicFixture()
+	group.Policies.IntercompanyScope = PolicyScopeConfigured
+	if _, err := NewEngine(nil).Consolidate(group, tbs); !errors.Is(err, ErrMissingConsolidationPolicy) {
+		t.Fatalf("scope without elimination rules error = %v", err)
+	}
+
+	group, tbs = basicFixture()
+	group.Ownerships[0].ControlEvidenceReference = ""
+	if _, err := NewEngine(nil).Consolidate(group, tbs); !errors.Is(err, ErrMissingConsolidationPolicy) {
+		t.Fatalf("missing control evidence error = %v", err)
+	}
+}
+
 func TestConsolidateRejectsUnbalancedJournalAndMissingTranslationReserve(t *testing.T) {
 	group, tbs := eliminationFixture()
 	group.Rules.IntercompanyBalances[0].PayableAccountID = "cash"
@@ -287,6 +308,12 @@ func basicFixture() (Group, []TrialBalance) {
 	group := Group{
 		ID: "group", ParentEntityID: parentCompanyID, ReportingCurrency: "USD",
 		Period: ReportingPeriod{StartDate: dt(2025, 1, 1), EndDate: dt(2025, 12, 31)},
+		Policies: Policies{
+			AccountingPolicyID: "accounting-v1", ControlPolicyID: "control-v1",
+			CurrencyTranslationPolicyID: "translation-v1", EliminationPolicyID: "elimination-v1",
+			IntercompanyPolicyID: "intercompany-v1", EliminationScope: PolicyScopeNone,
+			IntercompanyScope: PolicyScopeNone,
+		},
 		Entities: []Entity{
 			{ID: parentCompanyID, FunctionalCurrency: "USD"},
 			{ID: subCompanyID, FunctionalCurrency: "USD"},
@@ -305,6 +332,7 @@ func basicFixture() (Group, []TrialBalance) {
 		},
 		Ownerships: []Ownership{{
 			ParentEntityID: parentCompanyID, SubsidiaryEntityID: subCompanyID, Percentage: dec("1"),
+			ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-sub-ownership",
 			AcquisitionDate: dt(2024, 1, 1), Consideration: dec("40"), FairValueNetAssets: dec("40"),
 			InvestmentAccountID: "investment", GoodwillAccountID: "goodwill",
 			NCIAccountID: "parent-equity", ParentRetainedEarningsAccountID: "retained",
@@ -377,6 +405,8 @@ func eliminationFixture() (Group, []TrialBalance) {
 			ExpenseGroupAccountID: "expense", UnrealizedProfit: dec("5"),
 		}},
 	}
+	group.Policies.EliminationScope = PolicyScopeConfigured
+	group.Policies.IntercompanyScope = PolicyScopeConfigured
 	return group, tbs
 }
 

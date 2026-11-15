@@ -29,18 +29,20 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 			Amendments:    []string{"Not configured; host must select applicable amendments"},
 			EffectiveDate: "Not configured; host must supply the applicable effective date",
 			Jurisdiction:  "Not configured; host must identify its reporting jurisdiction",
-			Scope:         "Limited: simplified provision-matrix ECL measurement for supplied trade-receivable exposures.",
+			Scope:         "Limited: simplified provision-matrix ECL for supplied trade receivables and reproducible, scenario-weighted general-approach ECL for supplied exposures; host-supplied risk assessments and source snapshots are required.",
 			SupportedRequirements: []standards.StandardRequirement{
 				{ID: "IFRS9-ECL-SIMPLIFIED-01", Summary: "Calculate a simplified ECL allowance for receivables using supplied aging-bucket rates and existing allowance.", Status: standards.RequirementLimited, Implementation: "internal/ifrs9/ecl.go:Calculate", TestEvidence: "internal/ifrs9/ecl_test.go:TestCalculateProvisionMatrixAndAllowanceAdjustment"},
+				{ID: "IFRS9-ECL-GENERAL-VERSIONED-01", Summary: "Calculate a reproducible scenario-weighted Stage 1/2/3 ECL allowance from explicitly supplied, versioned assumptions and exposure inputs.", Status: standards.RequirementLimited, Implementation: "internal/ifrs9/versioned.go:EvaluateVersionedECL", TestEvidence: "internal/ifrs9/versioned_test.go:TestEvaluateVersionedECLGolden"},
 			},
 			UnimplementedRequirements: []standards.StandardRequirement{
 				{ID: "IFRS9-CLASSIFICATION-MEASUREMENT", Summary: "End-to-end classification and measurement workflows for financial instruments.", Status: standards.RequirementNotImplemented},
-				{ID: "IFRS9-GENERAL-ECL-WORKFLOW", Summary: "Complete general expected-credit-loss workflow across the financial-asset population.", Status: standards.RequirementNotImplemented},
+				{ID: "IFRS9-GENERAL-ECL-WORKFLOW", Summary: "Complete end-to-end general expected-credit-loss workflow with independently validated stage and risk estimates, portfolio sourcing, and controls.", Status: standards.RequirementNotImplemented},
 				{ID: "IFRS9-POSTING-WORKFLOW", Summary: "Persistent ECL workflow with configured journal mapping and application-layer posting.", Status: standards.RequirementNotImplemented},
 			},
 			Exclusions: []string{
-				"Financial-asset classification and measurement, derecognition, hedge accounting, and complete general ECL model coverage.",
-				"Production journal mapping, persistence, and posting through the application service.",
+				"Business-model and SPPI classification, financial-asset measurement categories, derecognition, hedge accounting, and complete general ECL model coverage.",
+				"Independent SICR/default assessment, validated portfolio sourcing, persistence, production journal mapping, and posting through the application service.",
+				"Any assertion of IFRS 9 compliance or professional validation of the models, assumptions, thresholds, or source data.",
 			},
 		},
 		Workflows: []standards.WorkflowDescriptor{
@@ -51,6 +53,14 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 				Steps:          []string{"validate configuration and measurement date", "classify exposures by aging bucket", "calculate required allowance and adjustment"},
 				Outputs:        []string{"per-receivable ECL results", "required allowance", "allowance adjustment"},
 				RequirementIDs: []string{"IFRS9-ECL-SIMPLIFIED-01"},
+			},
+			{
+				ID: "versioned-general-ecl-measurement", Name: "Versioned general ECL measurement",
+				Summary:        "Calculate a deterministic, scenario-weighted Stage 1/2/3 allowance from caller-supplied versioned inputs without persistence or posting.",
+				Inputs:         []string{"evaluation date", "model version and named assumptions", "source snapshot reference and hash", "exposures with prior stage and stage evidence", "scenario weights and PD estimates", "LGD, EAD, remaining life, EIR, and existing allowance"},
+				Steps:          []string{"validate provenance and explicit scenario assumptions", "assess bounded stage transitions", "calculate scenario-weighted ECL and EIR discount", "fingerprint the complete measurement input and compare required allowance with the supplied existing allowance"},
+				Outputs:        []string{"per-exposure ECL and stage transition", "required allowance", "allowance change", "reproducible input fingerprint"},
+				RequirementIDs: []string{"IFRS9-ECL-GENERAL-VERSIONED-01"},
 			},
 		},
 	}

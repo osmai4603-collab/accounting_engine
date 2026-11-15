@@ -8,6 +8,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
 type testCoreLedgerStore struct{}
@@ -78,5 +79,18 @@ func TestRegisterRules(t *testing.T) {
 		if err := workflow.Validate(*descriptor.Profile); err != nil {
 			t.Errorf("invalid workflow %q: %v", workflow.ID, err)
 		}
+		if workflow.ProducesJournalEntries {
+			t.Errorf("module unexpectedly claims application posting in workflow %q", workflow.ID)
+		}
+	}
+	postingRequirementIsUnimplemented := false
+	for _, requirement := range descriptor.Profile.UnimplementedRequirements {
+		if requirement.ID == "IFRS16-POSTING-WORKFLOW" &&
+			requirement.Status == standards.RequirementNotImplemented {
+			postingRequirementIsUnimplemented = true
+		}
+	}
+	if !postingRequirementIsUnimplemented {
+		t.Fatal("module must not claim persistent application posting without a configured host workflow")
 	}
 }

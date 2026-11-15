@@ -19,11 +19,50 @@ func (u *Unit) Measure(balances []TaxBalance, period MeasurementPeriod) (Measure
 	return Measure(balances, period)
 }
 
+func (u *Unit) MeasureWithProfile(profile TaxProfile, balances []TaxBalance, period MeasurementPeriod) (Measurement, error) {
+	if u == nil {
+		return Measurement{}, ErrInvalidInput
+	}
+	return MeasureWithProfile(profile, balances, period)
+}
+
+func (u *Unit) MeasureCurrentTax(profile TaxProfile, input CurrentTaxInput) (CurrentTaxMeasurement, error) {
+	if u == nil {
+		return CurrentTaxMeasurement{}, ErrInvalidInput
+	}
+	return MeasureCurrentTax(profile, input)
+}
+
 func (u *Unit) Reconcile(input TaxReconciliationInput) (TaxReconciliationReport, error) {
 	if u == nil {
 		return TaxReconciliationReport{}, ErrInvalidInput
 	}
 	return Reconcile(input)
+}
+
+func (u *Unit) GenerateConfiguredDeferredTaxEntry(
+	measurement Measurement,
+	prior DeferredTaxPosition,
+	config ConfiguredPosting,
+	journalID uuid.UUID,
+	createdBy string,
+) (posting.JournalEntry, error) {
+	if u == nil {
+		return posting.JournalEntry{}, ErrInvalidInput
+	}
+	return GenerateConfiguredDeferredTaxEntry(measurement, prior, config, journalID, createdBy)
+}
+
+func (u *Unit) GenerateConfiguredCurrentTaxEntry(
+	measurement CurrentTaxMeasurement,
+	config ConfiguredPosting,
+	journalID uuid.UUID,
+	createdBy string,
+) (posting.JournalEntry, error) {
+	if u == nil {
+		return posting.JournalEntry{}, ErrInvalidInput
+	}
+	return GenerateConfiguredCurrentTaxEntry(measurement, config, journalID, createdBy)
 }
 
 func (u *Unit) GenerateDeferredTaxEntry(input DeferredTaxEntryInput) (posting.JournalEntry, error) {

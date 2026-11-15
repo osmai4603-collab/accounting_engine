@@ -1,7 +1,12 @@
 package ifrs16
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,6 +14,47 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
+
+var (
+	ErrPostingCapabilityUnavailable = errors.New("IFRS 16 ledger-posting capability unavailable")
+	ErrJournalMappingUnavailable    = errors.New("IFRS 16 journal mapping unavailable")
+)
+
+// LeasePostingCapability must be backed by the host application's configured
+// ledger-posting capability and resolve the selected real journal mapping.
+type LeasePostingCapability interface {
+	LedgerPostingAvailable() bool
+	ResolveLeaseAccounts(context.Context, uuid.UUID, string) (LeaseAccounts, error)
+}
+
+// EntryBuilder only creates drafts after the host confirms posting capability
+// and resolves configured accounts for the requested mapping.
+type EntryBuilder struct {
+	capability LeasePostingCapability
+}
+
+func NewEntryBuilder(capability LeasePostingCapability) (*EntryBuilder, error) {
+	if capability == nil || !capability.LedgerPostingAvailable() {
+		return nil, ErrPostingCapabilityUnavailable
+	}
+	return &EntryBuilder{capability: capability}, nil
+}
+
+func (b *EntryBuilder) resolve(
+	ctx context.Context, companyID uuid.UUID, mappingID string,
+) (LeaseAccounts, error) {
+	if b == nil || b.capability == nil || !b.capability.LedgerPostingAvailable() {
+		return LeaseAccounts{}, ErrPostingCapabilityUnavailable
+	}
+	if strings.TrimSpace(mappingID) == "" {
+		return LeaseAccounts{}, ErrJournalMappingUnavailable
+	}
+	accounts, err := b.capability.ResolveLeaseAccounts(ctx, companyID, mappingID)
+	if err != nil {
+		return LeaseAccounts{}, err
+	}
+	return accounts, nil
+}
 
 // LeaseAccounts identifies the general-ledger accounts used by lease entries.
 type LeaseAccounts struct {
@@ -24,10 +70,68 @@ type LeaseAccounts struct {
 	TerminationLoss         uuid.UUID `json:"termination_loss"`
 }
 
-// BuildCommencementEntry records the initial ROU, liability, and commencement cash items.
-func BuildCommencementEntry(
+func (b *EntryBuilder) BuildCommencementEntry(
+	ctx context.Context, contract LeaseContract, companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	accounts, err := b.resolve(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return buildCommencementEntry(contract, accounts, companyID, journalID, createdBy)
+}
+
+func (b *EntryBuilder) BuildPaymentEntry(
+	ctx context.Context, period SchedulePeriod, companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	accounts, err := b.resolve(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return buildPaymentEntry(period, accounts, companyID, journalID, createdBy)
+}
+
+func (b *EntryBuilder) BuildDepreciationEntry(
+	ctx context.Context, period SchedulePeriod, companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	accounts, err := b.resolve(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return buildDepreciationEntry(period, accounts, companyID, journalID, createdBy)
+}
+
+func (b *EntryBuilder) BuildModificationEntry(
+	ctx context.Context, result ModificationResult, companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	accounts, err := b.resolve(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return buildModificationEntry(result, accounts, companyID, journalID, createdBy)
+}
+
+func (b *EntryBuilder) BuildTerminationEntry(
+	ctx context.Context, result TerminationResult, companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	accounts, err := b.resolve(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return buildTerminationEntry(result, accounts, companyID, journalID, createdBy)
+}
+
+// buildCommencementEntry creates a draft for the initial ROU, liability, and commencement cash items.
+func buildCommencementEntry(
 	contract LeaseContract, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {
+	if strings.TrimSpace(contract.Reference) == "" {
+		return posting.JournalEntry{}, ErrLeaseReferenceRequired
+	}
 	if contract.InitialROUAsset.Currency() == "" || accounts.ROUAsset == uuid.Nil ||
 		accounts.LeaseLiability == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAccounts
@@ -54,13 +158,17 @@ func BuildCommencementEntry(
 		}
 		lines = append(lines, debitLine(accounts.Cash, contract.LeaseIncentives))
 	}
-	return newEntry(contract.CommencementDate, companyID, journalID, createdBy, lines)
+	entry, err := newEntry(contract.CommencementDate, companyID, journalID, createdBy, lines)
+	return identifyEntry(entry, contract.Reference, "commencement", err)
 }
 
-// BuildPaymentEntry records interest, the liability movement, and cash payment for one period.
-func BuildPaymentEntry(
+// buildPaymentEntry creates a draft for interest, the liability movement, and cash payment.
+func buildPaymentEntry(
 	period SchedulePeriod, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {
+	if strings.TrimSpace(period.LeaseReference) == "" {
+		return posting.JournalEntry{}, ErrLeaseReferenceRequired
+	}
 	if period.Payment.Currency() == "" || !period.Payment.Amount().IsPositive() ||
 		accounts.LeaseLiability == uuid.Nil || accounts.Cash == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAccounts
@@ -82,27 +190,33 @@ func BuildPaymentEntry(
 		lines = append(lines, creditLine(accounts.LeaseLiability, increase))
 	}
 	lines = append(lines, creditLine(accounts.Cash, period.Payment))
-	return newEntry(period.DueDate, companyID, journalID, createdBy, lines)
+	entry, err := newEntry(period.DueDate, companyID, journalID, createdBy, lines)
+	return identifyEntry(entry, period.LeaseReference, fmt.Sprintf("payment:%d:%s", period.Period, period.DueDate.Format("2006-01-02")), err)
 }
 
-// BuildDepreciationEntry records a period's ROU depreciation.
-func BuildDepreciationEntry(
+// buildDepreciationEntry creates a draft for a period's ROU depreciation.
+func buildDepreciationEntry(
 	period SchedulePeriod, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {
+	if strings.TrimSpace(period.LeaseReference) == "" {
+		return posting.JournalEntry{}, ErrLeaseReferenceRequired
+	}
 	if !period.ROUDepreciation.Amount().IsPositive() {
 		return posting.JournalEntry{}, ErrDepreciationUnavail
 	}
 	if accounts.DepreciationExpense == uuid.Nil || accounts.AccumulatedDepreciation == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAccounts
 	}
-	return newEntry(period.DueDate, companyID, journalID, createdBy, []posting.JournalEntryLine{
+	entry, err := newEntry(period.DueDate, companyID, journalID, createdBy, []posting.JournalEntryLine{
 		debitLine(accounts.DepreciationExpense, period.ROUDepreciation),
 		creditLine(accounts.AccumulatedDepreciation, period.ROUDepreciation),
 	})
+	return identifyEntry(entry, period.LeaseReference, fmt.Sprintf("depreciation:%d:%s", period.Period, period.DueDate.Format("2006-01-02")), err)
 }
 
 // ModificationResult describes remeasurement of the remaining lease at a modification date.
 type ModificationResult struct {
+	LeaseReference      string
 	EffectiveDate       time.Time
 	OldLeaseLiability   types.Money
 	RemeasuredLiability types.Money
@@ -160,6 +274,7 @@ func (c LeaseContract) RecalculateModification(
 		}
 	}
 	return ModificationResult{
+		LeaseReference:      c.Reference,
 		EffectiveDate:       effectiveDate.UTC(),
 		OldLeaseLiability:   liabilityCarryingAmount,
 		RemeasuredLiability: remeasured,
@@ -173,10 +288,13 @@ func (c LeaseContract) RecalculateModification(
 	}, nil
 }
 
-// BuildModificationEntry posts a modification adjustment, including any gain on excess liability reduction.
-func BuildModificationEntry(
+// buildModificationEntry creates a draft for a modification adjustment.
+func buildModificationEntry(
 	result ModificationResult, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {
+	if strings.TrimSpace(result.LeaseReference) == "" {
+		return posting.JournalEntry{}, ErrLeaseReferenceRequired
+	}
 	if result.RemeasuredLiability.Currency() == "" ||
 		accounts.LeaseLiability == uuid.Nil || accounts.ROUAsset == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAccounts
@@ -211,11 +329,13 @@ func BuildModificationEntry(
 			lines = append(lines, creditLine(accounts.ModificationGain, result.ModificationGain))
 		}
 	}
-	return newEntry(result.EffectiveDate, companyID, journalID, createdBy, lines)
+	entry, err := newEntry(result.EffectiveDate, companyID, journalID, createdBy, lines)
+	return identifyEntry(entry, result.LeaseReference, "modification:"+result.EffectiveDate.Format("2006-01-02"), err)
 }
 
 // TerminationResult contains the derecognition amounts and resulting gain or loss.
 type TerminationResult struct {
+	LeaseReference      string
 	EffectiveDate       time.Time
 	LeaseLiability      types.Money
 	ROUAsset            types.Money
@@ -239,6 +359,7 @@ func (c LeaseContract) EarlyTerminate(
 		return TerminationResult{}, err
 	}
 	return TerminationResult{
+		LeaseReference:      c.Reference,
 		EffectiveDate:       effectiveDate.UTC(),
 		LeaseLiability:      liabilityCarryingAmount,
 		ROUAsset:            rouCarryingAmount,
@@ -247,10 +368,13 @@ func (c LeaseContract) EarlyTerminate(
 	}, nil
 }
 
-// BuildTerminationEntry posts the derecognition and settlement for an early termination.
-func BuildTerminationEntry(
+// buildTerminationEntry creates a draft for derecognition and early-termination settlement.
+func buildTerminationEntry(
 	result TerminationResult, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {
+	if strings.TrimSpace(result.LeaseReference) == "" {
+		return posting.JournalEntry{}, ErrLeaseReferenceRequired
+	}
 	if accounts.LeaseLiability == uuid.Nil || accounts.ROUAsset == uuid.Nil ||
 		result.LeaseLiability.Currency() == "" {
 		return posting.JournalEntry{}, ErrInvalidAccounts
@@ -282,7 +406,35 @@ func BuildTerminationEntry(
 		}
 		lines = append(lines, creditLine(accounts.TerminationGain, result.TerminationGainLoss))
 	}
-	return newEntry(result.EffectiveDate, companyID, journalID, createdBy, lines)
+	entry, err := newEntry(result.EffectiveDate, companyID, journalID, createdBy, lines)
+	return identifyEntry(entry, result.LeaseReference, "termination:"+result.EffectiveDate.Format("2006-01-02"), err)
+}
+
+func identifyEntry(
+	entry posting.JournalEntry, leaseReference, operation string, err error,
+) (posting.JournalEntry, error) {
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	keyMaterial := fmt.Sprintf("ifrs16|%s|%s|%s|%s", strings.TrimSpace(leaseReference),
+		entry.CompanyID, entry.JournalID, operation)
+	keyHash := sha256.Sum256([]byte(keyMaterial))
+	key := "ifrs16-" + hex.EncodeToString(keyHash[:])
+	entry.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(key))
+	entry.SourceModule = "ifrs16"
+	entry.Reference = strings.TrimSpace(leaseReference)
+	entry.DocumentReference = operation
+	entry.IdempotencyKey = key
+	payload := fmt.Sprintf("%s|%s|%s|%s|%s", entry.CompanyID, entry.JournalID,
+		entry.EntryDate.UTC().Format(time.RFC3339Nano), entry.Reference, operation)
+	for _, line := range entry.Lines {
+		payload += fmt.Sprintf("|%s:%s:%s:%s:%s", line.AccountID,
+			line.Debit.Amount().String(), line.Debit.Currency(),
+			line.Credit.Amount().String(), line.Credit.Currency())
+	}
+	payloadHash := sha256.Sum256([]byte(payload))
+	entry.IdempotencyPayloadHash = hex.EncodeToString(payloadHash[:])
+	return entry, nil
 }
 
 func validateRemainingPayments(date time.Time, payments []LeasePayment, currency string) ([]LeasePayment, error) {

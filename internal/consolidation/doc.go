@@ -12,4 +12,9 @@
 // translation differences are routed to the configured OCI translation
 // reserve. Rate lookup and validation errors are returned to the caller; this
 // package does not hide missing or invalid exchange-rate data behind defaults.
+// Each group must identify its accounting, control, translation, elimination,
+// and intercompany policies. Each subsidiary ownership link must also provide
+// a control basis and evidence reference before consolidation is accepted.
+// Elimination and intercompany policy scopes must explicitly agree with the
+// configured rules; use "none" when no such activity applies.
 package consolidation

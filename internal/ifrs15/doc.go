@@ -9,6 +9,8 @@
 // maintains in-memory contract balances, and returns balanced general-ledger
 // journal drafts for deferred revenue, contract assets, and earned revenue.
 // Invoices and cash advances retain customer partner identifiers for
-// receivable-subledger reconciliation. Callers remain responsible for durable
-// storage, authorization, and posting.
+// receivable-subledger reconciliation. RevenueWorkflow is the bounded path
+// that requires external service evidence, a real journal mapping, and an
+// application-backed poster before confirming recognition in-memory. Callers
+// remain responsible for durable storage, authorization, and posting recovery.
 package ifrs15

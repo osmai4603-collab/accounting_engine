@@ -11,4 +11,9 @@
 // calculation engine. Callers construct and validate the intended allocation,
 // persist it through a Repository, and retrieve it for later review or
 // reporting. Repository errors are passed through to the caller.
+//
+// NewCapability requires an explicit comparison contract: distinct sources,
+// a common currency and date window, one or more match keys, a tolerance, and
+// exception treatment. The current Repository stores reconciliation records;
+// it does not read or compare source ledgers.
 package reconciliation

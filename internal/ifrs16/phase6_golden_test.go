@@ -1,6 +1,7 @@
 package ifrs16
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -135,11 +136,13 @@ func TestPhase6GoldenIFRS16MultipleLeasesAndRateModifications(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewLeaseContract: %v", err)
 			}
+			contract = contract.WithReference(lease.name)
 			assertAmount(t, contract.InitialLeaseLiability, lease.initialLiability)
 			assertAmount(t, contract.InitialROUAsset, lease.initialROU)
 
 			accounts := testAccounts()
-			commencement, err := BuildCommencementEntry(contract, accounts, uuid.New(), uuid.New(), "golden-maker")
+			builder := testEntryBuilder(t, accounts)
+			commencement, err := builder.BuildCommencementEntry(context.Background(), contract, uuid.New(), uuid.New(), "leases", "golden-maker")
 			if err != nil {
 				t.Fatalf("BuildCommencementEntry: %v", err)
 			}
@@ -163,12 +166,12 @@ func TestPhase6GoldenIFRS16MultipleLeasesAndRateModifications(t *testing.T) {
 				assertAmount(t, period.ClosingROUAsset, want.closingROU)
 
 				// Every payment entry and every depreciation entry must balance.
-				payment, err := BuildPaymentEntry(period, accounts, uuid.New(), uuid.New(), "golden-maker")
+				payment, err := builder.BuildPaymentEntry(context.Background(), period, uuid.New(), uuid.New(), "leases", "golden-maker")
 				if err != nil {
 					t.Fatalf("BuildPaymentEntry period %d: %v", i+1, err)
 				}
 				assertBalanced(t, payment)
-				depreciation, err := BuildDepreciationEntry(period, accounts, uuid.New(), uuid.New(), "golden-maker")
+				depreciation, err := builder.BuildDepreciationEntry(context.Background(), period, uuid.New(), uuid.New(), "leases", "golden-maker")
 				if err != nil {
 					t.Fatalf("BuildDepreciationEntry period %d: %v", i+1, err)
 				}
@@ -199,7 +202,7 @@ func TestPhase6GoldenIFRS16MultipleLeasesAndRateModifications(t *testing.T) {
 			assertAmount(t, result.ROUAdjustment, lease.rouDelta)
 			assertAmount(t, result.ModificationGain, lease.gain)
 
-			modification, err := BuildModificationEntry(result, accounts, uuid.New(), uuid.New(), "golden-maker")
+			modification, err := builder.BuildModificationEntry(context.Background(), result, uuid.New(), uuid.New(), "leases", "golden-maker")
 			if err != nil {
 				t.Fatalf("BuildModificationEntry: %v", err)
 			}

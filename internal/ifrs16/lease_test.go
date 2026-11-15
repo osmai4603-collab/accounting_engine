@@ -1,6 +1,7 @@
 package ifrs16
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -58,7 +59,9 @@ func TestIrregularPeriodLeaseDiscounting(t *testing.T) {
 func TestLeaseJournalEntriesBalance(t *testing.T) {
 	contract := testContract(t)
 	accounts := testAccounts()
-	commencement, err := BuildCommencementEntry(contract, accounts, uuid.New(), uuid.New(), "tester")
+	builder := testEntryBuilder(t, accounts)
+	companyID, journalID := uuid.New(), uuid.New()
+	commencement, err := builder.BuildCommencementEntry(context.Background(), contract, companyID, journalID, "leases", "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,16 +71,58 @@ func TestLeaseJournalEntriesBalance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payment, err := BuildPaymentEntry(schedule[0], accounts, uuid.New(), uuid.New(), "tester")
+	payment, err := builder.BuildPaymentEntry(context.Background(), schedule[0], companyID, journalID, "leases", "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertBalanced(t, payment)
-	depreciation, err := BuildDepreciationEntry(schedule[0], accounts, uuid.New(), uuid.New(), "tester")
+	depreciation, err := builder.BuildDepreciationEntry(context.Background(), schedule[0], companyID, journalID, "leases", "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertBalanced(t, depreciation)
+}
+
+func TestEntryBuilderRequiresCapabilityAndMappingAndIsRetryStable(t *testing.T) {
+	accounts := testAccounts()
+	if _, err := NewEntryBuilder(testLeasePostingCapability{accounts: accounts}); err != ErrPostingCapabilityUnavailable {
+		t.Fatalf("NewEntryBuilder without posting capability error = %v", err)
+	}
+	builder := testEntryBuilder(t, accounts)
+	contract := testContract(t)
+	companyID, journalID := uuid.New(), uuid.New()
+	if _, err := builder.BuildCommencementEntry(context.Background(), contract, companyID, journalID, "", "tester"); err != ErrJournalMappingUnavailable {
+		t.Fatalf("BuildCommencementEntry without mapping error = %v", err)
+	}
+
+	schedule, err := contract.AmortizationSchedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := builder.BuildPaymentEntry(context.Background(), schedule[0], companyID, journalID, "leases", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := builder.BuildPaymentEntry(context.Background(), schedule[0], companyID, journalID, "leases", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != retry.ID || first.IdempotencyKey != retry.IdempotencyKey ||
+		first.IdempotencyPayloadHash != retry.IdempotencyPayloadHash {
+		t.Fatal("retry did not reproduce the same entry identity and payload")
+	}
+	if first.SourceModule != "ifrs16" || first.Reference != contract.Reference || first.DocumentReference == "" {
+		t.Fatalf("entry traceability fields are incomplete: %+v", first)
+	}
+	remapped, err := testEntryBuilder(t, testAccounts()).BuildPaymentEntry(
+		context.Background(), schedule[0], companyID, journalID, "leases", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remapped.IdempotencyKey != first.IdempotencyKey ||
+		remapped.IdempotencyPayloadHash == first.IdempotencyPayloadHash {
+		t.Fatal("remapping must retain operation identity and change the payload hash")
+	}
 }
 
 func TestPaymentEntryHandlesNegativePrincipal(t *testing.T) {
@@ -92,6 +137,7 @@ func TestPaymentEntryHandlesNegativePrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	contract = contract.WithReference("negative-principal")
 	schedule, err := contract.AmortizationSchedule()
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +145,7 @@ func TestPaymentEntryHandlesNegativePrincipal(t *testing.T) {
 	if !schedule[0].PrincipalReduction.Amount().IsNegative() {
 		t.Fatal("expected first payment to increase the liability")
 	}
-	entry, err := BuildPaymentEntry(schedule[0], testAccounts(), uuid.New(), uuid.New(), "tester")
+	entry, err := testEntryBuilder(t, testAccounts()).BuildPaymentEntry(context.Background(), schedule[0], uuid.New(), uuid.New(), "leases", "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +167,7 @@ func TestModificationRecalculationAndEntry(t *testing.T) {
 	assertAmount(t, result.RemeasuredLiability, "60")
 	assertAmount(t, result.NewROUAsset, "0")
 	assertAmount(t, result.ModificationGain, "20")
-	entry, err := BuildModificationEntry(result, testAccounts(), uuid.New(), uuid.New(), "tester")
+	entry, err := testEntryBuilder(t, testAccounts()).BuildModificationEntry(context.Background(), result, uuid.New(), uuid.New(), "leases", "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +192,7 @@ func TestEarlyTerminationGainAndLossEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertAmount(t, result.TerminationGainLoss, test.gainLoss)
-			entry, err := BuildTerminationEntry(result, accounts, uuid.New(), uuid.New(), "tester")
+			entry, err := testEntryBuilder(t, accounts).BuildTerminationEntry(context.Background(), result, uuid.New(), uuid.New(), "leases", "tester")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,8 +229,10 @@ func TestLeaseValidation(t *testing.T) {
 
 func TestUnitClosePeriodBuildsPaymentAndDepreciationEntries(t *testing.T) {
 	unit := NewUnit()
+	accounts := testAccounts()
+	builder := testEntryBuilder(t, accounts)
 	entries, err := unit.ClosePeriod(
-		testContract(t), date(2026, 3, 1), testAccounts(), uuid.New(), uuid.New(), "lease-close",
+		context.Background(), testContract(t), date(2026, 3, 1), builder, "leases", uuid.New(), uuid.New(), "lease-close",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +276,32 @@ func testContract(t *testing.T) LeaseContract {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return contract
+	return contract.WithReference("test-lease")
+}
+
+type testLeasePostingCapability struct {
+	accounts  LeaseAccounts
+	available bool
+}
+
+func (c testLeasePostingCapability) LedgerPostingAvailable() bool { return c.available }
+
+func (c testLeasePostingCapability) ResolveLeaseAccounts(
+	_ context.Context, _ uuid.UUID, mappingID string,
+) (LeaseAccounts, error) {
+	if mappingID != "leases" {
+		return LeaseAccounts{}, ErrJournalMappingUnavailable
+	}
+	return c.accounts, nil
+}
+
+func testEntryBuilder(t *testing.T, accounts LeaseAccounts) *EntryBuilder {
+	t.Helper()
+	builder, err := NewEntryBuilder(testLeasePostingCapability{accounts: accounts, available: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return builder
 }
 
 func testAccounts() LeaseAccounts {

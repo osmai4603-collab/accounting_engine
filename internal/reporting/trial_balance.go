@@ -3,6 +3,7 @@ package reporting
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -234,11 +235,24 @@ func postingClassification(entry posting.JournalEntry) posting.EntryClassificati
 }
 
 func listAccounts(repository Repository) ([]masterdata.Account, error) {
-	return repository.ListAccounts(context.Background())
+	if repository == nil {
+		return nil, fmt.Errorf("%w: account taxonomy and ledger repository", ErrReportingDependencyMissing)
+	}
+	accounts, err := repository.ListAccounts(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		return nil, ErrReportingTaxonomyMissing
+	}
+	return accounts, nil
 }
 
 // Deprecated: Used when a report range cannot be represented by complete materialized periods.
 func listPostedEntries(repository Repository, start, end time.Time) ([]posting.JournalEntry, error) {
+	if repository == nil {
+		return nil, fmt.Errorf("%w: ledger read", ErrReportingDependencyMissing)
+	}
 	entries, err := repository.ListPostedEntries(context.Background(), start, end)
 	if err != nil {
 		return nil, err

@@ -80,3 +80,27 @@ func TestRegisterRules(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionedGeneralECLWorkflowIsBoundedAndDoesNotPost(t *testing.T) {
+	descriptor := (&Module{}).Descriptor()
+	var supported bool
+	for _, requirement := range descriptor.Profile.SupportedRequirements {
+		if requirement.ID == "IFRS9-ECL-GENERAL-VERSIONED-01" {
+			supported = requirement.Status == "limited"
+		}
+	}
+	if !supported {
+		t.Fatal("versioned general ECL requirement is not declared as limited support")
+	}
+	for _, workflow := range descriptor.Workflows {
+		if workflow.ID != "versioned-general-ecl-measurement" {
+			continue
+		}
+		if workflow.ProducesJournalEntries || workflow.RequiresJournalMapping ||
+			workflow.ApplicationContract != "" || len(workflow.RequiredCapabilities) != 0 {
+			t.Fatalf("measurement-only workflow unexpectedly declares posting: %+v", workflow)
+		}
+		return
+	}
+	t.Fatal("versioned general ECL workflow not declared")
+}

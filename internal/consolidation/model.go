@@ -12,14 +12,15 @@ import (
 )
 
 var (
-	ErrInvalidInput             = errors.New("invalid consolidation input")
-	ErrMissingAccountMapping    = errors.New("missing consolidation account mapping")
-	ErrMissingExchangeRate      = errors.New("missing consolidation exchange rate")
-	ErrUnbalancedTrialBalance   = errors.New("entity trial balance is not balanced")
-	ErrUnbalancedJournal        = errors.New("consolidation journal entry is not balanced")
-	ErrUnbalancedConsolidation  = errors.New("consolidated financial statements are not balanced")
-	ErrInsufficientIntercompany = errors.New("intercompany balance has an unexpected sign")
-	ErrInsufficientInventory    = errors.New("unrealized profit exceeds inventory balance")
+	ErrInvalidInput               = errors.New("invalid consolidation input")
+	ErrMissingAccountMapping      = errors.New("missing consolidation account mapping")
+	ErrMissingExchangeRate        = errors.New("missing consolidation exchange rate")
+	ErrMissingConsolidationPolicy = errors.New("missing consolidation policy or control evidence")
+	ErrUnbalancedTrialBalance     = errors.New("entity trial balance is not balanced")
+	ErrUnbalancedJournal          = errors.New("consolidation journal entry is not balanced")
+	ErrUnbalancedConsolidation    = errors.New("consolidated financial statements are not balanced")
+	ErrInsufficientIntercompany   = errors.New("intercompany balance has an unexpected sign")
+	ErrInsufficientInventory      = errors.New("unrealized profit exceeds inventory balance")
 )
 
 // AccountType identifies the statement classification needed by this engine.
@@ -84,6 +85,8 @@ type Ownership struct {
 	ParentEntityID                  string
 	SubsidiaryEntityID              string
 	Percentage                      decimal.Decimal
+	ControlBasis                    string
+	ControlEvidenceReference        string
 	GoodwillMethod                  GoodwillMethod
 	AcquisitionDate                 time.Time
 	Consideration                   decimal.Decimal
@@ -126,6 +129,25 @@ type EliminationRules struct {
 	UnrealizedInventory  []UnrealizedInventoryRule
 }
 
+// Policies names the approved policy set used for this consolidation. Use an
+// explicit "none" policy when no intercompany activity or eliminations apply.
+type Policies struct {
+	AccountingPolicyID          string
+	ControlPolicyID             string
+	CurrencyTranslationPolicyID string
+	EliminationPolicyID         string
+	IntercompanyPolicyID        string
+	EliminationScope            PolicyScope
+	IntercompanyScope           PolicyScope
+}
+
+type PolicyScope string
+
+const (
+	PolicyScopeNone       PolicyScope = "none"
+	PolicyScopeConfigured PolicyScope = "configured"
+)
+
 // Group is the complete, explicit policy and account map for one consolidation.
 type Group struct {
 	ID                           string
@@ -137,6 +159,7 @@ type Group struct {
 	Mappings                     []AccountMapping
 	Ownerships                   []Ownership
 	Rules                        EliminationRules
+	Policies                     Policies
 	TranslationReserveAccountID  string
 	BargainPurchaseGainAccountID string
 }

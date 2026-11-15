@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 
 	"github.com/shopspring/decimal"
@@ -49,10 +50,11 @@ func (p MeasurementPeriod) Validate() error {
 
 // TaxRate.Value is a decimal fraction (0.25 means 25%); zero represents an enacted 0% rate.
 type TaxRate struct {
-	Value         decimal.Decimal
-	Enacted       bool
-	EnactedOn     time.Time
-	EffectiveFrom time.Time
+	Value           decimal.Decimal
+	Enacted         bool
+	EnactedOn       time.Time
+	EffectiveFrom   time.Time
+	SourceReference string
 }
 
 func (r TaxRate) Validate(asOf time.Time) error {
@@ -67,15 +69,26 @@ func (r TaxRate) Validate(asOf time.Time) error {
 }
 
 type TaxBalance struct {
-	ID             string
-	Kind           BalanceKind
-	CarryingAmount financialtypes.Money
-	TaxBase        financialtypes.Money
-	Rate           TaxRate
+	ID                   string
+	Kind                 BalanceKind
+	CarryingAmount       financialtypes.Money
+	TaxBase              financialtypes.Money
+	Rate                 TaxRate
+	CarryingAmountSource string
+	TaxBaseSource        string
+	ExpectedReversalDate time.Time
+	RecognitionEvidence  *DTARecognitionEvidence
 	// Controls recognition of a DTA for this deductible temporary difference
 	// based on probable future taxable profit. Nil does not establish
 	// probability, so the DTA is not recognized.
 	FutureTaxableProfitProbable *bool
+}
+
+type DTARecognitionEvidence struct {
+	Reference                 string
+	AssessedOn                time.Time
+	Probable                  bool
+	SupportedDeductibleAmount financialtypes.Money
 }
 
 type MeasuredBalance struct {
@@ -85,14 +98,24 @@ type MeasuredBalance struct {
 	DeductibleTemporaryDifference financialtypes.Money
 	DTA                           financialtypes.Money
 	DTL                           financialtypes.Money
+	Rate                          TaxRate
+	ExpectedReversalDate          time.Time
+	CarryingAmountSource          string
+	TaxBaseSource                 string
+	RecognitionEvidenceReference  string
 }
 
 type Measurement struct {
-	Period   MeasurementPeriod
-	Currency string
-	Balances []MeasuredBalance
-	DTA      financialtypes.Money
-	DTL      financialtypes.Money
+	Period                 MeasurementPeriod
+	Currency               string
+	Balances               []MeasuredBalance
+	DTA                    financialtypes.Money
+	DTL                    financialtypes.Money
+	TaxProfileID           string
+	CompanyID              uuid.UUID
+	Jurisdiction           string
+	ProfileVersion         string
+	ProfileSourceReference string
 }
 
 func Measure(balances []TaxBalance, period MeasurementPeriod) (Measurement, error) {
@@ -146,10 +169,22 @@ func Measure(balances []TaxBalance, period MeasurementPeriod) (Measurement, erro
 		} else {
 			taxable = difference.Abs()
 		}
-		dtaAmount := deductible.Mul(balance.Rate.Value)
-		if balance.FutureTaxableProfitProbable == nil || !*balance.FutureTaxableProfitProbable {
-			dtaAmount = decimal.Zero
+		recognizedDeductible := decimal.Zero
+		if balance.RecognitionEvidence != nil {
+			evidence := balance.RecognitionEvidence
+			if err := validateNonnegativeMoney(evidence.SupportedDeductibleAmount); err != nil {
+				return Measurement{}, err
+			}
+			if evidence.SupportedDeductibleAmount.Currency() != currency {
+				return Measurement{}, ErrCurrencyMismatch
+			}
+			if evidence.Probable {
+				recognizedDeductible = decimal.Min(deductible, evidence.SupportedDeductibleAmount.Amount())
+			}
+		} else if balance.FutureTaxableProfitProbable != nil && *balance.FutureTaxableProfitProbable {
+			recognizedDeductible = deductible
 		}
+		dtaAmount := recognizedDeductible.Mul(balance.Rate.Value)
 		dtlAmount := taxable.Mul(balance.Rate.Value)
 		taxableMoney, err := financialtypes.NewMoney(taxable, currency)
 		if err != nil {
@@ -174,6 +209,11 @@ func Measure(balances []TaxBalance, period MeasurementPeriod) (Measurement, erro
 			DeductibleTemporaryDifference: deductibleMoney,
 			DTA:                           dtaMoney,
 			DTL:                           dtlMoney,
+			Rate:                          balance.Rate,
+			ExpectedReversalDate:          balance.ExpectedReversalDate,
+			CarryingAmountSource:          balance.CarryingAmountSource,
+			TaxBaseSource:                 balance.TaxBaseSource,
+			RecognitionEvidenceReference:  evidenceReference(balance.RecognitionEvidence),
 		})
 		totalDTA = totalDTA.Add(dtaAmount)
 		totalDTL = totalDTL.Add(dtlAmount)

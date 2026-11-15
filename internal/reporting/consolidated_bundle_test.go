@@ -53,6 +53,13 @@ func TestGenerateConsolidatedBuildsScopedTrialBalances(t *testing.T) {
 	group := consolidation.Group{
 		ID: "group-1", ParentEntityID: parentID.String(), ReportingCurrency: "USD",
 		Period: consolidation.ReportingPeriod{StartDate: start, EndDate: end},
+		Policies: consolidation.Policies{
+			AccountingPolicyID: "accounting-v1", ControlPolicyID: "control-v1",
+			CurrencyTranslationPolicyID: "translation-v1", EliminationPolicyID: "elimination-v1",
+			IntercompanyPolicyID: "intercompany-v1",
+			EliminationScope:     consolidation.PolicyScopeNone,
+			IntercompanyScope:    consolidation.PolicyScopeNone,
+		},
 		Entities: []consolidation.Entity{
 			{ID: parentID.String(), FunctionalCurrency: "USD"},
 			{ID: subsidiaryID.String(), FunctionalCurrency: "EUR"},
@@ -73,6 +80,7 @@ func TestGenerateConsolidatedBuildsScopedTrialBalances(t *testing.T) {
 		Ownerships: []consolidation.Ownership{{
 			ParentEntityID: parentID.String(), SubsidiaryEntityID: subsidiaryID.String(),
 			Percentage: decimal.NewFromFloat(0.8), AcquisitionDate: start,
+			ControlBasis: "majority voting rights", ControlEvidenceReference: "evidence-subsidiary-control",
 			InvestmentAccountID: parentInvestmentID.String(), GoodwillAccountID: "goodwill",
 			NCIAccountID: "nci", ParentRetainedEarningsAccountID: "parent-retained",
 		}},
