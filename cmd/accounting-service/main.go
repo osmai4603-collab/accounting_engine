@@ -70,7 +70,13 @@ func run() error {
 			}
 			pingCtx, pingCancel := context.WithTimeout(healthCtx, 2*time.Second)
 			defer pingCancel()
-			return pgDriver.Pool().Ping(pingCtx)
+			if err := pgDriver.Pool().Ping(pingCtx); err != nil {
+				return fmt.Errorf("storage ping failed: %w", err)
+			}
+			if err := pgDriver.ValidateSchema(pingCtx); err != nil {
+				return fmt.Errorf("storage schema validation failed: %w", err)
+			}
+			return nil
 		}
 		log.Printf("Starting service in %s environment with PostgreSQL storage (%s)", cfg.AppEnv, SanitizeDSN(cfg.Database))
 	}

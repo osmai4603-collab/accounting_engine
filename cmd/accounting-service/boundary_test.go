@@ -268,7 +268,7 @@ func TestHTTPBoundaryInjectsPrincipalForEvents(t *testing.T) {
 
 func TestHTTPBoundaryLeavesHealthReadinessAndMetricsOpen(t *testing.T) {
 	server := newHTTPServer(gatewayTestConfig(), &serviceTestEngine{ledger: &boundaryTestLedger{}}, func(context.Context) error { return nil })
-	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
+	for _, path := range []string{"/healthz", "/startupz", "/readyz", "/metrics"} {
 		response := httptest.NewRecorder()
 		server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusOK {
@@ -399,12 +399,11 @@ func TestGRPCBoundaryProtectsReflectionStreams(t *testing.T) {
 
 	unauthorized, err := reflectionClient.ServerReflectionInfo(context.Background())
 	if err == nil {
-		err = unauthorized.Send(&reflectionv1.ServerReflectionRequest{
+		_ = unauthorized.Send(&reflectionv1.ServerReflectionRequest{
 			MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{ListServices: ""},
 		})
-		if err == nil {
-			_, err = unauthorized.Recv()
-		}
+		_ = unauthorized.CloseSend()
+		_, err = unauthorized.Recv()
 	}
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("reflection without credentials status = %s, want Unauthenticated (%v)", status.Code(err), err)

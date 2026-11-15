@@ -40,6 +40,24 @@ type Metrics struct {
 	postingFailures           uint64
 	postingFailuresByCategory map[string]uint64
 
+	reversalAttempts uint64
+	reversedEntries  uint64
+	reversalFailures uint64
+
+	eventsReceived  uint64
+	eventsProcessed uint64
+	eventsFailed    uint64
+
+	validationErrors uint64
+	conflictErrors   uint64
+	dbErrors         uint64
+
+	deadlocksDetected  uint64
+	transactionRetries uint64
+
+	outboxPendingCount int64
+	outboxLagSeconds   float64
+
 	makerCheckerPending int64
 
 	reconciliationDiscrepancies int64
@@ -276,6 +294,251 @@ func (m *Metrics) ReconciliationDiscrepancyCount() int64 {
 	return m.reconciliationDiscrepancies
 }
 
+// Reversal metrics
+func (m *Metrics) IncReversalAttempts() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.reversalAttempts++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncReversedEntries() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.reversedEntries++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncReversalFailures() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.reversalFailures++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) ReversalAttempts() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reversalAttempts
+}
+
+func (m *Metrics) ReversedEntries() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reversedEntries
+}
+
+func (m *Metrics) ReversalFailures() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reversalFailures
+}
+
+// Ingestion event metrics
+func (m *Metrics) IncEventsReceived() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.eventsReceived++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncEventsProcessed() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.eventsProcessed++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncEventsFailed() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.eventsFailed++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) EventsReceived() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.eventsReceived
+}
+
+func (m *Metrics) EventsProcessed() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.eventsProcessed
+}
+
+func (m *Metrics) EventsFailed() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.eventsFailed
+}
+
+// Error taxonomy counters
+func (m *Metrics) IncValidationError() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.validationErrors++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncConflictError() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.conflictErrors++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncDBError() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.dbErrors++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) ValidationErrors() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.validationErrors
+}
+
+func (m *Metrics) ConflictErrors() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conflictErrors
+}
+
+func (m *Metrics) DBErrors() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dbErrors
+}
+
+// Deadlock & retry metrics
+func (m *Metrics) IncDeadlock() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.deadlocksDetected++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) IncTransactionRetry() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.transactionRetries++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) DeadlocksDetected() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deadlocksDetected
+}
+
+func (m *Metrics) TransactionRetries() uint64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.transactionRetries
+}
+
+// Outbox metrics
+func (m *Metrics) SetOutboxPendingCount(count int64) {
+	if m == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	m.mu.Lock()
+	m.outboxPendingCount = count
+	m.mu.Unlock()
+}
+
+func (m *Metrics) SetOutboxLagSeconds(seconds float64) {
+	if m == nil {
+		return
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	m.mu.Lock()
+	m.outboxLagSeconds = seconds
+	m.mu.Unlock()
+}
+
+func (m *Metrics) OutboxPendingCount() int64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.outboxPendingCount
+}
+
+func (m *Metrics) OutboxLagSeconds() float64 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.outboxLagSeconds
+}
+
 // WritePrometheus writes the registry in the Prometheus text exposition format
 // (version 0.0.4).
 func (m *Metrics) WritePrometheus(w io.Writer) error {
@@ -343,6 +606,63 @@ func (m *Metrics) WritePrometheus(w io.Writer) error {
 	builder.WriteString("# HELP accounting_reconciliation_discrepancy_count Accounts whose materialized balance differs from the ledger.\n")
 	builder.WriteString("# TYPE accounting_reconciliation_discrepancy_count gauge\n")
 	fmt.Fprintf(&builder, "accounting_reconciliation_discrepancy_count %d\n", m.reconciliationDiscrepancies)
+
+	// Reversal metrics
+	builder.WriteString("# HELP accounting_reversal_attempts_total Total number of entry reversal attempts.\n")
+	builder.WriteString("# TYPE accounting_reversal_attempts_total counter\n")
+	fmt.Fprintf(&builder, "accounting_reversal_attempts_total %d\n", m.reversalAttempts)
+
+	builder.WriteString("# HELP accounting_reversed_entries_total Total number of successfully reversed journal entries.\n")
+	builder.WriteString("# TYPE accounting_reversed_entries_total counter\n")
+	fmt.Fprintf(&builder, "accounting_reversed_entries_total %d\n", m.reversedEntries)
+
+	builder.WriteString("# HELP accounting_reversal_failures_total Total number of failed reversal attempts.\n")
+	builder.WriteString("# TYPE accounting_reversal_failures_total counter\n")
+	fmt.Fprintf(&builder, "accounting_reversal_failures_total %d\n", m.reversalFailures)
+
+	// Ingestion event metrics
+	builder.WriteString("# HELP accounting_events_received_total Total number of external economic events received.\n")
+	builder.WriteString("# TYPE accounting_events_received_total counter\n")
+	fmt.Fprintf(&builder, "accounting_events_received_total %d\n", m.eventsReceived)
+
+	builder.WriteString("# HELP accounting_events_processed_total Total number of external economic events processed into entries.\n")
+	builder.WriteString("# TYPE accounting_events_processed_total counter\n")
+	fmt.Fprintf(&builder, "accounting_events_processed_total %d\n", m.eventsProcessed)
+
+	builder.WriteString("# HELP accounting_events_failed_total Total number of external economic events that failed processing.\n")
+	builder.WriteString("# TYPE accounting_events_failed_total counter\n")
+	fmt.Fprintf(&builder, "accounting_events_failed_total %d\n", m.eventsFailed)
+
+	// Error classification counters
+	builder.WriteString("# HELP accounting_validation_errors_total Total input validation errors.\n")
+	builder.WriteString("# TYPE accounting_validation_errors_total counter\n")
+	fmt.Fprintf(&builder, "accounting_validation_errors_total %d\n", m.validationErrors)
+
+	builder.WriteString("# HELP accounting_conflict_errors_total Total concurrency or idempotency conflict errors.\n")
+	builder.WriteString("# TYPE accounting_conflict_errors_total counter\n")
+	fmt.Fprintf(&builder, "accounting_conflict_errors_total %d\n", m.conflictErrors)
+
+	builder.WriteString("# HELP accounting_db_errors_total Total storage backend errors.\n")
+	builder.WriteString("# TYPE accounting_db_errors_total counter\n")
+	fmt.Fprintf(&builder, "accounting_db_errors_total %d\n", m.dbErrors)
+
+	// Deadlock & retry metrics
+	builder.WriteString("# HELP accounting_deadlocks_detected_total Total transaction deadlocks detected by storage.\n")
+	builder.WriteString("# TYPE accounting_deadlocks_detected_total counter\n")
+	fmt.Fprintf(&builder, "accounting_deadlocks_detected_total %d\n", m.deadlocksDetected)
+
+	builder.WriteString("# HELP accounting_transaction_retries_total Total storage transaction retries executed.\n")
+	builder.WriteString("# TYPE accounting_transaction_retries_total counter\n")
+	fmt.Fprintf(&builder, "accounting_transaction_retries_total %d\n", m.transactionRetries)
+
+	// Outbox metrics
+	builder.WriteString("# HELP accounting_outbox_pending_count Total entries pending in transactional outbox.\n")
+	builder.WriteString("# TYPE accounting_outbox_pending_count gauge\n")
+	fmt.Fprintf(&builder, "accounting_outbox_pending_count %d\n", m.outboxPendingCount)
+
+	builder.WriteString("# HELP accounting_outbox_lag_seconds Current lag in seconds of transactional outbox dispatch.\n")
+	builder.WriteString("# TYPE accounting_outbox_lag_seconds gauge\n")
+	fmt.Fprintf(&builder, "accounting_outbox_lag_seconds %s\n", formatFloat(m.outboxLagSeconds))
 
 	_, err := io.WriteString(w, builder.String())
 	return err

@@ -97,6 +97,15 @@ func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceau
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
+	mux.HandleFunc("/startupz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeHTTPError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("STARTED"))
+	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")

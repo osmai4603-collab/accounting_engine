@@ -589,3 +589,35 @@ func TestHTTPServerGracefulShutdownDrainsActiveRequest(t *testing.T) {
 		t.Fatalf("active request failed during shutdown: %v", err)
 	}
 }
+
+func TestStartupProbeAndSchemaCompatibilityReadiness(t *testing.T) {
+	// Test startup probe
+	server := newHTTPServer(Config{}, nil, func(context.Context) error { return nil })
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/startupz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("startup probe status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	// Test schema incompatibility in readiness
+	schemaHealthy := false
+	server = newHTTPServer(Config{}, nil, func(ctx context.Context) error {
+		if !schemaHealthy {
+			return errors.New("database schema is incompatible or has pending migrations")
+		}
+		return nil
+	})
+
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("incompatible schema readiness status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+
+	schemaHealthy = true
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("compatible schema readiness status = %d, want %d", response.Code, http.StatusOK)
+	}
+}

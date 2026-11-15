@@ -207,3 +207,104 @@ func TestMiddlewarePropagatesTraceContext(t *testing.T) {
 		t.Fatalf("generated traceparent is invalid: %v", err)
 	}
 }
+
+func TestSensitiveDataRedactionInStructuredLogs(t *testing.T) {
+	var buffer bytes.Buffer
+	logger := observability.NewLogger(&buffer, nil)
+
+	logger.Info("user authentication attempt",
+		"password", "SuperSecret123!",
+		"token", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+		"secret", "whsec_abcdef123456",
+		"credit_card", "4111111111111111",
+		"normal_field", "visible_value",
+	)
+
+	logged := buffer.String()
+	if strings.Contains(logged, "SuperSecret123!") {
+		t.Errorf("log leaked sensitive password: %s", logged)
+	}
+	if strings.Contains(logged, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") {
+		t.Errorf("log leaked sensitive token: %s", logged)
+	}
+	if strings.Contains(logged, "whsec_abcdef123456") {
+		t.Errorf("log leaked webhook secret: %s", logged)
+	}
+	if strings.Contains(logged, "4111111111111111") {
+		t.Errorf("log leaked credit card: %s", logged)
+	}
+	if !strings.Contains(logged, "[REDACTED]") {
+		t.Errorf("log missing [REDACTED] placeholder: %s", logged)
+	}
+	if !strings.Contains(logged, "visible_value") {
+		t.Errorf("log did not preserve non-sensitive fields: %s", logged)
+	}
+}
+
+func TestExtendedOperationalMetrics(t *testing.T) {
+	metrics := observability.NewMetrics()
+
+	// Test reversals
+	metrics.IncReversalAttempts()
+	metrics.IncReversedEntries()
+	metrics.IncReversalFailures()
+	if metrics.ReversalAttempts() != 1 || metrics.ReversedEntries() != 1 || metrics.ReversalFailures() != 1 {
+		t.Errorf("reversal metrics mismatch")
+	}
+
+	// Test ingestion events
+	metrics.IncEventsReceived()
+	metrics.IncEventsProcessed()
+	metrics.IncEventsFailed()
+	if metrics.EventsReceived() != 1 || metrics.EventsProcessed() != 1 || metrics.EventsFailed() != 1 {
+		t.Errorf("event metrics mismatch")
+	}
+
+	// Test errors
+	metrics.IncValidationError()
+	metrics.IncConflictError()
+	metrics.IncDBError()
+	if metrics.ValidationErrors() != 1 || metrics.ConflictErrors() != 1 || metrics.DBErrors() != 1 {
+		t.Errorf("error counters mismatch")
+	}
+
+	// Test deadlocks & retries
+	metrics.IncDeadlock()
+	metrics.IncTransactionRetry()
+	if metrics.DeadlocksDetected() != 1 || metrics.TransactionRetries() != 1 {
+		t.Errorf("deadlock/retry metrics mismatch")
+	}
+
+	// Test outbox
+	metrics.SetOutboxPendingCount(42)
+	metrics.SetOutboxLagSeconds(3.5)
+	if metrics.OutboxPendingCount() != 42 || metrics.OutboxLagSeconds() != 3.5 {
+		t.Errorf("outbox metrics mismatch")
+	}
+
+	// Verify Prometheus output contains new metrics
+	var buf bytes.Buffer
+	if err := metrics.WritePrometheus(&buf); err != nil {
+		t.Fatalf("failed to write prometheus output: %v", err)
+	}
+	output := buf.String()
+	for _, expectedMetric := range []string{
+		"accounting_reversal_attempts_total 1",
+		"accounting_reversed_entries_total 1",
+		"accounting_reversal_failures_total 1",
+		"accounting_events_received_total 1",
+		"accounting_events_processed_total 1",
+		"accounting_events_failed_total 1",
+		"accounting_validation_errors_total 1",
+		"accounting_conflict_errors_total 1",
+		"accounting_db_errors_total 1",
+		"accounting_deadlocks_detected_total 1",
+		"accounting_transaction_retries_total 1",
+		"accounting_outbox_pending_count 42",
+		"accounting_outbox_lag_seconds 3.5",
+	} {
+		if !strings.Contains(output, expectedMetric) {
+			t.Errorf("prometheus output missing %q", expectedMetric)
+		}
+	}
+}

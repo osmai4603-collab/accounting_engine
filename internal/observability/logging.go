@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 )
 
 // Handler decorates a slog.Handler and automatically injects the financial
@@ -38,32 +39,51 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	traceID := TraceIDFromContext(ctx)
 
 	present := make(map[string]struct{}, record.NumAttrs())
+	sanitizedAttrs := make([]slog.Attr, 0, record.NumAttrs()+4)
+
 	record.Attrs(func(attr slog.Attr) bool {
 		present[attr.Key] = struct{}{}
+		sanitizedAttrs = append(sanitizedAttrs, sanitizeAttr(attr))
 		return true
 	})
 
+	// Replace record with sanitized attrs
+	sanitizedRecord := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	for _, attr := range sanitizedAttrs {
+		sanitizedRecord.AddAttrs(attr)
+	}
+
 	if hasCompany {
 		if _, ok := present["company_id"]; !ok {
-			record.AddAttrs(slog.String("company_id", companyID.String()))
+			sanitizedRecord.AddAttrs(slog.String("company_id", companyID.String()))
 		}
 	}
 	if hasEntry {
 		if _, ok := present["entry_id"]; !ok {
-			record.AddAttrs(slog.String("entry_id", entryID.String()))
+			sanitizedRecord.AddAttrs(slog.String("entry_id", entryID.String()))
 		}
 	}
 	if hasPeriod {
 		if _, ok := present["period_id"]; !ok {
-			record.AddAttrs(slog.String("period_id", periodID.String()))
+			sanitizedRecord.AddAttrs(slog.String("period_id", periodID.String()))
 		}
 	}
 	if traceID != "" {
 		if _, ok := present["trace_id"]; !ok {
-			record.AddAttrs(slog.String("trace_id", traceID))
+			sanitizedRecord.AddAttrs(slog.String("trace_id", traceID))
 		}
 	}
-	return h.next.Handle(ctx, record)
+	return h.next.Handle(ctx, sanitizedRecord)
+}
+
+func sanitizeAttr(attr slog.Attr) slog.Attr {
+	key := strings.ToLower(strings.TrimSpace(attr.Key))
+	switch key {
+	case "password", "token", "secret", "authorization", "auth", "api_key", "apikey",
+		"private_key", "privatekey", "credit_card", "card_number", "iban", "cvv":
+		return slog.String(attr.Key, "[REDACTED]")
+	}
+	return attr
 }
 
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {

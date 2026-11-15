@@ -22,7 +22,42 @@ const migrationLockID int64 = 0x414343544D494752
 //go:embed migrations/*.sql
 var embeddedMigrations embed.FS
 
-var ErrDownMigrationMissing = errors.New("down migration is missing")
+var (
+	ErrDownMigrationMissing = errors.New("down migration is missing")
+	ErrSchemaIncompatible   = errors.New("database schema is incompatible or has pending migrations")
+)
+
+// ValidateSchemaHealth verifies that the database is reachable and that all embedded migrations
+// have been applied with matching checksums.
+func ValidateSchemaHealth(ctx context.Context, pool *pgxpool.Pool) error {
+	if pool == nil {
+		return errors.New("database connection pool is nil")
+	}
+	if err := pool.Ping(ctx); err != nil {
+		return fmt.Errorf("database ping failed: %w", err)
+	}
+	const directory = "migrations"
+	migrations, err := listMigrations(directory)
+	if err != nil {
+		return fmt.Errorf("list embedded migrations: %w", err)
+	}
+	if err := ensureSchemaMigrationsTable(ctx, pool); err != nil {
+		return fmt.Errorf("%w: failed to verify schema migrations table: %v", ErrSchemaIncompatible, err)
+	}
+	pending, err := pendingMigrations(ctx, pool, migrations)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrSchemaIncompatible, err)
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("%w: %d pending migration(s) unapplied", ErrSchemaIncompatible, len(pending))
+	}
+	return nil
+}
+
+// ValidateSchema validates the schema on the driver's pool.
+func (d *Driver) ValidateSchema(ctx context.Context) error {
+	return ValidateSchemaHealth(ctx, d.pool)
+}
 
 type migrationFile struct {
 	version  int64

@@ -20,6 +20,7 @@ type Engine struct {
 	Ratios         *RatiosEngine
 	Bundle         *BundleEngine
 	Reconciliation *BalanceReconciliationEngine
+	StatementRecon *StatementReconciler
 	policyUnit     *policy.Unit
 }
 
@@ -35,6 +36,7 @@ func NewEngine(repository Repository) *Engine {
 		Ratios:         NewRatiosEngine(repository),
 		Bundle:         NewBundleEngine(repository),
 		Reconciliation: NewBalanceReconciliationEngine(repository),
+		StatementRecon: NewStatementReconciler(repository),
 	}
 }
 
