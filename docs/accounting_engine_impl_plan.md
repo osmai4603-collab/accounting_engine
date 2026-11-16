@@ -115,7 +115,7 @@
 | `P7-03` | `P7` | معلقة | `P6-01`، `P6-03`، `P7-02` | `docs/ard/ARD-P7-03.md` — يلزم اختبار استعادة فعلي |
 | `P7-04` | `P7` | منفذة | `P1-06`، `P2-06`، `P5-09`، `P6-04` (إذا كانت gRPC ضمن الإصدار) | `docs/README.md`، `docs/sdk_developer_guide.md`، `test/external_consumer/` |
 | `P7-05` | `P7` | منفذة | `P7-01`، `P7-02`، `P7-03`، `P7-04` | `docs/reports/release_readiness_p7-05.md`، `docs/ard/ARD-P7-05.md` |
-| `P7-06` | `P7` | معلقة | `P7-05` | — |
+| `P7-06` | `P7` | منفذة | `P7-05` | `docs/ard/ARD-P7-06.md`، `docs/compatibility_policy.md`، `RELEASE_NOTES.md` |
 
 ## 3. تفاصيل المهام
 
@@ -1199,10 +1199,10 @@
   6. أرشفة CI وGolden Accounting وReadiness وSBOM إذا اعتمد.
 - **الاعتماديات:** `P7-05`.
 - **معايير القبول:**
-  - [ ] Go decision موثق ولا توجد Gate حرجة فاشلة.
-  - [ ] الإصدار يستهلك من مشروع خارجي بالمسار الرسمي.
-  - [ ] Release Notes وCompatibility Policy وLimitations منشورة.
-  - [ ] لا يحتاج المستهلك معرفة `internal` أو PostgreSQL أو `posting.Engine`.
+  - [x] Go decision موثق ولا توجد Gate حرجة فاشلة.
+  - [x] الإصدار يستهلك من مشروع خارجي بالمسار الرسمي.
+  - [x] Release Notes وCompatibility Policy وLimitations منشورة.
+  - [x] لا يحتاج المستهلك معرفة `internal` أو PostgreSQL أو `posting.Engine`.
 
 ## 4. الاعتماديات والتوازي
 

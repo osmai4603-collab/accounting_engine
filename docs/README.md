@@ -45,6 +45,10 @@ applicable runbook and validate it against the target deployment:
 
 | Document | Use it for |
 | --- | --- |
+| [Compatibility policy](./compatibility_policy.md) | SemVer rules, API/SPI stability, deprecation lifecycle, and storage compatibility |
+| [Release notes v0.1.0](../RELEASE_NOTES.md) | Release notes for version v0.1.0 (Developer Preview / Embedded SDK) |
+| [Release archive v0.1.0](./reports/release_archive_v0.1.0.md) | Verification logs, quality gates, and SBOM details for v0.1.0 |
+| [P7-06 decision record](./ard/ARD-P7-06.md) | Task P7-06 completion evidence, SemVer selection, and packaging decisions |
 | [Current P7-05 release readiness report](./reports/release_readiness_p7-05.md) | Current weighted evidence score, mandatory release gates, known limitations, and No-Go decision |
 | [P7-05 decision record](./ard/ARD-P7-05.md) | Task acceptance evidence and outstanding release blockers |
 | [CI notes](./ci.md) | Repository validation workflow |

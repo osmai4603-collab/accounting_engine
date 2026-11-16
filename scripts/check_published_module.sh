@@ -24,7 +24,7 @@ import zipfile
 
 repo, zip_path, version, module_path = sys.argv[1:5]
 prefix = f"{module_path}@{version}/"
-excluded_dirs = {".git", ".gotmp", "test/external_consumer"}
+excluded_dirs = {".git", ".gotmp", "test/external_consumer", "test/external_adapter_consumer"}
 
 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
     for root, dirs, files in os.walk(repo):
