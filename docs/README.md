@@ -27,12 +27,16 @@ under `pkg/api/v1` and `pkg/spi` when implementing integrations. Do not import
 | Document | Use it for |
 | --- | --- |
 | [Accounting architecture](./financial_accounting_system_architecture.md) | High-level engine and adapter architecture |
+| [Subledgers architecture](./architecture/subledgers_architecture.md) | Sub-ledgers (AR, AP, FA, Treasury) contracts and GL integration |
 | [Entry validation invariants](./accounting/entry_validation_invariants.md) | Journal-entry validation rules |
 | [Reversal specification](./accounting/reversal_specification.md) | Reversal behavior and constraints |
 | [Closing and reopening policy](./accounting/closing_and_reopening_policy.md) | Fiscal-period close/reopen policy |
 | [Financial reporting scope](./accounting/financial_reporting_scope.md) | Reporting capabilities and scope |
+| [Golden accounting scenarios](./golden_accounting_scenarios.md) | Approved accounting ground truth and benchmark scenarios |
 | [Standards automation](./ifrs_automation.md) | Current standards-module design and automation context |
 | [Standards types and frameworks](./accounting_standards_types_and_frameworks.md) | Background reference on accounting frameworks |
+| [Accounting standards specs](./standards/README.md) | Specifications for IFRS, IFRS 18, AAOIFI, and US GAAP |
+| [Engineering methodology](./methodology/README.md) | Core software engine principles, metrics, and methodology |
 
 Standards and industry integrations are bounded capabilities; neither the
 presence of a package nor a passing test should be read as a claim of full
@@ -69,9 +73,9 @@ set, or production configuration.
 The following documents contain older assessments or proposals and must not be
 used as current readiness, certification, or compliance evidence:
 
-- [Production readiness specification](./production_readiness_specification_and_verification.md)
-- [Production certification sign-off](./production_certification_signoff.md)
-- [Gap analysis and standards verification report](./gap_analysis_and_standards_verification_report.md)
-- [Golden accounting benchmark](./golden_accounting_benchmark.md)
+- [Production readiness specification](./archive/production_readiness_specification_and_verification.md)
+- [Production certification sign-off](./archive/production_certification_signoff.md)
+- [Gap analysis and standards verification report](./archive/gap_analysis_and_standards_verification_report.md)
+- [Golden accounting benchmark](./archive/golden_accounting_benchmark.md)
 
 The implementation plan is a task-tracking artifact, not a consumer contract.

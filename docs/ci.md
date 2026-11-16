@@ -5,7 +5,7 @@
 - **المالك:** `SRE` + `QA`
 - **المهمة:** `P0-T2`
 - **الملف:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
-- **التقرير المرتبط:** [`baseline_report.md`](./baseline_report.md)
+- **التقرير المرتبط:** [`engine5_baseline.md`](./baselines/engine5_baseline.md)
 
 ## 1. الهدف
 
@@ -74,7 +74,7 @@ postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
 go test -count=1 -tags gapred -run TestGAP ./...
 ```
 
-عند بدء إصلاح فجوة في مرحلة لاحقة، يُزال الوسم أو يُحوَّل الاختبار إلى اختبار انحدار دائم. التفاصيل في [`traceability_matrix.md`](./traceability_matrix.md).
+عند بدء إصلاح فجوة في مرحلة لاحقة، يُزال الوسم أو يُحوَّل الاختبار إلى اختبار انحدار دائم. التفاصيل في [`ENGINE_COMPLIANCE_MATRIX.md`](./ENGINE_COMPLIANCE_MATRIX.md).
 
 ## 6. التشغيل المحلي
 
@@ -107,7 +107,7 @@ POSTGRES_URL='postgres://postgres:postgres@localhost:5432/accounting_test?sslmod
 export POSTGRES_URL='postgres://osm@localhost:5432/accounting_test?sslmode=disable&host=/var/run/postgresql'
 ```
 
-> إذا كانت `accounting_test` تحتفظ بهجرات قديمة، فقد تظهر `applied migration ... checksum differs from source`. استخدم قاعدة جديدة بدلاً من حذف بيانات، كما في [`baseline_report.md`](./baseline_report.md) §6.
+> إذا كانت `accounting_test` تحتفظ بهجرات قديمة، فقد تظهر `applied migration ... checksum differs from source`. استخدم قاعدة جديدة بدلاً من حذف بيانات، كما في [`engine5_baseline.md`](./baselines/engine5_baseline.md) §6.
 
 ## 7. إلزامية الخط وحماية الفرع
 

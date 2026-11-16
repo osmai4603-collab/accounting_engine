@@ -5,7 +5,7 @@
 > الجاهزية الحالية أو الامتثال المحاسبي/التنظيمي. راجع الأدلة القابلة لإعادة
 > الإنتاج والاختبارات والسياسات التشغيلية الخاصة بالنشر المستهدف.
 >
-> **القرار الحالي:** راجع [تقرير Release Readiness P7-05](./reports/release_readiness_p7-05.md).
+> **القرار الحالي:** راجع [تقرير Release Readiness P7-05](../reports/release_readiness_p7-05.md).
 > مصفوفة Go/No-Go والدرجات التاريخية أدناه ليست التقييم الحالي ولا تمثل شهادة.
 
 ## Production Readiness Specification, Quality Gates & Verification Framework
