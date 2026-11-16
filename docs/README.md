@@ -45,6 +45,8 @@ applicable runbook and validate it against the target deployment:
 
 | Document | Use it for |
 | --- | --- |
+| [Current P7-05 release readiness report](./reports/release_readiness_p7-05.md) | Current weighted evidence score, mandatory release gates, known limitations, and No-Go decision |
+| [P7-05 decision record](./ard/ARD-P7-05.md) | Task acceptance evidence and outstanding release blockers |
 | [CI notes](./ci.md) | Repository validation workflow |
 | [Migration policy](./migration_policy.md) | Migration compatibility and change policy |
 | [Backup and recovery policy](./operations/backup_and_recovery_policy.md) | Backup and recovery concepts |
