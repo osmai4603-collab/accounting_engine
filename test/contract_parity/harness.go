@@ -227,6 +227,7 @@ func ForEachAdapter(t *testing.T, name string, testFn func(t *testing.T, h *Adap
 			var capabilities storage.AdapterCapabilities
 			defer func() {
 				differences := []string(nil)
+				semanticDifferences := []string{"none; adapter contract assertions passed"}
 				unexpected := []string(nil)
 				if capabilities.AdapterName != "" {
 					differences = []string{
@@ -238,13 +239,16 @@ func ForEachAdapter(t *testing.T, name string, testFn func(t *testing.T, h *Adap
 				}
 				if t.Failed() {
 					unexpected = []string{"contract assertions failed; see the corresponding go test output"}
+					semanticDifferences = []string{"adapter contract assertions failed; see go test output"}
 				}
 				GlobalReporter.Record(ScenarioResult{
 					ScenarioName:          name,
 					AdapterName:           tc.name,
+					EngineVersion:         EngineVersion(),
 					Passed:                !t.Failed() && !t.Skipped(),
 					Skipped:               t.Skipped(),
 					CapabilityDifferences: differences,
+					SemanticDifferences:   semanticDifferences,
 					UnexpectedDifferences: unexpected,
 					ExecutionDuration:     time.Since(start),
 				})

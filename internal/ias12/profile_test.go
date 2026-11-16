@@ -202,3 +202,115 @@ func TestConfiguredEntriesRequireMappingAndApplication(t *testing.T) {
 		t.Fatalf("deferred-tax entry lost profile/mapping trace: %q", entry.Reference)
 	}
 }
+
+func TestGoldenScenario_GS10_IAS12IncomeTaxes(t *testing.T) {
+	companyID := uuid.New()
+	profile := TaxProfile{
+		ID:              "profile-gs10",
+		CompanyID:       companyID,
+		Jurisdiction:    "US",
+		Currency:        "USD",
+		Version:         "v2026",
+		EffectiveFrom:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		SourceReference: "tax-code-enacted-2025",
+		Rates: []TaxRate{
+			{
+				Value:           decimal.RequireFromString("0.20"),
+				Enacted:         true,
+				EnactedOn:       time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC),
+				EffectiveFrom:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+				SourceReference: "US-TR-2026",
+			},
+			{
+				Value:           decimal.RequireFromString("0.25"),
+				Enacted:         true,
+				EnactedOn:       time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC),
+				EffectiveFrom:   time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+				SourceReference: "US-TR-2027",
+			},
+		},
+	}
+
+	period := testPeriod(Annual)
+	evidence := &DTARecognitionEvidence{
+		Reference:                 "approved-forecast-2027",
+		AssessedOn:                period.AsOf,
+		Probable:                  true,
+		SupportedDeductibleAmount: testMoney(t, "15000", "USD"),
+	}
+
+	balances := []TaxBalance{
+		{
+			ID:                   "asset-taxable-diff",
+			Kind:                 Asset,
+			CarryingAmount:       testMoney(t, "100000", "USD"),
+			TaxBase:              testMoney(t, "60000", "USD"),
+			ExpectedReversalDate: time.Date(2027, 6, 30, 0, 0, 0, 0, time.UTC),
+			CarryingAmountSource: "fixed-asset-subledger",
+			TaxBaseSource:        "macrs-tax-depreciation-schedule",
+		},
+		{
+			ID:                   "liability-deductible-diff",
+			Kind:                 Liability,
+			CarryingAmount:       testMoney(t, "20000", "USD"),
+			TaxBase:              testMoney(t, "0", "USD"),
+			ExpectedReversalDate: time.Date(2027, 6, 30, 0, 0, 0, 0, time.UTC),
+			CarryingAmountSource: "warranty-provision-ledger",
+			TaxBaseSource:        "cash-basis-tax-rules",
+			RecognitionEvidence:  evidence,
+		},
+	}
+
+	measurement, err := MeasureWithProfile(profile, balances, period)
+	if err != nil {
+		t.Fatalf("MeasureWithProfile: %v", err)
+	}
+
+	// 1. Taxable diff on Asset = 40,000 at 25% (effective 2027) = 10,000 DTL
+	// Deductible diff on Liability = 20,000 capped at 15,000 evidence at 25% = 3,750 DTA
+	if !measurement.DTL.Amount().Equal(decimal.NewFromInt(10000)) {
+		t.Fatalf("gross DTL = %s, want 10000", measurement.DTL.Amount())
+	}
+	if !measurement.DTA.Amount().Equal(decimal.RequireFromString("3750")) {
+		t.Fatalf("recognized DTA = %s, want 3750", measurement.DTA.Amount())
+	}
+
+	// 2. Current tax on taxable profit 50,000 at 20% (effective 2026) = 10,000 current tax
+	currentTax, err := MeasureCurrentTax(profile, CurrentTaxInput{
+		Period:          period,
+		TaxableProfit:   testMoney(t, "50000", "USD"),
+		SourceReference: "tax-return-workpaper-2026",
+	})
+	if err != nil {
+		t.Fatalf("MeasureCurrentTax: %v", err)
+	}
+	if !currentTax.TaxExpense.Amount().Equal(decimal.NewFromInt(10000)) {
+		t.Fatalf("current tax = %s, want 10000", currentTax.TaxExpense.Amount())
+	}
+
+	// 3. Configured journal entry generation
+	config := ConfiguredPosting{
+		CompanyID:                         companyID,
+		JournalMappingReference:           "mapping-gs10",
+		ApplicationConfigurationReference: "tax-service-v1",
+		CurrentExpenseAccountID:           uuid.New(),
+		CurrentPayableAccountID:           uuid.New(),
+		DeferredAccounts: DeferredTaxAccounts{
+			Expense: uuid.New(),
+			DTA:     uuid.New(),
+			DTL:     uuid.New(),
+		},
+	}
+
+	currentEntry, err := GenerateConfiguredCurrentTaxEntry(currentTax, config, uuid.New(), "tax-accountant")
+	if err != nil {
+		t.Fatalf("GenerateConfiguredCurrentTaxEntry: %v", err)
+	}
+	assertBalanced(t, currentEntry)
+
+	deferredEntry, err := GenerateConfiguredDeferredTaxEntry(measurement, DeferredTaxPosition{}, config, uuid.New(), "tax-accountant")
+	if err != nil {
+		t.Fatalf("GenerateConfiguredDeferredTaxEntry: %v", err)
+	}
+	assertBalanced(t, deferredEntry)
+}

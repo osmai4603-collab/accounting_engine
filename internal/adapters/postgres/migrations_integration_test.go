@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"strings"
@@ -231,5 +232,81 @@ func TestBaselineMigrationCleanRun(t *testing.T) {
 	}
 	if appliedAfterRerun != applied {
 		t.Fatalf("applied migration count after rerun = %d, want %d", appliedAfterRerun, applied)
+	}
+}
+
+func TestFailedMigrationRollsBackAndCanBeRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	pool, _ := freshMigrationPool(t, ctx)
+	if _, err := pool.Exec(ctx, `CREATE TABLE schema_migrations (
+		version bigint PRIMARY KEY,
+		name text NOT NULL,
+		checksum char(64) NOT NULL,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION reject_latest_migration() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.version = 202611150001 THEN
+				RAISE EXCEPTION 'injected migration ledger failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$`); err != nil {
+		t.Fatalf("create migration failure injector: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER reject_latest_migration
+		BEFORE INSERT ON schema_migrations FOR EACH ROW
+		EXECUTE FUNCTION reject_latest_migration()`); err != nil {
+		t.Fatalf("install migration failure injector: %v", err)
+	}
+
+	if err := postgres.MigrateUp(ctx, pool); err == nil {
+		t.Fatal("migration unexpectedly succeeded despite injected ledger failure")
+	}
+
+	var recorded bool
+	if err := pool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 202611150001)",
+	).Scan(&recorded); err != nil {
+		t.Fatalf("check failed migration ledger entry: %v", err)
+	}
+	if recorded {
+		t.Fatal("failed migration was recorded as applied")
+	}
+	var forced bool
+	if err := pool.QueryRow(ctx, `SELECT relforcerowsecurity
+		FROM pg_class WHERE oid = 'public_event_ingestions'::regclass`).Scan(&forced); err != nil {
+		t.Fatalf("check failed migration DDL rollback: %v", err)
+	}
+	if forced {
+		t.Fatal("failed migration DDL was not rolled back")
+	}
+	if err := postgres.ValidateSchemaHealth(ctx, pool); !errors.Is(err, postgres.ErrSchemaIncompatible) {
+		t.Fatalf("schema health after failed migration = %v, want ErrSchemaIncompatible", err)
+	}
+
+	if _, err := pool.Exec(ctx, `DROP TRIGGER reject_latest_migration ON schema_migrations`); err != nil {
+		t.Fatalf("remove migration failure injector: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DROP FUNCTION reject_latest_migration()`); err != nil {
+		t.Fatalf("remove migration failure function: %v", err)
+	}
+	if err := postgres.MigrateUp(ctx, pool); err != nil {
+		t.Fatalf("retry migration after removing injected failure: %v", err)
+	}
+	if err := postgres.ValidateSchemaHealth(ctx, pool); err != nil {
+		t.Fatalf("schema health after successful retry: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT relforcerowsecurity
+		FROM pg_class WHERE oid = 'public_event_ingestions'::regclass`).Scan(&forced); err != nil {
+		t.Fatalf("check successful migration DDL: %v", err)
+	}
+	if !forced {
+		t.Fatal("successful retry did not apply migration DDL")
 	}
 }

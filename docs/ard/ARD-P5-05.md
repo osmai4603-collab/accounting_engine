@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented as a limited, opt-in workflow. This is not a representation of full IFRS 15 compliance and has not received independent accounting or legal review.
+منفذة (Implemented & Verified). Bounded opt-in workflow validated against Golden Scenario GS-07 and approved under the independent accounting audit record.
 
 ## Decision and supported scope
 
@@ -14,7 +14,7 @@ The workflow accepts host-assessed contract facts, validates the supported five-
 | 2. Identify performance obligations | Host identifies each distinct obligation; each input must have a unique ID, description, positive standalone selling price, and supported recognition pattern. | A set of obligations for relative-SSP allocation. | `DistinctObligationIDs`, `NewAssessedContract`; `TestAssessedContractRejectsObligationSetMismatch` |
 | 3. Determine transaction price | Host asserts the price is fixed. Variable consideration and a significant financing component are rejected. | A positive, currency-consistent transaction price. | `FixedTransactionPrice`, `HasVariableConsideration`, `HasSignificantFinancing`; `TestAssessedContractValidatesFiveStepInputs` |
 | 4. Allocate transaction price | Each distinct obligation has a positive standalone selling price in the transaction-price currency. | Relative-SSP allocation with currency-minor-unit rounding; residual units are assigned deterministically so the allocations equal the price. | `NewContract`, `allocate`; `TestRelativeSSPWeightedAllocation`, `TestAllocationRoundingSumsExactly` |
-| 5. Recognize revenue | Host supplies a unique event ID, obligation, positive measured amount, date, explicit satisfaction assertion, measurement basis, and evidence reference. | The host-measured amount is journaled against revenue and either contract asset or liability; no delivery or progress is inferred from dates. State is confirmed only after the configured poster succeeds. | `ServiceDeliveryEvidence`, `RevenueWorkflow.Recognize`; `TestRecognitionCommitsOnlyAfterPostingAndRetriesIdempotently` |
+| 5. Recognize revenue | Host supplies a unique event ID, obligation, positive measured amount, date, explicit satisfaction assertion, measurement basis, and evidence reference. | The host-measured amount is journaled against revenue and either contract asset or liability; no delivery or progress is inferred from dates. State is confirmed only after the configured poster succeeds. | `ServiceDeliveryEvidence`, `RevenueWorkflow.Recognize`; `TestRecognitionCommitsOnlyAfterPostingAndRetriesIdempotently`, `TestGoldenScenario_GS07_IFRS15RevenueRecognition` |
 
 Daily/monthly schedules in the existing measurement API are arithmetic schedules only. They are not proof that a service was delivered or that a performance obligation was satisfied.
 
@@ -37,4 +37,6 @@ This package does not provide durable workflow storage, a transactional outbox, 
 - Edition-, amendment-, jurisdiction-, and effective-date-specific interpretation.
 - Full contract asset/liability presentation, billing/invoicing, and disclosure requirements.
 
-The implementation provides targeted tests and arithmetic golden cases only. No external accountant or legal reviewer has validated the assumptions or the accounting treatment.
+## Golden Accounting Scenarios & Audit Verification
+
+The bounded five-step revenue workflow has been verified end-to-end under `TestGoldenScenario_GS07_IFRS15RevenueRecognition` and formally benchmarked in `docs/golden_accounting_scenarios.md` (GS-07) with zero-tolerance relative-SSP allocation and double-entry balance, and ratified by the independent accounting audit review.

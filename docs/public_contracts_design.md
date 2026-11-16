@@ -2,7 +2,13 @@
 
 - **التاريخ:** 2026-11-14
 - **يعتمد على:** `docs/public_api_inventory.md`, `ADR-0001`, `ADR-0003`, `ADR-0007`
-- **الحالة:** العقود الأساسية منفذة ومجمّعة؛ ربط `pkg/spi/application.Service` الكامل في `pkg/sdk` يتبع في `P2-01`/`P2-02`.
+- **الحالة:** وثيقة تصميم تاريخية؛ راجع [دليل SDK الحالي](./sdk_developer_guide.md) للعقود المنفذة.
+
+> **ملاحظة تحديث:** هذه وثيقة تصميم تاريخية من `P1-02` وليست وصفًا موثوقًا
+> للسلوك الحالي. منذ كتابتها أصبح `pkg/sdk` يوفّر Application Service
+> واستخدامات `CreateDraft`, `Validate`, `Post`, `Reverse`, و`GetEntry`.
+> استخدم [دليل SDK الحالي](./sdk_developer_guide.md) وواجهات الحزم العامة
+> مرجعًا لعقود المستهلكين.
 
 ## 1. الهدف
 
@@ -76,6 +82,7 @@ internal/sdkapplication ──────┘
 GetCompany(ctx, companyID) (Company, error)
 GetAccount(ctx, companyID, accountID) (Account, error)
 GetAccountByCode(ctx, companyID, code) (Account, error)
+GetJournalByCode(ctx, companyID, code) (Journal, error)
 HasAccountChildren(ctx, companyID, accountID) (bool, error)
 GetFiscalYear(ctx, companyID, fiscalYearID) (FiscalYear, error)
 GetPeriodForDate(ctx, companyID, date) (FiscalPeriod, error)
@@ -105,9 +112,9 @@ GetPeriodForDate(ctx, companyID, date) (FiscalPeriod, error)
   `ErrDuplicateRequest`, `ErrDependencyUnavailable`, `ErrInternal`.
 - `Error` يحمل رسالة عامة آمنة و`Cause` للسجلات فقط.
 
-**حالة التنفيذ:** العقود موجودة ومختبرة تجميعيًا. `pkg/sdk` ما زال يعرض
-`LedgerService` بالشكل القديم؛ ربط `application.Service` وتمرير `Principal` و
-`Authorizer` هو نطاق `P2-01`/`P2-02`.
+**ملاحظة تاريخية:** فقرة الحالة أعلاه تعكس نقطة التصميم بتاريخ `P1-02` فقط.
+يوفّر SDK الحالي `LedgerService` كما يوفّر Application Service العام. يمرر
+المضيف `application.Context` موثوقًا، ويمكنه تزويد `application.Authorizer`.
 
 ## 5. عقود التكامل (`pkg/spi/events`)
 
@@ -206,12 +213,15 @@ commit := storage.PostingCommit{
 - `docs/api/v1.snapshot` أساس فحص التوافق في CI.
 - لا تُضاف أنواع `internal` أو `pgx` أو أسماء جداول إلى أي عقد عام.
 
-## 8. فجوات معروفة تُغلق لاحقًا
+## 8. سجل فجوات التصميم وقت كتابة الوثيقة (تاريخي)
+
+الجدول التالي لقطة تخطيطية بتاريخ `P1-02`؛ لا يثبت أن الفجوة ما زالت قائمة.
+تحقق من الكود واختبارات المستهلك الخارجي قبل الاستناد إلى أي صف.
 
 | الفجوة | الأثر | المهمة |
 | --- | --- | --- |
-| لا يوجد Port لقراءة الدفتر بالرمز | بناء قيد حدث بقاعدة فيها `JournalCode` يحتاج MasterDataReader موسّعًا | `P2-06` |
+| ~~لا يوجد Port لقراءة الدفتر بالرمز~~ | أُغلق بإضافة `MasterDataReader.GetJournalByCode` | `P2-06` |
 | ~~Idempotency الحدث غير موصول في وضع Ports~~ | أُغلق في `P3-04`: `storage.Ports.Events` يجعل السجل دائمًا ومحصورًا بالمصدر؛ لا Fallback داخل العملية | `P3-04` |
 | `ReverseWithReasonContext` يحفظ مسودة ثم يرحّل العكس في معاملتين | مسودة يتيمة عند فشل الترحيل | `P2-05` |
-| `application.Service` غير موصول بـ SDK | الأوامر/التفويض غير مطبقة على المسار العام | `P2-01`, `P2-02` |
+| ~~`application.Service` غير موصول بـ SDK~~ | أصبح متاحًا عبر `NewApplicationService` و`NewApplicationServiceWithAuthorizer` ويستخدمه `EngineBuilder` | `P2-01`, `P2-02` |
 | Standards تتطلب `WithCoreStorage` | لا تعمل في وضع Ports | `P3-02` |

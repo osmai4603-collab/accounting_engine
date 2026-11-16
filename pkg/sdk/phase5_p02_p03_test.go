@@ -95,6 +95,44 @@ func TestP5_02_Preflight_ReportingAndGovernanceDisabledReasons(t *testing.T) {
 	}
 }
 
+func TestP5_09_OptionalCapabilitiesDiscoveryAndDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	engine, err := NewBuilder(WithCoreStorage(store)).Build(ctx)
+	if err != nil {
+		t.Fatalf("failed to build core engine: %v", err)
+	}
+	defer engine.Close()
+
+	// Verify core functionality works alone without any optional capabilities
+	if !engine.Standards().HasCapability(standards.CapLedgerPosting) {
+		t.Fatalf("expected CapLedgerPosting to be active")
+	}
+	if !engine.Standards().HasCapability(standards.CapMasterData) {
+		t.Fatalf("expected CapMasterData to be active")
+	}
+
+	diag := engine.Standards().Diagnostics()
+
+	// Verify disabled reasons for optional capabilities
+	reasons := map[string]string{
+		string(standards.CapReporting):      "reporting data sources missing",
+		string(standards.CapReconciliation): "reconciliation requires two declared comparison sources",
+		string(standards.CapConsolidation):  "consolidation requires multi-entity group configuration",
+	}
+
+	for capName, substr := range reasons {
+		reason, ok := diag.DisabledReasons[capName]
+		if !ok {
+			t.Fatalf("expected disabled reason for capability %s in diagnostics", capName)
+		}
+		if !strings.Contains(reason, substr) {
+			t.Fatalf("expected disabled reason for %s to contain %q, got %q", capName, substr, reason)
+		}
+	}
+}
+
 type mockGovStore struct{}
 
 func (m *mockGovStore) RecordAuditLog(ctx context.Context, eventID string, details map[string]any) error {

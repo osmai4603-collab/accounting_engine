@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -208,5 +209,60 @@ func TestNoInternalImports(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCoreLedgerHasNoIndustryDependencies(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate external-consumer test source")
+	}
+	postingDir := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", "..", "internal", "posting"))
+	industryTerms := []string{
+		"HARVEST_CROP", "POS_SALE", "CropYield", "HarvestOrder",
+		"ProductionOrder", "ManufacturingOrder", "SubscriptionRevenue",
+	}
+	var violations []string
+	err := filepath.WalkDir(postingDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, term := range industryTerms {
+			if strings.Contains(string(source), term) {
+				relative, _ := filepath.Rel(postingDir, path)
+				violations = append(violations, relative+": "+term)
+			}
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(importPath, "/ifrs15") ||
+				strings.Contains(importPath, "/ifrs16") ||
+				strings.Contains(importPath, "/ifrs9") ||
+				strings.Contains(importPath, "/consolidation") {
+				relative, _ := filepath.Rel(postingDir, path)
+				violations = append(violations, relative+": imports "+importPath)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan core ledger sources: %v", err)
+	}
+	if len(violations) > 0 {
+		t.Fatalf("core ledger must remain industry-independent: %s", strings.Join(violations, ", "))
 	}
 }

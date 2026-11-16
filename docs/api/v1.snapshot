@@ -950,8 +950,11 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata Store.GetCompan
 github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata Store.GetFiscalPeriod func(context.Context, github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types.CompanyID, github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types.FiscalPeriodID) (github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata.FiscalPeriod, error)
 github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata Store.GetFiscalYear func(context.Context, github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types.CompanyID, github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types.FiscalYearID) (github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata.FiscalYear, error)
 github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata Store.GetJournalByCode func(context.Context, github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types.CompanyID, string) (github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata.Journal, error)
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ApplicationContract type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ApplicationContract string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ApplicationLedgerService const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ApplicationLedgerService github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ApplicationContract
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapApproval const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapApproval github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapAuditTrail const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapAuditTrail github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapConsolidation const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapConsolidation github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapCurrencyTranslation const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapCurrencyTranslation github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapDeferredTax const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapDeferredTax github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapFinancialInstruments const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapFinancialInstruments github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
@@ -959,6 +962,7 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapGovernance co
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapLeaseAccounting const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapLeaseAccounting github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapLedgerPosting const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapLedgerPosting github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapMasterData const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapMasterData github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapReconciliation const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapReconciliation github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapReporting const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapReporting github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapRevenueRecognition const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapRevenueRecognition github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards CapScheduledJobs const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.CapScheduledJobs github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
@@ -999,6 +1003,8 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrDuplicateJobE
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrDuplicateJobExecution.Error func() string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrDuplicateModule var github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ErrDuplicateModule error
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrDuplicateModule.Error func() string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrInvalidMetadata var github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ErrInvalidMetadata error
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrInvalidMetadata.Error func() string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrJobNotFound var github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ErrJobNotFound error
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrJobNotFound.Error func() string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ErrMissingDependency var github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ErrMissingDependency error
@@ -1025,14 +1031,16 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/standards JobStatusComplet
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards JobStatusFailed const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatusFailed github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatus
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards JobStatusPending const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatusPending github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatus
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards JobStatusRunning const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatusRunning github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.JobStatus
-github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleDescriptor struct{ID github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleID "json:\"id\""; Name string "json:\"name\""; Version string "json:\"version\""; Requires []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Requirement "json:\"requires,omitempty\""; Provides []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability "json:\"provides,omitempty\""; Compatibility string "json:\"compatibility,omitempty\""; Description string "json:\"description,omitempty\""}
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleDescriptor struct{ID github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleID "json:\"id\""; Name string "json:\"name\""; Version string "json:\"version\""; Requires []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Requirement "json:\"requires,omitempty\""; Provides []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability "json:\"provides,omitempty\""; Compatibility string "json:\"compatibility,omitempty\""; Description string "json:\"description,omitempty\""; Profile *github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardProfile "json:\"profile,omitempty\""; Workflows []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.WorkflowDescriptor "json:\"workflows,omitempty\""}
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Compatibility string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Description string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.ID github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleID
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Name string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Profile *github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardProfile
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Provides []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Requires []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Requirement
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Version string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleDescriptor.Workflows []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.WorkflowDescriptor
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ModuleID type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleID string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards NewDefaultScheduler func github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.NewDefaultScheduler() *github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.DefaultScheduler
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards NewRegistry func github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.NewRegistry() *github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Registry
@@ -1059,6 +1067,10 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/standards Requirement type
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards Requirement.ID github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ModuleID
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards Requirement.MinVersion string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards Requirement.Optional bool
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards RequirementLimited const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementLimited github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards RequirementNotImplemented const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementNotImplemented github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards RequirementPartial const github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementPartial github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards RequirementStatus type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ScheduledJob type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ScheduledJob interface{Name() string; Run(context.Context) error}
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ScheduledJob.Name func() string
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards ScheduledJob.Run func(context.Context) error
@@ -1081,6 +1093,37 @@ github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardModule.R
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardModule.RunScheduledJobs func(ctx context.Context, runner github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ScheduledJobRunner) error
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardModule.ValidateDependencies func(ports github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy.CoreLedgerStore) error
 github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardModule.Version func() string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardProfile struct{Standard string "json:\"standard\""; Edition string "json:\"edition\""; Amendments []string "json:\"amendments\""; EffectiveDate string "json:\"effective_date\""; Jurisdiction string "json:\"jurisdiction\""; Scope string "json:\"scope\""; SupportedRequirements []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardRequirement "json:\"supported_requirements\""; UnimplementedRequirements []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardRequirement "json:\"unimplemented_requirements,omitempty\""; Exclusions []string "json:\"exclusions\""}
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Amendments []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Edition string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.EffectiveDate string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Exclusions []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.IsConfigured func() bool
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Jurisdiction string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Scope string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Standard string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.SupportedRequirements []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardRequirement
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.UnimplementedRequirements []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardRequirement
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardProfile.Validate func() error
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardRequirement struct{ID string "json:\"id\""; Summary string "json:\"summary\""; Status github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus "json:\"status\""; Implementation string "json:\"implementation,omitempty\""; TestEvidence string "json:\"test_evidence,omitempty\""}
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement.ID string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement.Implementation string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement.Status github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.RequirementStatus
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement.Summary string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards StandardRequirement.TestEvidence string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor type github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.WorkflowDescriptor struct{ID string "json:\"id\""; Name string "json:\"name\""; Summary string "json:\"summary\""; Inputs []string "json:\"inputs\""; Steps []string "json:\"steps\""; Outputs []string "json:\"outputs\""; RequirementIDs []string "json:\"requirement_ids\""; RequiredCapabilities []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability "json:\"required_capabilities,omitempty\""; ApplicationContract github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ApplicationContract "json:\"application_contract,omitempty\""; RequiresJournalMapping bool "json:\"requires_journal_mapping\""; ProducesJournalEntries bool "json:\"produces_journal_entries\""}
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.ApplicationContract github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.ApplicationContract
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.ID string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Inputs []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Name string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Outputs []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.ProducesJournalEntries bool
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.RequiredCapabilities []github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.Capability
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.RequirementIDs []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.RequiresJournalMapping bool
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Steps []string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Summary string
+github.com/osmai4603-collab/accounting_engine/pkg/spi/standards WorkflowDescriptor.Validate func(profile github.com/osmai4603-collab/accounting_engine/pkg/spi/standards.StandardProfile) error
 github.com/osmai4603-collab/accounting_engine/pkg/spi/storage ActorFromContext func github.com/osmai4603-collab/accounting_engine/pkg/spi/storage.ActorFromContext(ctx context.Context) (string, bool)
 github.com/osmai4603-collab/accounting_engine/pkg/spi/storage AdapterCapabilities type github.com/osmai4603-collab/accounting_engine/pkg/spi/storage.AdapterCapabilities struct{AdapterName string; SupportsRepeatableRead bool; SupportsSerializable bool; EnforcesForeignKeys bool; GuaranteesDurability bool; SupportsSavepoints bool; DetectsDeadlocks bool}
 github.com/osmai4603-collab/accounting_engine/pkg/spi/storage AdapterCapabilities.AdapterName string

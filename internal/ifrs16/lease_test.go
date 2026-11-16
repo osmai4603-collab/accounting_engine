@@ -2,6 +2,7 @@ package ifrs16
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -330,6 +331,112 @@ func assertAmount(t *testing.T, value types.Money, expected string) {
 	want := decimal.RequireFromString(expected)
 	if !value.Amount().Equal(want) {
 		t.Fatalf("amount = %s, want %s", value.Amount(), want)
+	}
+}
+
+func TestGoldenScenario_GS08_IFRS16Leases(t *testing.T) {
+	commencement := date(2026, 1, 1)
+	rate := decimal.RequireFromString("0.10") // 10%
+	payments := []LeasePayment{
+		{DueDate: date(2026, 7, 1), Amount: money(t, "1000", "USD")},
+		{DueDate: date(2027, 1, 1), Amount: money(t, "1000", "USD")},
+	}
+	initialDirect := money(t, "50", "USD")
+	prepayment := money(t, "100", "USD")
+	incentive := money(t, "30", "USD")
+
+	contract, err := NewLeaseContract(commencement, rate, payments, initialDirect, prepayment, incentive, 2)
+	if err != nil {
+		t.Fatalf("NewLeaseContract: %v", err)
+	}
+	contract = contract.WithReference("LEASE-GS08-2026")
+
+	// 1. Initial measurement
+	if !contract.InitialLeaseLiability.Amount().IsPositive() {
+		t.Fatalf("expected positive initial liability, got %s", contract.InitialLeaseLiability.Amount())
+	}
+	// Initial ROU = Initial Liability + 50 + 100 - 30 = Initial Liability + 120
+	expectedROU := contract.InitialLeaseLiability.Amount().Add(decimal.NewFromInt(120))
+	if !contract.InitialROUAsset.Amount().Equal(expectedROU) {
+		t.Fatalf("initial ROU = %s, want %s", contract.InitialROUAsset.Amount(), expectedROU)
+	}
+
+	// 2. Amortization schedule
+	schedule, err := contract.AmortizationSchedule()
+	if err != nil {
+		t.Fatalf("AmortizationSchedule: %v", err)
+	}
+	if len(schedule) != 2 {
+		t.Fatalf("schedule length = %d, want 2", len(schedule))
+	}
+
+	// Closing liability at maturity must be exactly 0.00
+	if !schedule[1].ClosingLiability.Amount().IsZero() {
+		t.Fatalf("final closing liability = %s, want 0.00", schedule[1].ClosingLiability.Amount())
+	}
+	// Total accumulated depreciation must equal initial ROU
+	if !schedule[1].AccumulatedDepreciation.Amount().Equal(contract.InitialROUAsset.Amount()) {
+		t.Fatalf("accumulated depreciation = %s, want initial ROU %s",
+			schedule[1].AccumulatedDepreciation.Amount(), contract.InitialROUAsset.Amount())
+	}
+	if !schedule[1].ClosingROUAsset.Amount().IsZero() {
+		t.Fatalf("final closing ROU = %s, want 0.00", schedule[1].ClosingROUAsset.Amount())
+	}
+}
+
+func TestLeasePostingIdempotencyAndRetryPreventsDuplicatePosting(t *testing.T) {
+	accounts := testAccounts()
+	builder := testEntryBuilder(t, accounts)
+	contract := testContract(t).WithReference("LEASE-DUP-PREVENT")
+	companyID, journalID := uuid.New(), uuid.New()
+
+	ctx := context.Background()
+	entry1, err := builder.BuildCommencementEntry(ctx, contract, companyID, journalID, "leases", "auditor")
+	if err != nil {
+		t.Fatalf("BuildCommencementEntry: %v", err)
+	}
+	assertBalanced(t, entry1)
+
+	// Build second time with identical inputs (retry)
+	entry2, err := builder.BuildCommencementEntry(ctx, contract, companyID, journalID, "leases", "auditor")
+	if err != nil {
+		t.Fatalf("BuildCommencementEntry retry: %v", err)
+	}
+
+	if entry1.ID != entry2.ID {
+		t.Fatalf("retry entry ID mismatch: %s vs %s", entry1.ID, entry2.ID)
+	}
+	if entry1.IdempotencyKey != entry2.IdempotencyKey {
+		t.Fatalf("retry idempotency key mismatch: %s vs %s", entry1.IdempotencyKey, entry2.IdempotencyKey)
+	}
+	if entry1.IdempotencyPayloadHash != entry2.IdempotencyPayloadHash {
+		t.Fatalf("retry payload hash mismatch: %s vs %s", entry1.IdempotencyPayloadHash, entry2.IdempotencyPayloadHash)
+	}
+
+	// Verify posting idempotency store semantics
+	postedStore := make(map[string]posting.JournalEntry)
+	postSim := func(e posting.JournalEntry) (posting.JournalEntry, bool, error) {
+		if existing, found := postedStore[e.IdempotencyKey]; found {
+			if existing.IdempotencyPayloadHash != e.IdempotencyPayloadHash {
+				return posting.JournalEntry{}, false, errors.New("idempotency conflict: changed payload")
+			}
+			return existing, false, nil // idempotent return, not posted again
+		}
+		e.Status = posting.EntryPosted
+		postedStore[e.IdempotencyKey] = e
+		return e, true, nil
+	}
+
+	firstResult, created, err := postSim(entry1)
+	if err != nil || !created {
+		t.Fatalf("first post failed: err=%v, created=%v", err, created)
+	}
+	retryResult, created, err := postSim(entry2)
+	if err != nil || created {
+		t.Fatalf("retry post failed: err=%v, created=%v", err, created)
+	}
+	if retryResult.ID != firstResult.ID || len(postedStore) != 1 {
+		t.Fatalf("duplicate posting occurred in store: len=%d", len(postedStore))
 	}
 }
 

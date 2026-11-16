@@ -2,6 +2,7 @@ package ifrs9
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,9 +12,34 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
+
+var (
+	ErrECLPostingCapabilityUnavailable = errors.New("IFRS 9 ledger-posting capability unavailable")
+	ErrECLJournalMappingUnavailable    = errors.New("IFRS 9 journal mapping unavailable")
+	ErrECLZeroAdjustment               = errors.New("IFRS 9 ECL adjustment is zero")
+	ErrECLInvalidAccounts              = errors.New("IFRS 9 ECL accounts invalid")
+)
+
+// ECLPostingCapability resolves configured accounts and checks posting availability.
+type ECLPostingCapability interface {
+	LedgerPostingAvailable() bool
+	ResolveECLAccounts(ctx context.Context, companyID uuid.UUID, mappingID string) (ECLAccounts, error)
+}
+
+// ECLAccounts defines the general ledger accounts for impairment loss and allowance.
+type ECLAccounts struct {
+	ImpairmentLoss uuid.UUID
+	Allowance      uuid.UUID
+}
+
+// ECLPostingApplication defines the host application service for posting ECL entries.
+type ECLPostingApplication interface {
+	PostECLEntry(ctx context.Context, entry posting.JournalEntry, idempotencyKey string) error
+}
 
 const (
 	DiscountMethodEIRSingleExpectedLossDate = "eir_single_expected_loss_date"
@@ -368,4 +394,128 @@ func fingerprintVersionedInput(input VersionedECLInput, scenarios []VersionedSce
 func writeFingerprintField(buffer *bytes.Buffer, value string) {
 	fmt.Fprintf(buffer, "%d:", len(value))
 	buffer.WriteString(value)
+}
+
+// BuildVersionedECLEntry builds a balanced, deterministic journal draft for the ECL movement.
+func BuildVersionedECLEntry(
+	result VersionedECLResult,
+	accounts ECLAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+) (posting.JournalEntry, error) {
+	if companyID == uuid.Nil || journalID == uuid.Nil {
+		return posting.JournalEntry{}, ErrInvalidConfiguration
+	}
+	if accounts.ImpairmentLoss == uuid.Nil || accounts.Allowance == uuid.Nil || accounts.ImpairmentLoss == accounts.Allowance {
+		return posting.JournalEntry{}, ErrECLInvalidAccounts
+	}
+	if result.AllowanceChange.Amount().IsZero() {
+		return posting.JournalEntry{}, ErrECLZeroAdjustment
+	}
+	currency := result.AllowanceChange.Currency()
+	zeroMoney, err := financialtypes.Zero(currency)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+
+	lines := make([]posting.JournalEntryLine, 0, 2)
+	absAmount := result.AllowanceChange.Amount().Abs()
+	changeMoney, err := financialtypes.NewMoney(absAmount, currency)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+
+	if result.AllowanceChange.Amount().IsPositive() {
+		// Increase in allowance: Dr Impairment Loss (P&L), Cr Allowance (Balance Sheet)
+		lines = append(lines,
+			posting.JournalEntryLine{
+				ID: uuid.New(), CompanyID: companyID, AccountID: accounts.ImpairmentLoss,
+				Debit: changeMoney, Credit: zeroMoney,
+			},
+			posting.JournalEntryLine{
+				ID: uuid.New(), CompanyID: companyID, AccountID: accounts.Allowance,
+				Debit: zeroMoney, Credit: changeMoney,
+			},
+		)
+	} else {
+		// Decrease in allowance (recovery): Dr Allowance, Cr Impairment Loss (or Gain)
+		lines = append(lines,
+			posting.JournalEntryLine{
+				ID: uuid.New(), CompanyID: companyID, AccountID: accounts.Allowance,
+				Debit: changeMoney, Credit: zeroMoney,
+			},
+			posting.JournalEntryLine{
+				ID: uuid.New(), CompanyID: companyID, AccountID: accounts.ImpairmentLoss,
+				Debit: zeroMoney, Credit: changeMoney,
+			},
+		)
+	}
+
+	keyMaterial := fmt.Sprintf("ifrs9|%s|%s|%s|%s",
+		companyID, journalID, result.ModelVersion, result.InputFingerprint)
+	keyHash := sha256.Sum256([]byte(keyMaterial))
+	idempotencyKey := "ifrs9-ecl-" + hex.EncodeToString(keyHash[:])
+
+	entry := posting.JournalEntry{
+		ID:                uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencyKey)),
+		CompanyID:         companyID,
+		JournalID:         journalID,
+		EntryDate:         result.EvaluationDate.UTC(),
+		Date:              result.EvaluationDate.UTC(),
+		Status:            posting.EntryDraft,
+		Classification:    posting.EntryClassRegular,
+		Lines:             lines,
+		CreatedBy:         createdBy,
+		Reference:         fmt.Sprintf("ifrs9-ecl-%s", result.ModelVersion),
+		DocumentReference: result.InputFingerprint,
+		SourceModule:      "ifrs9",
+		IdempotencyKey:    idempotencyKey,
+	}
+
+	payload := fmt.Sprintf("%s|%s|%s|%s|%s",
+		entry.CompanyID, entry.JournalID, entry.EntryDate.Format(time.RFC3339Nano),
+		entry.Reference, entry.DocumentReference)
+	for _, line := range entry.Lines {
+		payload += fmt.Sprintf("|%s:%s:%s", line.AccountID, line.Debit.Amount().String(), line.Credit.Amount().String())
+	}
+	payloadSum := sha256.Sum256([]byte(payload))
+	entry.IdempotencyPayloadHash = hex.EncodeToString(payloadSum[:])
+
+	if err := entry.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return entry, nil
+}
+
+// PostVersionedECL resolves accounts, builds the deterministic draft, and executes posting via application.
+func PostVersionedECL(
+	ctx context.Context,
+	cap ECLPostingCapability,
+	app ECLPostingApplication,
+	result VersionedECLResult,
+	companyID, journalID uuid.UUID,
+	mappingID, createdBy string,
+) (posting.JournalEntry, error) {
+	if cap == nil || !cap.LedgerPostingAvailable() {
+		return posting.JournalEntry{}, ErrECLPostingCapabilityUnavailable
+	}
+	if strings.TrimSpace(mappingID) == "" {
+		return posting.JournalEntry{}, ErrECLJournalMappingUnavailable
+	}
+	if app == nil {
+		return posting.JournalEntry{}, ErrECLPostingCapabilityUnavailable
+	}
+	accounts, err := cap.ResolveECLAccounts(ctx, companyID, mappingID)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entry, err := BuildVersionedECLEntry(result, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := app.PostECLEntry(ctx, entry, entry.IdempotencyKey); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	entry.Status = posting.EntryPosted
+	return entry, nil
 }

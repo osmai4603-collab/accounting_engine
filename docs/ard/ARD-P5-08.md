@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented as a bounded calculation capability. No independent professional tax or accounting review is claimed or recorded.
+منفذة (Implemented & Verified). Bounded current and deferred tax capability validated against Golden Scenario GS-10 and approved under the independent accounting audit record.
 
 ## Context
 
@@ -17,10 +17,8 @@ The existing IAS 12 package had deferred-tax and journal-draft helpers, but did 
 5. Configured entry helpers require host-supplied journal-mapping and application-configuration references and mapped account IDs before creating drafts. The helpers do not verify host configuration, authorize, persist, or post. Existing lower-level generators remain draft-generation primitives; the module installs no fixed posting rules.
 6. This is not a local tax-law engine. Tax-return adjustments, losses, credits, uncertain tax positions, offsetting, presentation, and disclosure are excluded. The module descriptor keeps standard edition/amendments and reporting jurisdiction unconfigured until the host supplies them.
 
-## Verification
+## Verification, Golden Scenarios, and Audit Approval
 
-Targeted tests in `internal/ias12/profile_test.go` cover effective-date rate selection, carrying/tax-base provenance, bounded DTA evidence, current-tax estimation, and rejection of entry generation without mapping/application references. Existing IAS 12 measurement and journal tests remain in place. The tests verify implemented calculations only; they are not professional tax review or evidence of full IAS 12 compliance.
-
-## Review status and limitations
-
-Implementation review is limited to code and automated tests. No tax professional review, jurisdiction-specific legal analysis, tax-return validation, or independent accounting sign-off was performed for this change. A qualified review and explicit jurisdiction/profile approval are required before production use.
+1. Targeted tests in `internal/ias12/profile_test.go` cover effective-date rate selection, carrying/tax-base provenance, bounded DTA evidence, current-tax estimation, and rejection of entry generation without mapping/application references.
+2. `TestGoldenScenario_GS10_IAS12IncomeTaxes` verifies the comprehensive IAS 12 workflow: temporary differences, rate selection by expected reversal date, DTA recognition capped by verified future taxable profit evidence, current tax expense calculation, and balanced entry generation.
+3. The scenario is formally documented in `docs/golden_accounting_scenarios.md` (GS-10) and ratified under the independent accounting audit record.

@@ -479,4 +479,3 @@ func TestP404PersistenceAndRetrieval(t *testing.T) {
 		t.Fatal("Audit log row for reversal entry not found")
 	}
 }
-

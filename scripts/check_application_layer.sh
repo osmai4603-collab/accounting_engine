@@ -15,8 +15,12 @@ while read -r package package_imports; do
   done
 done <<<"$imports"
 
+if ! go run ./scripts/postingenginegate; then
+  violations=$((violations + 1))
+fi
+
 if ((violations > 0)); then
   exit 1
 fi
 
-echo "application-layer boundary check: passed"
+echo "application-layer boundary checks: passed"

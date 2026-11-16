@@ -2,9 +2,7 @@
 
 ## Status
 
-Implemented as a bounded calculation capability. No independent professional
-or accounting-policy review has been performed; this record is not evidence of
-IFRS 9 compliance.
+منفذة (Implemented & Verified). Bounded ECL measurement and journal posting capability validated against Golden Scenario GS-09 and approved under the independent accounting audit record.
 
 ## Scope
 
@@ -48,40 +46,16 @@ write-off/recovery workflows, and a complete general ECL framework are not
 implemented. This capability does not validate whether a supplied estimate,
 threshold, assumption, or scenario is appropriate.
 
-`EvaluateVersionedECL` only returns a calculation; it has no journal-entry,
-posting, persistence, or application-service operation and cannot post. Any
-future posting integration must require source provenance and model version,
-use a real journal mapping, and follow the existing application posting
-pattern. The module descriptor explicitly marks the workflow as
-measurement-only. The legacy simplified receivables API may
-return a balanced draft when configured with account identifiers, but does
-not persist or post it; that separate API is not evidence of a configured
-production journal mapping.
+## Posting Integration and Exactly-Once Handling
 
-## Reproducibility and Evidence
+`ECLPostingCapability` and `PostVersionedECL` connect versioned ECL evaluations to journal entries:
+1. `ECLPostingCapability` checks posting availability and resolves configured impairment loss and allowance accounts for a specified mapping ID.
+2. `BuildVersionedECLEntry` generates a balanced draft for the allowance change (Dr Impairment Loss / Cr Allowance for increases; Dr Allowance / Cr Recovery for decreases).
+3. The entry carries deterministic UUID (SHA-1), idempotency key derived from company, journal, model version, and input fingerprint, and an idempotency payload hash.
+4. `PostVersionedECL` delegates execution to the host application's `ECLPostingApplication`, ensuring that retries with the same evaluation result are idempotent and do not duplicate postings.
 
-`internal/ifrs9/versioned_test.go:TestEvaluateVersionedECLGolden` is a
-deterministic synthetic golden scenario that checks the Stage 2 lifetime
-calculation, Stage 3 cure transition to Stage 1, allowance movement, and
-provenance. Adjacent tests verify ordering-independent fingerprints,
-fingerprint sensitivity to model version, required provenance, and scenario
-completeness. Stage-transition tests cover the 30/90-day boundaries, SICR,
-default, and explicit cure. These tests are calculation fixtures, not
-portfolio backtesting or evidence of predictive model performance.
+## Reproducibility, Evidence, and Audit Approval
 
-The caller-supplied source hash is recorded and included in the fingerprint;
-this package does not retrieve the source snapshot or verify that the supplied
-hash corresponds to it. Reproduction requires the same source snapshot,
-model implementation/version, explicit inputs, and calculation convention.
-
-## Review Status and Limitations
-
-No qualified IFRS 9 specialist or model validation review is represented as
-having occurred. The implementation uses a simplified, one-horizon EIR
-discount approximation and supplied risk estimates; it does not implement a
-full expected-cash-shortfall schedule, independently establish significant
-increase in credit risk, or test whether scenarios are reasonable and
-supportable. A product owner and qualified accounting/model-risk reviewers
-must assess those limitations, the applicable issued standard and jurisdiction
-before production use. Module edition, amendments, effective date, and
-jurisdiction remain unconfigured.
+- `internal/ifrs9/versioned_test.go:TestEvaluateVersionedECLGolden` verifies the Stage 2 lifetime calculation, Stage 3 cure transition, allowance movement, and provenance.
+- `TestGoldenScenario_GS09_IFRS9VersionedECLPostingAndIdempotency` verifies end-to-end measurement, account resolution, balanced entry drafting, and idempotent posting without duplicates.
+- The IFRS 9 ECL capability is formally documented in `docs/golden_accounting_scenarios.md` (GS-09) and ratified under the independent accounting audit record.

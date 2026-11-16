@@ -1,79 +1,71 @@
-# 📚 فهرس وثائق محرك المحاسبة
+# Accounting Engine documentation
 
-هذا الفهرس يجمع وثائق مجلد `docs/` في منظومة واحدة: **منهجية عامة** لبناء المحركات البرمجية، و**وثائق مشروع** خاصة بتطبيقها في `accounting_engine`.
+This index points to documentation that exists in this repository. It distinguishes
+current integration contracts from design history, accounting references, and
+operational procedures. Documentation is not evidence of production readiness,
+regulatory approval, or compliance by itself.
 
-- **تاريخ آخر تحديث:** 2026-11-12
-- **المهمة:** `P0-T5` — تصحيح التوثيق المضلل
-- **حالات الوثائق:** `نشطة` (ملزمة أو مرجع حالي) | `مرجعية` (خلفية لا تُلزم قراراً) | `تاريخية` (محفوظة للسياق ولا تُستخدم كخطة حالية) | `مسودة`
+## Start here: product and integration
 
-> **المصدر الوحيد للحقيقة** لخطة المعالجة وحالة الفجوات هو [`index.md`](./index.md). أي وثيقة تاريخية لا تُلغي ما ورد فيه.
+| Document | Use it for |
+| --- | --- |
+| [Product boundary](./product_boundary.md) | What belongs to the engine, host application, and industry adapters |
+| [SDK developer guide](./sdk_developer_guide.md) | Module path, SDK/SPI choices, bootstrap, external consumer journey, adapter contracts, and limitations |
+| [Public API inventory](./public_api_inventory.md) | Supported import paths, public API/SPI packages, and compatibility boundaries |
+| [Public contracts design](./public_contracts_design.md) | Contract design background; read the current SDK guide and package interfaces for live behavior |
+| [External-consumer tests](../test/external_consumer/) | Executable examples for posting, industry integration, and a storage adapter implemented outside the engine |
+| [API v1 snapshot](./api/v1.snapshot) | Generated public API compatibility baseline |
+| [Error taxonomy](./error_taxonomy.md) | Public application errors, categories, and error handling guidance |
 
-## 1. وثائق المشروع الملزمة
+The Go module import path is `github.com/osmai4603-collab/accounting_engine`.
+The recommended embedding entry point is `pkg/sdk`; use only public packages
+under `pkg/api/v1` and `pkg/spi` when implementing integrations. Do not import
+`internal/**` or make consumers depend on engine SQL or table names.
 
-| الوثيقة | المحتوى | الحالة | التاريخ |
-| --- | --- | --- | --- |
-| [الخطة التنفيذية الشاملة](./index.md) | المصدر الرسمي لسجل الفجوات `GAP-*`، المراحل، البوابات، ومصفوفة التوازي | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 0 — خط الأساس والحوكمة](./phase-0-baseline-and-governance.md) | خط الأساس، CI، ADRs، مصفوفة التتبع، الأخطاء، الأمن، الهجرات | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 1 — نزاهة دفتر الأستاذ](./phase-1-core-ledger-integrity.md) | ذرّية الترحيل والفترات والاعتماد والعكس والدفعات | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 2 — إقفال الفترات والسنة](./phase-2-period-and-year-closing.md) | الإقفال الذرّي، إثبات المحتوى، إعادة الفتح | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 3 — معالجة المعايير](./phase-3-standards-remediation.md) | IAS 12، IFRS 16/9/10/3، IAS 21، الإفصاحات | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 4 — الجاهزية التشغيلية](./phase-4-operational-readiness.md) | الخدمة، الأتمتة، المراقبة، التعافي، الأمن، الأداء | نشطة — ملزمة | 2026-11-12 |
-| [المرحلة 5 — التوسع ERP](./phase-5-erp-expansion.md) | المخزون، المشتريات، المبيعات، الرواتب، الضرائب، الموازنات | نشطة — ملزمة | 2026-11-12 |
+## Accounting scope and architecture
 
-## 2. أدلة خط الأساس والحوكمة (المرحلة 0)
+| Document | Use it for |
+| --- | --- |
+| [Accounting architecture](./financial_accounting_system_architecture.md) | High-level engine and adapter architecture |
+| [Entry validation invariants](./accounting/entry_validation_invariants.md) | Journal-entry validation rules |
+| [Reversal specification](./accounting/reversal_specification.md) | Reversal behavior and constraints |
+| [Closing and reopening policy](./accounting/closing_and_reopening_policy.md) | Fiscal-period close/reopen policy |
+| [Financial reporting scope](./accounting/financial_reporting_scope.md) | Reporting capabilities and scope |
+| [Standards automation](./ifrs_automation.md) | Current standards-module design and automation context |
+| [Standards types and frameworks](./accounting_standards_types_and_frameworks.md) | Background reference on accounting frameworks |
 
-| الوثيقة | المحتوى | الحالة | التاريخ |
-| --- | --- | --- | --- |
-| [تقرير خط الأساس](./baseline_report.md) | SHA، إصدار Go وPostgreSQL، نتائج الاختبارات، التغطية، أوامر إعادة الإنتاج | نشطة | 2026-11-12 |
-| [خط التكامل المستمر](./ci.md) | مهام CI، خدمة PostgreSQL، التغطية، حماية الفرع | نشطة | 2026-11-12 |
-| [مصفوفة تتبع الفجوات](./traceability_matrix.md) | ربط كل `GAP-*` باختبار فاشل أو `Skip` مبرر | نشطة | 2026-11-12 |
-| [فهرس قرارات المعمارية (ADRs)](./adr/README.md) | ADR-0001..0006 وقاعدة الاعتماد | نشطة — ملزمة | 2026-11-12 |
-| [محضر مراجعة ADRs](./adr/review-minutes-2026-11-12.md) | اعتماد القرارات ومراجعوها | نشطة | 2026-11-12 |
-| [تصنيف الأخطاء والمراقبة](./error_taxonomy.md) | الرموز، التصنيفات، معرفات السجل، مقاييس `/metrics` | نشطة | 2026-11-12 |
-| [سجل المخاطر الأمنية وعزل المستأجرين](./security_risk_register.md) | RLS، الأسرار، الثغرات، المخاطر المصنفة | نشطة | 2026-11-12 |
-| [سياسة الهجرات والتوافق الخلفي](./migration_policy.md) | Expand/Contract، الهجرات الخطرة، النسخ الاحتياطي، الطوارئ | نشطة — ملزمة | 2026-11-12 |
+Standards and industry integrations are bounded capabilities; neither the
+presence of a package nor a passing test should be read as a claim of full
+compliance with an accounting standard or sector-specific requirements.
 
-## 3. وثائق المشروع المرجعية
+## Operations and release references
 
-| الوثيقة | المحتوى | الحالة | التاريخ |
-| --- | --- | --- | --- |
-| [المعمارية القياسية للنواة المحاسبية](./financial_accounting_system_architecture.md) | وصف معمارية المحرك المطبقة (النواة، المحولات، التخزين) | مرجعية | 2026-11-09 |
-| [الدليل المرجعي الموسوعي للقوائم المالية](./global_financial_statements_standards_reference.md) | قواعد المجال المحاسبي والمعايير العالمية (IFRS/GAAP) | مرجعية | 2026-11-09 |
-| [البحث المرجعي في أنواع المعايير المحاسبية وأطرها](./accounting_standards_types_and_frameworks.md) | بحث موثق من المصادر الرسمية (IFRS, US GAAP, IPSAS, AAOIFI, ISSB, SOCPA, CASB) | مرجعية | 2026-11-12 |
-| [المعيار الذهبي للمحاسبة](./golden_accounting_benchmark.md) | حالات مرجعية ذهبية للتحقق المحاسبي | مرجعية | 2026-11-11 |
-| [أتمتة IFRS](./ifrs_automation.md) | تصميم الأتمتة والجدولة الحالية | مرجعية | 2026-11-11 |
-| [معايير وبوابات الجاهزية للإنتاج](./production_readiness_specification_and_verification.md) | معايير مستندة إلى IFRS, COSO, SOC 1/2, ISO 25010, SRE | مرجعية | 2026-11-12 |
-| [وحدات القياس](./units.md) | محتوى المستخدم لوحدات القياس؛ لا يُعدّله فريق المعالجة | مرجعية — محتوى مستخدم | 2026-11-11 |
+These are operational references, not deployment guarantees. Follow the
+applicable runbook and validate it against the target deployment:
 
-## 4. المنهجية العامة لبناء المحركات
+| Document | Use it for |
+| --- | --- |
+| [CI notes](./ci.md) | Repository validation workflow |
+| [Migration policy](./migration_policy.md) | Migration compatibility and change policy |
+| [Backup and recovery policy](./operations/backup_and_recovery_policy.md) | Backup and recovery concepts |
+| [Database restore runbook](./runbooks/runbook_database_restore.md) | Restore procedure |
+| [Database unavailable runbook](./runbooks/runbook_db_unavailable.md) | Database availability response |
+| [Migration failure runbook](./runbooks/runbook_migration_failure.md) | Migration failure response |
+| [Deadlock spike runbook](./runbooks/runbook_deadlock_spike.md) | Deadlock investigation |
+| [RLS incident runbook](./runbooks/runbook_rls_incident.md) | Tenant-isolation incident response |
 
-| الوثيقة | المحتوى | الحالة | التاريخ |
-| --- | --- | --- | --- |
-| [الدليل الهندسي لبناء المحركات البرمجية](./software_engines.md) | الوثيقة المحورية: تعريف المحرك، متى يُبنى، المعايير الدولية، وإطار هندسة المحركات | مرجعية | 2026-11-11 |
-| [المبادئ الهندسية](./engineering_principles.md) | فصل المسؤوليات، DIP، الحتمية، Idempotency وغيرها | مرجعية | 2026-11-10 |
-| [قياس جودة المحرك](./engine_quality_metrics.md) | مقاييس الصحة والأداء والاعتمادية والصيانة والأمان والتوسع | مرجعية | 2026-11-10 |
-| [منهجية بناء المحرك](./engine_development_method.md) | دورة حياة التطوير من تعريف المشكلة حتى التشغيل والتحسين | مرجعية | 2026-11-10 |
-| [الوثائق المطلوبة أثناء البناء](./engine_development_documentation.md) | SRS، Domain Model، ADR، Test Strategy وغيرها | مرجعية | 2026-11-10 |
+The standalone service and its health/readiness endpoints are deployment-mode
+specific. The embedded SDK guide does not prescribe a daemon command, endpoint
+set, or production configuration.
 
-## 5. وثائق تاريخية
+## Historical or non-normative material
 
-الوثائق التالية كانت ضمن تقارير سابقة، لكنها **غير موجودة في المستودع** ولا تمثل خطة حالية. أُزيلت روابطها من الفهرس في 2026-11-12 (`P0-T5`) حتى لا تظهر كروابط مكسورة:
+The following documents contain older assessments or proposals and must not be
+used as current readiness, certification, or compliance evidence:
 
-| الوثيقة المفقودة | ما كانت تمثله | الحالة |
-| --- | --- | --- |
-| `engine_errors_analysis.md` | كتالوج أخطاء المحرك في التقرير السابق | تاريخية — غير موجودة؛ انظر `index.md` §3 و§4 |
-| `engine_problems_verification_and_standards_compliance.md` | تحقق ميداني من مشكلات المحرك ومطابقة المعايير | تاريخية — غير موجودة؛ انظر `index.md` §3 |
-| `testing_confidence_report.md` | تقرير ثقة الاختبارات السابق | تاريخية — غير موجودة؛ استُبدل بـ`baseline_report.md` و`traceability_matrix.md` |
-| `remediation_execution_plan.md` | خطة المعالجة السداسية السابقة | تاريخية — غير موجودة؛ استُبدل بـ`index.md` وملفات المراحل |
-| `remediation_execution_report.md` | تقرير إغلاق خطة المعالجة السابق | تاريخية — غير موجودة؛ الحالة الفعلية في `index.md` §4 |
+- [Production readiness specification](./production_readiness_specification_and_verification.md)
+- [Production certification sign-off](./production_certification_signoff.md)
+- [Gap analysis and standards verification report](./gap_analysis_and_standards_verification_report.md)
+- [Golden accounting benchmark](./golden_accounting_benchmark.md)
 
-كذلك تُعد [`gap_analysis_and_standards_verification_report.md`](./gap_analysis_and_standards_verification_report.md) و[`production_certification_signoff.md`](./production_certification_signoff.md) **تاريخيتين/مرجعيتين**: تُحفظ للسياق، لكن لا تُستخدم لإثبات الجاهزية. الإثبات الحالي هو `baseline_report.md` + `traceability_matrix.md` + `ci.md`.
-
-## 6. العلاقة بين المنهجية والمشروع
-
-وثائق المنهجية العامة تحدد **كيف** يُبنى أي محرك. ووثائق المشروع توثق **ما حدث فعلاً** عند تطبيقها على محرك المحاسبة:
-
-- `index.md` يحوّل مراحل الإطار الهندسي إلى فجوات ومهام قابلة للتتبع.
-- `phase-0..5` تفصّل شروط القبول لكل مرحلة.
-- `traceability_matrix.md` يثبت أن كل فجوة حرجة لها اختبار.
-- `baseline_report.md` و`ci.md` يثبتان أن النتائج قابلة لإعادة الإنتاج وأن الانحدار محجوب.
+The implementation plan is a task-tracking artifact, not a consumer contract.

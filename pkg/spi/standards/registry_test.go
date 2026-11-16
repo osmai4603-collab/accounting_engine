@@ -17,14 +17,14 @@ type dummyModule struct {
 	descriptor   *ModuleDescriptor
 }
 
-func (d *dummyModule) Name() string                  { return d.name }
-func (d *dummyModule) Version() string               { return d.version }
-func (d *dummyModule) Dependencies() []string        { return d.dependencies }
-func (d *dummyModule) ValidateDependencies(legacy.CoreLedgerStore) error { return nil }
-func (d *dummyModule) Initialize(context.Context, legacy.CoreLedgerStore) error { return nil }
-func (d *dummyModule) RegisterRules(events.RuleRegistrar) error { return nil }
+func (d *dummyModule) Name() string                                               { return d.name }
+func (d *dummyModule) Version() string                                            { return d.version }
+func (d *dummyModule) Dependencies() []string                                     { return d.dependencies }
+func (d *dummyModule) ValidateDependencies(legacy.CoreLedgerStore) error          { return nil }
+func (d *dummyModule) Initialize(context.Context, legacy.CoreLedgerStore) error   { return nil }
+func (d *dummyModule) RegisterRules(events.RuleRegistrar) error                   { return nil }
 func (d *dummyModule) RunScheduledJobs(context.Context, ScheduledJobRunner) error { return nil }
-func (d *dummyModule) Close(context.Context) error { return nil }
+func (d *dummyModule) Close(context.Context) error                                { return nil }
 
 func (d *dummyModule) Descriptor() ModuleDescriptor {
 	if d.descriptor != nil {
@@ -238,14 +238,14 @@ type plainModule struct {
 	dependencies []string
 }
 
-func (p *plainModule) Name() string                                     { return p.name }
-func (p *plainModule) Version() string                                  { return p.version }
-func (p *plainModule) Dependencies() []string                           { return p.dependencies }
+func (p *plainModule) Name() string                                      { return p.name }
+func (p *plainModule) Version() string                                   { return p.version }
+func (p *plainModule) Dependencies() []string                            { return p.dependencies }
 func (p *plainModule) ValidateDependencies(legacy.CoreLedgerStore) error { return nil }
 func (p *plainModule) Initialize(context.Context, legacy.CoreLedgerStore) error {
 	return nil
 }
-func (p *plainModule) RegisterRules(events.RuleRegistrar) error              { return nil }
+func (p *plainModule) RegisterRules(events.RuleRegistrar) error { return nil }
 func (p *plainModule) RunScheduledJobs(context.Context, ScheduledJobRunner) error {
 	return nil
 }

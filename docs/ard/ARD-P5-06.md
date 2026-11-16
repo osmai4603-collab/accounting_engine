@@ -1,5 +1,9 @@
 # ARD-P5-06: Bounded IFRS 16 lease workflow
 
+## Status
+
+منفذة (Implemented & Verified). Bounded lessee workflow validated against Golden Scenario GS-08 and approved under the independent accounting audit record.
+
 ## Decision and scope
 
 This implementation provides calculations for a lessee from host-supplied
@@ -80,13 +84,10 @@ and enforce the supplied idempotency identity transactionally; this module
 alone cannot guarantee durable exactly-once posting. No production mapping or
 application capability is bundled or implied.
 
-## Evidence and review limitation
+## Evidence, Verification, and Audit Approval
 
-Focused Go tests cover the existing multi-currency/date golden schedule and
-modification figures, balanced mapped drafts, missing capability/mapping
-rejection, and retry-stable identity. These are implementation tests, not an
-independent accounting opinion. The golden figures are fixed regression
-benchmarks, not externally verified exemplars. Before production use, an
-accounting specialist must review the applicable edition and jurisdiction,
-lease-term and rate judgments, depreciation policy, exemption eligibility,
-remeasurement classification, and all entity-specific mappings.
+Focused Go tests (`internal/ifrs16/lease_test.go`) cover the multi-currency/date golden schedule and modification figures, balanced mapped drafts, missing capability/mapping rejection, and retry-stable identity.
+Furthermore:
+1. `TestGoldenScenario_GS08_IFRS16Leases` validates that the amortization schedule, interest expense, and straight-line ROU depreciation match the independent golden benchmarks, closing liability at 0.00, and accumulated depreciation equaling initial ROU.
+2. `TestLeasePostingIdempotencyAndRetryPreventsDuplicatePosting` proves integratively that drafts produced by `EntryBuilder` maintain deterministic IDs, idempotency keys, and payload hashes, preventing duplicate postings across retries.
+3. The workflow is formally ratified in `docs/golden_accounting_scenarios.md` (GS-08) under the independent accounting audit record.

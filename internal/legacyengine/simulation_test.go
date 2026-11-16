@@ -104,6 +104,13 @@ func TestAccountingEngineExposesCompanyFinancialDimensions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := driver.CreateAccount(ctx, masterdata.Account{
+		ID: uuid.New(), CompanyID: companyID, Code: "5000", Name: "COGS",
+		AccountType: masterdata.AccountTypeExpense, NormalBalance: masterdata.NormalBalanceDebit,
+		CashFlowActivity: masterdata.CashFlowOperating, IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := engine.SaveCostCenter(context.Background(), masterdata.CostCenter{
 		ID: centerID, CompanyID: companyID, Code: "OPS", Name: "Operations", Active: true,
 	}); err != nil {

@@ -1,18 +1,25 @@
 # Production Certification Sign-off
 
+> **Historical artifact — not a current certification or production-readiness
+> statement.** The date, evidence, and status below describe a prior assessment
+> and have not been revalidated by the current product documentation work.
+> Do not use this file to claim that the repository or a deployment is
+> certified, compliant, or production-ready.
+
 **Project:** `accounting_engine` — multi-tenant IFRS accounting engine
 **Phase:** Phase 6 — Production Readiness, Observability & Certification
 **Document version:** 1.0
 **Certification date:** 2026-11-12
-**Status:** ✅ **CERTIFIED FOR PRODUCTION**
+**Status:** Historical document status only — **not a current certification**
 
 ---
 
 ## 1. Purpose and Scope
 
-This document records the evidence and formal sign-off for the Phase 6
-production-readiness gate defined in
-[`docs/phase_6_production_readiness.md`](phase_6_production_readiness.md).
+This historical document purports to record evidence and a formal sign-off for
+a former Phase 6 production-readiness gate. The referenced plan is not present
+in this repository checkout, and the historical assessment has not been
+revalidated.
 
 The certification covers:
 

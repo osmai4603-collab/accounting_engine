@@ -125,6 +125,41 @@ func (b *EntryBuilder) BuildTerminationEntry(
 	return buildTerminationEntry(result, accounts, companyID, journalID, createdBy)
 }
 
+// BuildCommencementEntry creates a draft for the initial ROU, liability, and commencement cash items.
+func BuildCommencementEntry(
+	contract LeaseContract, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildCommencementEntry(contract, accounts, companyID, journalID, createdBy)
+}
+
+// BuildPaymentEntry records a scheduled payment, including interest and liability reduction.
+func BuildPaymentEntry(
+	period SchedulePeriod, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildPaymentEntry(period, accounts, companyID, journalID, createdBy)
+}
+
+// BuildDepreciationEntry creates a draft for a period's ROU depreciation.
+func BuildDepreciationEntry(
+	period SchedulePeriod, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildDepreciationEntry(period, accounts, companyID, journalID, createdBy)
+}
+
+// BuildModificationEntry creates a draft for a modification adjustment.
+func BuildModificationEntry(
+	result ModificationResult, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildModificationEntry(result, accounts, companyID, journalID, createdBy)
+}
+
+// BuildTerminationEntry creates a draft for derecognition and early-termination settlement.
+func BuildTerminationEntry(
+	result TerminationResult, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildTerminationEntry(result, accounts, companyID, journalID, createdBy)
+}
+
 // buildCommencementEntry creates a draft for the initial ROU, liability, and commencement cash items.
 func buildCommencementEntry(
 	contract LeaseContract, accounts LeaseAccounts, companyID, journalID uuid.UUID, createdBy string,

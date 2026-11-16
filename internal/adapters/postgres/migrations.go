@@ -221,6 +221,10 @@ func pendingMigrations(ctx context.Context, pool *pgxpool.Pool, migrations []mig
 	}
 	defer rows.Close()
 	applied := make(map[int64]string, len(migrations))
+	knownVersions := make(map[int64]struct{}, len(migrations))
+	for _, migration := range migrations {
+		knownVersions[migration.version] = struct{}{}
+	}
 	for rows.Next() {
 		var version int64
 		var checksum string
@@ -231,6 +235,11 @@ func pendingMigrations(ctx context.Context, pool *pgxpool.Pool, migrations []mig
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	for version := range applied {
+		if _, ok := knownVersions[version]; !ok {
+			return nil, fmt.Errorf("database has unknown applied migration version %d", version)
+		}
 	}
 	pending := make([]migrationFile, 0, len(migrations))
 	for _, migration := range migrations {

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, "release/**"]
+    tags: ["v*"]
   pull_request:
     branches: [main, "release/**"]
   workflow_dispatch:
@@ -16,11 +17,10 @@ concurrency:
 
 env:
   GO_VERSION_FILE: go.mod
-  POSTGRES_URL: postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
 
 jobs:
   quality:
-    name: Format, vet, build
+    name: Static, architecture, API + external consumer
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -44,25 +44,33 @@ jobs:
           git diff --exit-code -- proto/accounting/v1
       - name: gofmt gate
         run: ./scripts/check_gofmt.sh
-      - name: public API purity gate
-        run: |
-          ./scripts/check_public_api_purity.sh --self-test
-          ./scripts/check_public_api_purity.sh
-      - name: application-layer architecture gate
-        run: ./scripts/check_application_layer.sh
+      - name: Architecture gates
+        run: make architecture-check
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
+      - name: Dependency integrity
+        run: go mod verify
       - name: API compatibility gate
-        run: ./scripts/check_api_compat.sh
+        run: ./scripts/check_api_compat.sh 2>&1 | tee api-compat.log
       - name: published-module consumer gate
-        run: ./scripts/check_published_module.sh
+        run: ./scripts/check_published_module.sh 2>&1 | tee published-consumer.log
       - name: Docker image build
         run: docker build --pull --file deployments/Dockerfile --tag accounting-service:ci .
+      - name: Upload static and consumer reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-and-consumer-reports
+          path: |
+            api-compat.log
+            published-consumer.log
+          if-no-files-found: warn
+          retention-days: 14
 
   test:
-    name: Tests + coverage (PostgreSQL)
+    name: Unit, contract + golden accounting (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -79,14 +87,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+    env:
+      POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
+      DATABASE_DSN: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
-      - name: go test with coverage
-        run: go test -count=1 -coverprofile=coverage.out ./...
+      - name: Unit, contract, and golden accounting suites
+        run: go test -json -count=1 -coverprofile=coverage.out ./... > test-report.json
       - name: upload contract parity report
         if: always()
         uses: actions/upload-artifact@v4
@@ -96,7 +107,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: external consumer contract
-        run: make test-external-consumer
+        run: make test-external-consumer 2>&1 | tee external-consumer.log
+      - name: external adapter consumer boundary
+        run: make test-external-adapter-consumer 2>&1 | tee external-adapter-consumer.log
       - name: gapred tagged tests
         run: make test-gapred
       - name: coverage floor
@@ -106,14 +119,21 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -n 25
       - name: upload coverage
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage
-          path: coverage.out
+          name: unit-contract-golden-reports
+          path: |
+            coverage.out
+            test-report.json
+            test/contract_parity/parity_report.md
+            external-consumer.log
+            external-adapter-consumer.log
           retention-days: 14
+          if-no-files-found: warn
 
   service-integration:
-    name: Accounting service runtime + protocols (PostgreSQL)
+    name: Integration — service runtime + protocols (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -131,7 +151,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      POSTGRES_URL: postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
+      POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
+      DATABASE_DSN: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -139,10 +160,18 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
       - name: Build, run, and probe service
-        run: make integration-service
+        run: make integration-service 2>&1 | tee service-integration.log
+      - name: Upload service integration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-integration-report
+          path: service-integration.log
+          if-no-files-found: warn
+          retention-days: 14
 
   race:
-    name: Race detector (PostgreSQL)
+    name: Concurrency — race detector (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -159,6 +188,9 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+    env:
+      POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
+      DATABASE_DSN: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -166,7 +198,15 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
       - name: go test -race
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 ./... 2>&1 | tee concurrency-report.log
+      - name: Upload concurrency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrency-report
+          path: concurrency-report.log
+          if-no-files-found: warn
+          retention-days: 14
 
   migrations:
     name: Migration policy + upgrade (PostgreSQL)
@@ -186,6 +226,9 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+    env:
+      POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
+      DATABASE_DSN: postgres://postgres:postgres@127.0.0.1:5432/accounting_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -193,10 +236,18 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
       - name: migration guard and upgrade test
-        run: make migrations
+        run: make migrations 2>&1 | tee migration-report.log
+      - name: Upload migration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-report
+          path: migration-report.log
+          if-no-files-found: warn
+          retention-days: 14
 
   security:
-    name: Security scans
+    name: Security, dependency + SBOM gates
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -208,16 +259,71 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
       - name: secret scan (no high-confidence secrets)
-        run: ./scripts/scan_secrets.sh
+        run: ./scripts/scan_secrets.sh 2>&1 | tee secret-scan.log
+      - name: install pinned go-licenses
+        run: |
+          go install github.com/google/go-licenses@v1.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: dependency license policy
+        env:
+          LICENSE_REPORT_DIR: license-reports
+        run: make licenses 2>&1 | tee license-policy.log
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: govulncheck
-        run: "$(go env GOPATH)/bin/govulncheck ./..."
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" -json ./... > govulncheck.json
       - name: install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: gosec (high severity)
-        run: "$(go env GOPATH)/bin/gosec -quiet -severity high -confidence high ./..."
+        run: |
+          "$(go env GOPATH)/bin/gosec" -fmt sarif -out gosec.sarif -severity high -confidence high ./...
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate dependency SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            secret-scan.log
+            license-policy.log
+            license-reports/*.csv
+            govulncheck.json
+            gosec.sarif
+            sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  release-gate:
+    name: Release gates
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    needs: [quality, test, service-integration, race, migrations, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail tag verification unless every critical gate passed
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          INTEGRATION_RESULT: ${{ needs.service-integration.result }}
+          CONCURRENCY_RESULT: ${{ needs.race.result }}
+          MIGRATION_RESULT: ${{ needs.migrations.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          for result in "$QUALITY_RESULT" "$TEST_RESULT" "$INTEGRATION_RESULT" \
+            "$CONCURRENCY_RESULT" "$MIGRATION_RESULT" "$SECURITY_RESULT"; do
+            if [[ "$result" != success ]]; then
+              echo "Release verification blocked: a critical CI gate concluded $result." >&2
+              exit 1
+            fi
+          done
+          echo "All critical release gates passed."

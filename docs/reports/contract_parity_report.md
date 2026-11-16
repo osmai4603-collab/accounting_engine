@@ -1,28 +1,32 @@
-# Contract Parity Report — P3-07
+# Contract Parity Report — P3-07 / P7-01
 
-- **Generated (UTC):** 2026-11-15T22:40:28Z
+- **Generated (UTC):** 2026-11-16T00:14:32Z
+- **Engine version:** (devel)
 - **Adapters:** Memory, External SPI adapter, PostgreSQL (when `POSTGRES_URL` is configured).
 
-| Scenario | Adapter | Result | Duration |
-| :--- | :--- | :---: | ---: |
-| CapabilitiesMatrix | external | PASS | 0s |
-| CapabilitiesMatrix | memory | PASS | 0s |
-| CapabilitiesMatrix | postgres | PASS | 476ms |
-| CoreLifecycle | external | PASS | 0s |
-| CoreLifecycle | memory | PASS | 1ms |
-| CoreLifecycle | postgres | PASS | 726ms |
-| CrossAdapterSemanticEquivalence | all | FAIL | 0s |
-| EventIdempotency | external | PASS | 0s |
-| EventIdempotency | memory | PASS | 1ms |
-| EventIdempotency | postgres | PASS | 689ms |
-| ReversalLifecycle | external | PASS | 0s |
-| ReversalLifecycle | memory | PASS | 1ms |
-| ReversalLifecycle | postgres | PASS | 482ms |
-| SemanticErrorsAndInvariants | external | PASS | 0s |
-| SemanticErrorsAndInvariants | memory | PASS | 0s |
-| SemanticErrorsAndInvariants | postgres | PASS | 582ms |
+| Engine | Scenario | Adapter | Result | Semantic differences | Duration |
+| :--- | :--- | :--- | :---: | :--- | ---: |
+| (devel) | CapabilitiesMatrix | external | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | CapabilitiesMatrix | memory | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | CapabilitiesMatrix | postgres | PASS | none; adapter contract assertions passed | 914ms |
+| (devel) | CoreLifecycle | external | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | CoreLifecycle | memory | PASS | none; adapter contract assertions passed | 6ms |
+| (devel) | CoreLifecycle | postgres | PASS | none; adapter contract assertions passed | 1.458s |
+| (devel) | CrossAdapterSemanticEquivalence | all | PASS | none; normalized entry, reversal, trial-balance, and general-ledger outputs match | 937ms |
+| (devel) | EventIdempotency | external | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | EventIdempotency | memory | PASS | none; adapter contract assertions passed | 1ms |
+| (devel) | EventIdempotency | postgres | PASS | none; adapter contract assertions passed | 768ms |
+| (devel) | P7-GS-01-CoreDoubleEntry | external | PASS | none; account balances and trial-balance totals match GS-01 | 871ms |
+| (devel) | P7-GS-01-CoreDoubleEntry | memory | PASS | none; account balances and trial-balance totals match GS-01 | 871ms |
+| (devel) | P7-GS-01-CoreDoubleEntry | postgres | PASS | none; account balances and trial-balance totals match GS-01 | 871ms |
+| (devel) | ReversalLifecycle | external | PASS | none; adapter contract assertions passed | 1ms |
+| (devel) | ReversalLifecycle | memory | PASS | none; adapter contract assertions passed | 1ms |
+| (devel) | ReversalLifecycle | postgres | PASS | none; adapter contract assertions passed | 928ms |
+| (devel) | SemanticErrorsAndInvariants | external | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | SemanticErrorsAndInvariants | memory | PASS | none; adapter contract assertions passed | 0s |
+| (devel) | SemanticErrorsAndInvariants | postgres | PASS | none; adapter contract assertions passed | 1.044s |
 
-- **Totals:** 15 passed, 1 failed, 0 skipped.
+- **Totals:** 19 passed, 0 failed, 0 skipped.
 
 ## Capability differences
 
@@ -41,4 +45,4 @@
 
 ## Unexpected differences
 
-- CrossAdapterSemanticEquivalence / all: cross-adapter assertions failed; see the corresponding go test output
+None recorded.

@@ -463,15 +463,15 @@ func (s *ExternalStore) GetTrialBalance(_ context.Context, companyID types.Compa
 	for accID, t := range byAccount {
 		pDeb, _ := types.NewMoney(t.debit, currency)
 		pCred, _ := types.NewMoney(t.credit, currency)
-		totDebit = totDebit.Add(t.debit)
-		totCredit = totCredit.Add(t.credit)
 
 		endDeb, endCred := zero, zero
 		net := t.debit.Sub(t.credit)
 		if net.IsPositive() {
 			endDeb, _ = types.NewMoney(net, currency)
+			totDebit = totDebit.Add(net)
 		} else if net.IsNegative() {
 			endCred, _ = types.NewMoney(net.Abs(), currency)
+			totCredit = totCredit.Add(net.Abs())
 		}
 
 		code := uuid.UUID(accID).String()
@@ -554,6 +554,9 @@ func (s *ExternalStore) GetGeneralLedger(_ context.Context, companyID types.Comp
 
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].entry.EffectiveDate.Equal(rows[j].entry.EffectiveDate) {
+			if rows[i].entry.SequenceNumber != rows[j].entry.SequenceNumber {
+				return rows[i].entry.SequenceNumber < rows[j].entry.SequenceNumber
+			}
 			return uuid.UUID(rows[i].entry.ID).String() < uuid.UUID(rows[j].entry.ID).String()
 		}
 		return rows[i].entry.EffectiveDate.Before(rows[j].entry.EffectiveDate)

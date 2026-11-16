@@ -22,6 +22,7 @@ import (
 type externalPortsAdapter struct {
 	mu       sync.Mutex
 	company  masterdata.Company
+	journal  masterdata.Journal
 	accounts map[types.AccountID]masterdata.Account
 	year     masterdata.FiscalYear
 	period   masterdata.FiscalPeriod
@@ -108,6 +109,13 @@ func (a *externalPortsAdapter) GetAccountByCode(_ context.Context, companyID typ
 	return masterdata.Account{}, fmt.Errorf("external adapter: account code %q not found", code)
 }
 
+func (a *externalPortsAdapter) GetJournalByCode(_ context.Context, companyID types.CompanyID, code string) (masterdata.Journal, error) {
+	if companyID != a.company.ID || code != a.journal.Code {
+		return masterdata.Journal{}, fmt.Errorf("external adapter: journal code %q not found", code)
+	}
+	return a.journal, nil
+}
+
 func (a *externalPortsAdapter) HasAccountChildren(_ context.Context, companyID types.CompanyID, accountID types.AccountID) (bool, error) {
 	if _, err := a.GetAccount(context.Background(), companyID, accountID); err != nil {
 		return false, err
@@ -150,6 +158,9 @@ func TestExternalPortsAdapterJourney(t *testing.T) {
 		company: masterdata.Company{
 			ID: companyID, Code: "EXT", LegalName: "External Adapter Ltd",
 			FunctionalCurrency: "USD", PresentationCurrency: "USD", Active: true,
+		},
+		journal: masterdata.Journal{
+			ID: masterdata.JournalID(journalID), CompanyID: companyID, Code: "GEN", Name: "General Journal",
 		},
 		accounts: map[types.AccountID]masterdata.Account{
 			cashID: {

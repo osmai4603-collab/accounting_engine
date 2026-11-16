@@ -12,6 +12,7 @@
 منع دمج أي تغيير يكسر التنسيق أو البناء أو الاختبارات أو التهجير أو التغطية أو الفحص الأمني. الخط يعمل تلقائياً على:
 
 - `push` إلى `main` و`release/**`
+- `push` لوسوم الإصدارات `v*`
 - `pull_request` إلى `main` و`release/**`
 - `workflow_dispatch` يدوياً
 
@@ -19,17 +20,21 @@
 
 | المهمة | الاسم في GitHub | ما تفعله | شرط الفشل |
 | --- | --- | --- | --- |
-| `quality` | Format, vet, build | `gofmt -l`, `go vet ./...`, `go build ./...`, وبناء صورة Docker من `deployments/Dockerfile` | أي ملف غير منسق، أو تحذير vet، أو خطأ بناء |
-| `test` | Tests + coverage (PostgreSQL) | `go test -count=1 -coverprofile=coverage.out ./...` مع خدمة PostgreSQL؛ يرفع تقرير Contract Parity كأثر | فشل أي اختبار أو انخفاض التغطية عن `54.1%` |
-| `race` | Race detector (PostgreSQL) | `go test -race -count=1 ./...` مع خدمة PostgreSQL | أي سباق بيانات |
+| `quality` | Static, architecture, API + external consumer | protobuf drift, gofmt, vet/build, public API/internal-import purity, Posting Engine composition-root boundaries, API compatibility, published-module consumer, module integrity, وصورة Docker | فشل أي خطوة |
+| `test` | Unit, contract + golden accounting (PostgreSQL) | `go test -json -count=1 -coverprofile=coverage.out ./...` مع خدمة PostgreSQL؛ external consumers وGAPRED tagged tests وتقرير Contract Parity | فشل أي اختبار أو انخفاض التغطية عن `54.1%` |
+| `service-integration` | Integration — service runtime + protocols (PostgreSQL) | تشغيل الخدمة والتحقق من HTTP/gRPC مقابل PostgreSQL | فشل البناء أو التشغيل أو أي probe |
+| `race` | Concurrency — race detector (PostgreSQL) | `go test -race -count=1 ./...` مع خدمة PostgreSQL | أي سباق بيانات |
 | `migrations` | Migration policy + upgrade (PostgreSQL) | `make migrations` — فحص الهجرات القابلة للعكس/الخطرة + دورة ترقية كاملة | هجرة غير قابلة للعكس، DDL خطير بلا موافقة، أو فشل الترقية |
-| `security` | Security scans | فحص أسرار محلي، `govulncheck`, `gosec -severity high`, `gitleaks` | سر مكشوف، ثغرة معروفة مؤثرة، أو نتيجة gosec عالية الخطورة |
+| `security` | Security, dependency + SBOM gates | فحص الأسرار، `go-licenses` وفق قائمة SPDX المعتمدة، `govulncheck`, `gosec` عالي الخطورة، `gitleaks`، سلامة وحدات Go، وSBOM بصيغة CycloneDX | فشل أي فحص أو تعذر إنشاء SBOM |
+| `release-gate` | Release gates | على وسوم `v*` فقط، يفشل ما لم تنجح كل البوابات الحرجة | أي job فاشل أو ملغى أو متخطى |
 
 كل المهام تعمل على `ubuntu-latest`. إصدار Go يُقرأ من `go.mod` عبر `go-version-file`، فلا يوجد إصدار مكرر في أكثر من مكان.
 
+> **سياسة تراخيص التبعيات:** تُقبل فقط `MIT`, `MIT-0`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `0BSD`, `Zlib`, `BSL-1.0`, `CC0-1.0`, و`Unlicense`. تفحص البوابة اعتماديات الوحدات الثلاث، بما فيها اعتماديات الاختبارات، وترفع تقرير CSV مستقلًا لكل وحدة؛ أي ترخيص مجهول أو غير مدرج يفشل البوابة.
+
 ## 3. خدمة PostgreSQL
 
-المهام `test` و`race` و`migrations` تشغّل خدمة:
+المهام `test` و`service-integration` و`race` و`migrations` تشغّل خدمة:
 
 ```yaml
 image: postgres:18.6
@@ -55,7 +60,7 @@ postgres://postgres:postgres@localhost:5432/accounting_test?sslmode=disable
 
 - السكربت: [`scripts/check_coverage.sh`](../scripts/check_coverage.sh)
 - يقرأ `go tool cover -func` ويفشل إذا نزل الإجمالي عن الحد.
-- يُرفع `coverage.out` كأثر (artifact) لمدة 14 يوماً للمراجعة.
+- تُرفع تقارير التغطية والاختبارات وContract Parity كأثر (artifact) لمدة 14 يوماً للمراجعة.
 
 رفع الحد يتم فقط بعد إضافة تغطية فعلية، لا بتخفيضه لتجاوز فشل.
 
@@ -85,7 +90,8 @@ make test-contract-parity # اختبارات التكافؤ وتوليد الت�
 make race        # go test -race ./...
 make coverage    # coverage.out + فرض الحد الأدنى
 make migrations  # فحص الهجرات + اختبار الترقية
-make security    # govulncheck/gosec إن وُجدا + فحص الأسرار
+make architecture-check # API purity + حدود بناء Posting Engine
+make security    # govulncheck وgosec وفحص الأسرار (الأدوات مطلوبة)
 ```
 
 المتغيرات القابلة للتجاوز:
@@ -112,11 +118,13 @@ export POSTGRES_URL='postgres://osm@localhost:5432/accounting_test?sslmode=disab
 3. تفعيل `Require a pull request before merging`.
 4. تفعيل `Require status checks to pass before merging`.
 5. اختيار الفحوص التالية كإلزامية:
-   - `Format, vet, build`
-   - `Tests + coverage (PostgreSQL)`
-   - `Race detector (PostgreSQL)`
+   - `Static, architecture, API + external consumer`
+   - `Unit, contract + golden accounting (PostgreSQL)`
+   - `Integration — service runtime + protocols (PostgreSQL)`
+   - `Concurrency — race detector (PostgreSQL)`
    - `Migration policy + upgrade (PostgreSQL)`
-   - `Security scans`
+   - `Security, dependency + SBOM gates`
+   - `Release gates` عند التحقق من الوسم
 6. تفعيل `Require branches to be up to date before merging`.
 7. منع `force push` وحذف الفرع المحمي.
 
@@ -154,3 +162,22 @@ GET /repos/osmai4603-collab/accounting_engine/rulesets                  -> 403
 - أي فحص جديد يُضاف إلى `Makefile` وأيضاً إلى `ci.yml` في نفس الالتزام.
 - تُراجع مدة المهام شهرياً؛ الحدود الحالية: 15/30/40/20/20 دقيقة.
 - لا يُضاف `continue-on-error` لأي بوابة إلزامية.
+
+تعمل الاختبارات مرة واحدة دون إعادة محاولة تلقائية أو تجاوز للفشل. لا توجد
+آلية استثناء أو whitelist لتجاوز بوابة؛ تُصلح الاختبارات المتذبذبة أو تُحذف
+بتغيير عادي يخضع للمراجعة، ولا يجوز إخفاء فشلها.
+
+يرفع CI تقارير static/API compatibility، external consumer، الاختبارات
+والتغطية وContract Parity، integration، concurrency، migrations، وفحوص الأمان
+وSBOM عند توفرها. الاحتفاظ 14 يوماً، و30 يوماً لتقارير الأمن.
+
+### 9.1 التحقق من وسم الإصدار
+
+يُشغّل كل `v*` عبر البوابات نفسها، ثم يعمل `Release gates` كحاجز تجميعي
+ويفشل إذا لم تنجح جميعها. لا ينشئ CI إصدار GitHub تلقائياً؛ يجب أن تنتظر
+أتمتة النشر نجاح `CI / Release gates`. GitHub يسمح بإنشاء الوسم قبل اكتمال
+الفحوص، لذلك فشل البوابة يمنع اعتباره إصداراً موثقاً لكنه لا يحذف الوسم.
+
+لا توجد حالياً سياسة معتمدة لتراخيص الاعتماديات أو جهة/إجراء للموافقة على
+استثناءاتها. يُنشر SBOM للمراجعة، ولا يخترع CI قائمة تراخيص مسموح بها قبل
+اعتماد سياسة حوكمة واضحة.

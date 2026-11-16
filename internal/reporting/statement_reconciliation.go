@@ -23,15 +23,15 @@ var (
 // UnclassifiedAccount records any account that is missing proper taxonomy classification,
 // ensuring no accounts or balances are silently hidden from financial statements.
 type UnclassifiedAccount struct {
-	AccountID     uuid.UUID
-	AccountCode   string
-	AccountName   string
-	AccountType   masterdata.AccountType
-	SubClass      string
-	EndingDebit   decimal.Decimal
-	EndingCredit  decimal.Decimal
-	NetBalance    decimal.Decimal
-	Reason        string
+	AccountID    uuid.UUID
+	AccountCode  string
+	AccountName  string
+	AccountType  masterdata.AccountType
+	SubClass     string
+	EndingDebit  decimal.Decimal
+	EndingCredit decimal.Decimal
+	NetBalance   decimal.Decimal
+	Reason       string
 }
 
 // AbnormalBalance records accounts whose ending balances contradict their normal balance side.
@@ -51,31 +51,31 @@ type AbnormalBalance struct {
 // verification results connecting Trial Balance, General Ledger, Balance Sheet, Income
 // Statement, and Statement of Changes in Equity.
 type StatementReconciliationReport struct {
-	CompanyID              uuid.UUID
-	StartDate              time.Time
-	EndDate                time.Time
-	Currency               string
-	TrialBalanceBalanced   bool
-	TBDebitTotal           decimal.Decimal
-	TBCreditTotal          decimal.Decimal
-	TBNetIncome            decimal.Decimal
-	ISNetIncome            decimal.Decimal
-	NetIncomeVariance      decimal.Decimal
-	NetIncomeReconciled    bool
-	BSAssets               decimal.Decimal
-	BSLiabilities          decimal.Decimal
-	BSEquity               decimal.Decimal
-	BSTotalLiabAndEquity   decimal.Decimal
-	BSBalanced             bool
-	EquityClosingTotal     decimal.Decimal
-	EquityMovementNetInc   decimal.Decimal
-	EquityStatementTied    bool
-	UnclassifiedAccounts   []UnclassifiedAccount
-	AbnormalBalances       []AbnormalBalance
-	RoundingDiscrepancies  decimal.Decimal
-	Reconciled             bool
-	AuditSummary           string
-	GeneratedAt            time.Time
+	CompanyID             uuid.UUID
+	StartDate             time.Time
+	EndDate               time.Time
+	Currency              string
+	TrialBalanceBalanced  bool
+	TBDebitTotal          decimal.Decimal
+	TBCreditTotal         decimal.Decimal
+	TBNetIncome           decimal.Decimal
+	ISNetIncome           decimal.Decimal
+	NetIncomeVariance     decimal.Decimal
+	NetIncomeReconciled   bool
+	BSAssets              decimal.Decimal
+	BSLiabilities         decimal.Decimal
+	BSEquity              decimal.Decimal
+	BSTotalLiabAndEquity  decimal.Decimal
+	BSBalanced            bool
+	EquityClosingTotal    decimal.Decimal
+	EquityMovementNetInc  decimal.Decimal
+	EquityStatementTied   bool
+	UnclassifiedAccounts  []UnclassifiedAccount
+	AbnormalBalances      []AbnormalBalance
+	RoundingDiscrepancies decimal.Decimal
+	Reconciled            bool
+	AuditSummary          string
+	GeneratedAt           time.Time
 }
 
 // StatementReconciler coordinates cross-statement balance verification.
@@ -107,13 +107,13 @@ func (r *StatementReconciler) Reconcile(
 	}
 
 	report := StatementReconciliationReport{
-		CompanyID:             companyID,
-		StartDate:             startDate,
-		EndDate:               endDate,
-		Currency:              strings.ToUpper(strings.TrimSpace(currency)),
-		UnclassifiedAccounts:  make([]UnclassifiedAccount, 0),
-		AbnormalBalances:      make([]AbnormalBalance, 0),
-		GeneratedAt:           time.Now().UTC(),
+		CompanyID:            companyID,
+		StartDate:            startDate,
+		EndDate:              endDate,
+		Currency:             strings.ToUpper(strings.TrimSpace(currency)),
+		UnclassifiedAccounts: make([]UnclassifiedAccount, 0),
+		AbnormalBalances:     make([]AbnormalBalance, 0),
+		GeneratedAt:          time.Now().UTC(),
 	}
 
 	// 1. Generate Trial Balance

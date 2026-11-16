@@ -1,11 +1,13 @@
 package ifrs9
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/shopspring/decimal"
 )
@@ -243,5 +245,92 @@ func TestEvaluateVersionedECLRejectsIncompleteScenarioData(t *testing.T) {
 	input.Exposures[0].ScenarioPDs = input.Exposures[0].ScenarioPDs[:1]
 	if _, err := EvaluateVersionedECL(input); !errors.Is(err, ErrInvalidVersionedInput) {
 		t.Fatalf("incomplete scenario PDs error = %v, want ErrInvalidVersionedInput", err)
+	}
+}
+
+type mockECLPostingCap struct {
+	accounts  ECLAccounts
+	available bool
+}
+
+func (m mockECLPostingCap) LedgerPostingAvailable() bool { return m.available }
+func (m mockECLPostingCap) ResolveECLAccounts(_ context.Context, _ uuid.UUID, mappingID string) (ECLAccounts, error) {
+	if mappingID != "ecl_standard" {
+		return ECLAccounts{}, ErrECLJournalMappingUnavailable
+	}
+	return m.accounts, nil
+}
+
+type mockECLPostingApp struct {
+	posted []posting.JournalEntry
+	keys   map[string]posting.JournalEntry
+}
+
+func (m *mockECLPostingApp) PostECLEntry(_ context.Context, entry posting.JournalEntry, key string) error {
+	if m.keys == nil {
+		m.keys = make(map[string]posting.JournalEntry)
+	}
+	if existing, ok := m.keys[key]; ok {
+		if existing.IdempotencyPayloadHash != entry.IdempotencyPayloadHash {
+			return errors.New("idempotency conflict")
+		}
+		return nil // idempotent retry
+	}
+	m.posted = append(m.posted, entry)
+	m.keys[key] = entry
+	return nil
+}
+
+func TestGoldenScenario_GS09_IFRS9VersionedECLPostingAndIdempotency(t *testing.T) {
+	input := versionedGoldenInput(t)
+	result, err := EvaluateVersionedECL(input)
+	if err != nil {
+		t.Fatalf("EvaluateVersionedECL: %v", err)
+	}
+
+	companyID := uuid.New()
+	journalID := uuid.New()
+	accounts := ECLAccounts{
+		ImpairmentLoss: uuid.New(),
+		Allowance:      uuid.New(),
+	}
+
+	cap := mockECLPostingCap{accounts: accounts, available: true}
+	app := &mockECLPostingApp{}
+
+	ctx := context.Background()
+	entry1, err := PostVersionedECL(ctx, cap, app, result, companyID, journalID, "ecl_standard", "risk_officer")
+	if err != nil {
+		t.Fatalf("PostVersionedECL first attempt: %v", err)
+	}
+
+	if len(app.posted) != 1 {
+		t.Fatalf("expected 1 posted entry, got %d", len(app.posted))
+	}
+	if entry1.Status != posting.EntryPosted {
+		t.Fatalf("entry status = %s, want posted", entry1.Status)
+	}
+
+	// Verify balance
+	var debits, credits decimal.Decimal
+	for _, line := range entry1.Lines {
+		debits = debits.Add(line.Debit.Amount())
+		credits = credits.Add(line.Credit.Amount())
+	}
+	if !debits.Equal(credits) || !debits.Equal(result.AllowanceChange.Amount().Abs()) {
+		t.Fatalf("ECL entry unbalanced or incorrect: debits=%s credits=%s, change=%s",
+			debits, credits, result.AllowanceChange.Amount().Abs())
+	}
+
+	// Retry idempotency
+	entry2, err := PostVersionedECL(ctx, cap, app, result, companyID, journalID, "ecl_standard", "risk_officer")
+	if err != nil {
+		t.Fatalf("PostVersionedECL retry attempt: %v", err)
+	}
+	if entry1.ID != entry2.ID || entry1.IdempotencyKey != entry2.IdempotencyKey {
+		t.Fatalf("retry identity mismatch: %s vs %s", entry1.ID, entry2.ID)
+	}
+	if len(app.posted) != 1 {
+		t.Fatalf("duplicate entry posted to application store on retry: count=%d", len(app.posted))
 	}
 }

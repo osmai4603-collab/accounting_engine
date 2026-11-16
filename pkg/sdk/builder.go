@@ -311,6 +311,7 @@ func (b *EngineBuilder) preflight() []error {
 		b.standardsRegistry.RegisterCapability(standards.CapReporting, "reporting_service")
 	} else {
 		b.standardsRegistry.SetDisabledReason("capability:reporting", "reporting data sources missing (BalanceReader, MasterDataReader, EntryReader or ReportingStore)")
+		b.standardsRegistry.SetDisabledReason(string(standards.CapReporting), "reporting data sources missing (BalanceReader, MasterDataReader, EntryReader or ReportingStore)")
 	}
 
 	// Preflight validation for Governance capability dependencies
@@ -320,7 +321,12 @@ func (b *EngineBuilder) preflight() []error {
 		b.standardsRegistry.RegisterCapability(standards.CapApproval, "governance_service")
 	} else {
 		b.standardsRegistry.SetDisabledReason("capability:governance", "governance required stores missing (AuditWriter or GovernanceStore)")
+		b.standardsRegistry.SetDisabledReason(string(standards.CapGovernance), "governance required stores missing (AuditWriter or GovernanceStore)")
 	}
+
+	// Preflight tracking for optional capabilities
+	b.standardsRegistry.SetDisabledReason(string(standards.CapReconciliation), "reconciliation requires two declared comparison sources and repository")
+	b.standardsRegistry.SetDisabledReason(string(standards.CapConsolidation), "consolidation requires multi-entity group configuration and ownership control evidence")
 
 	if len(b.standards) > 0 {
 		registry := b.standardsRegistry

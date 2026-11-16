@@ -4,7 +4,7 @@
 #   make test          go test ./...
 #   make race          go test -race ./...
 #   make coverage      write coverage.out and enforce COVERAGE_MIN
-#   make security      govulncheck (if installed), gosec (if installed), secret scan
+#   make security      dependency vulnerability, gosec, and secret scans
 #   make migrations    migration guard + PostgreSQL migration lifecycle tests
 
 GO ?= go
@@ -12,9 +12,9 @@ COVERAGE_MIN ?= 54.1
 POSTGRES_URL ?= postgres://osm@localhost:5432/accounting_test?sslmode=disable&host=/var/run/postgresql
 export POSTGRES_URL
 
-.PHONY: ci fmt-check vet build test test-contract-parity test-external-consumer test-external-adapter-consumer test-gapred api-compat published-module integration-service proto race coverage coverage-report security migrations clean
+.PHONY: ci fmt-check vet build architecture-check test test-contract-parity test-external-consumer test-external-adapter-consumer test-gapred api-compat published-module integration-service proto race coverage coverage-report security licenses migrations clean
 
-ci: fmt-check vet build test test-gapred api-compat published-module integration-service race coverage security migrations
+ci: fmt-check vet build architecture-check test test-gapred api-compat published-module integration-service race coverage security migrations
 
 fmt-check:
 	./scripts/check_gofmt.sh
@@ -24,6 +24,11 @@ vet:
 
 build:
 	$(GO) build ./...
+
+architecture-check:
+	./scripts/check_public_api_purity.sh --self-test
+	./scripts/check_public_api_purity.sh
+	./scripts/check_application_layer.sh
 
 test: test-external-consumer test-external-adapter-consumer
 	$(GO) test -count=1 ./...
@@ -63,13 +68,19 @@ coverage:
 coverage-report: coverage
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
-security:
-	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; else echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; fi
-	@if command -v gosec >/dev/null 2>&1; then gosec -quiet -severity high -confidence high ./...; else echo "gosec not installed: go install github.com/securego/gosec/v2/cmd/gosec@latest"; fi
+security: licenses
+	$(GO) mod verify
+	@command -v govulncheck >/dev/null 2>&1 || (echo "govulncheck is required: go install golang.org/x/vuln/cmd/govulncheck@latest" >&2; exit 1)
+	govulncheck ./...
+	@command -v gosec >/dev/null 2>&1 || (echo "gosec is required: go install github.com/securego/gosec/v2/cmd/gosec@latest" >&2; exit 1)
+	gosec -quiet -severity high -confidence high ./...
 	./scripts/scan_secrets.sh
 
+licenses:
+	./scripts/check_licenses.sh
+
 migrations:
-	$(GO) test -count=1 ./storage/postgres -run 'TestMigrationsHaveReversiblePairs|TestDangerousMigrationsRequireApproval|TestCleanMigrationLifecycle|TestBaselineMigrationCleanRun|TestMigrationUpgradeFromPreviousVersionPreservesData'
+	$(GO) test -count=1 ./internal/adapters/postgres -run 'TestMigrationsHaveReversiblePairs|TestDangerousMigrationsRequireApproval|TestCleanMigrationLifecycle|TestBaselineMigrationCleanRun|TestFailedMigrationRollsBackAndCanBeRetried|TestMigrationUpgradeFromOldestSupportedSchemaPreservesData|TestValidateSchemaHealth'
 
 clean:
 	rm -f coverage.out coverage.html

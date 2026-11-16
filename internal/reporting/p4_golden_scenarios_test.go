@@ -216,6 +216,9 @@ func TestGoldenScenario_GS02_IAS21MultiCurrencyRevaluation(t *testing.T) {
 	}
 	e1.CompanyID = companyID
 	e1.PeriodID = fy.Periods[0].ID
+	if err := driver.SaveDraft(e1); err != nil {
+		t.Fatalf("SaveDraft EUR Invoice: %v", err)
+	}
 	e1.Status = posting.EntryPosted
 	if _, err := driver.PostAndSequence(e1); err != nil {
 		t.Fatalf("PostAndSequence EUR Invoice: %v", err)
@@ -231,6 +234,9 @@ func TestGoldenScenario_GS02_IAS21MultiCurrencyRevaluation(t *testing.T) {
 	}
 	eReval.CompanyID = companyID
 	eReval.PeriodID = fy.Periods[0].ID
+	if err := driver.SaveDraft(eReval); err != nil {
+		t.Fatalf("SaveDraft FX Reval: %v", err)
+	}
 	eReval.Status = posting.EntryPosted
 	if _, err := driver.PostAndSequence(eReval); err != nil {
 		t.Fatalf("PostAndSequence FX Reval: %v", err)
@@ -313,6 +319,9 @@ func TestGoldenScenario_GS03_IAS1AccrualAutoReversals(t *testing.T) {
 	accrualEntry.CompanyID = companyID
 	accrualEntry.PeriodID = fy.Periods[0].ID
 	accrualEntry.Classification = posting.EntryClassRegular
+	if err := driver.SaveDraft(accrualEntry); err != nil {
+		t.Fatalf("SaveDraft Accrual: %v", err)
+	}
 	accrualEntry.Status = posting.EntryPosted
 	if _, err := driver.PostAndSequence(accrualEntry); err != nil {
 		t.Fatalf("PostAndSequence Accrual: %v", err)
@@ -330,6 +339,9 @@ func TestGoldenScenario_GS03_IAS1AccrualAutoReversals(t *testing.T) {
 	reversalEntry.PeriodID = fy.Periods[1].ID
 	reversalEntry.Classification = posting.EntryClassReversing
 	reversalEntry.OriginalEntryID = &accrualEntry.ID
+	if err := driver.SaveDraft(reversalEntry); err != nil {
+		t.Fatalf("SaveDraft Reversal: %v", err)
+	}
 	reversalEntry.Status = posting.EntryPosted
 	if _, err := driver.PostAndSequence(reversalEntry); err != nil {
 		t.Fatalf("PostAndSequence Reversal: %v", err)

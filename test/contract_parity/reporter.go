@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,11 +15,32 @@ import (
 type ScenarioResult struct {
 	ScenarioName          string
 	AdapterName           string
+	EngineVersion         string
 	Passed                bool
 	Skipped               bool
 	CapabilityDifferences []string
+	SemanticDifferences   []string
 	UnexpectedDifferences []string
 	ExecutionDuration     time.Duration
+}
+
+// EngineVersion identifies the engine build recorded alongside acceptance
+// results. Local test builds commonly report "(devel)".
+func EngineVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	version := info.Main.Version
+	if version == "" {
+		return "unknown"
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && setting.Value != "" {
+			return fmt.Sprintf("%s+%s", version, setting.Value[:min(len(setting.Value), 12)])
+		}
+	}
+	return version
 }
 
 // ParityReporter aggregates contract execution telemetry and generates an automated report.
@@ -34,6 +57,7 @@ func (r *ParityReporter) Record(res ScenarioResult) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	res.CapabilityDifferences = append([]string(nil), res.CapabilityDifferences...)
+	res.SemanticDifferences = append([]string(nil), res.SemanticDifferences...)
 	res.UnexpectedDifferences = append([]string(nil), res.UnexpectedDifferences...)
 	r.results = append(r.results, res)
 }
@@ -52,11 +76,12 @@ func (r *ParityReporter) GenerateMarkdownReport() string {
 	})
 
 	var out string
-	out += "# Contract Parity Report — P3-07\n\n"
+	out += "# Contract Parity Report — P3-07 / P7-01\n\n"
 	out += fmt.Sprintf("- **Generated (UTC):** %s\n", time.Now().UTC().Format(time.RFC3339))
+	out += fmt.Sprintf("- **Engine version:** %s\n", EngineVersion())
 	out += "- **Adapters:** Memory, External SPI adapter, PostgreSQL (when `POSTGRES_URL` is configured).\n\n"
-	out += "| Scenario | Adapter | Result | Duration |\n"
-	out += "| :--- | :--- | :---: | ---: |\n"
+	out += "| Engine | Scenario | Adapter | Result | Semantic differences | Duration |\n"
+	out += "| :--- | :--- | :--- | :---: | :--- | ---: |\n"
 
 	passed, failed, skipped := 0, 0, 0
 	for _, result := range results {
@@ -71,8 +96,17 @@ func (r *ParityReporter) GenerateMarkdownReport() string {
 		default:
 			passed++
 		}
-		out += fmt.Sprintf("| %s | %s | %s | %s |\n",
-			result.ScenarioName, result.AdapterName, status, result.ExecutionDuration.Round(time.Millisecond))
+		version := result.EngineVersion
+		if version == "" {
+			version = EngineVersion()
+		}
+		differences := result.SemanticDifferences
+		if len(differences) == 0 {
+			differences = []string{"none recorded"}
+		}
+		out += fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+			version, result.ScenarioName, result.AdapterName, status,
+			escapeCell(joinDifferences(differences)), result.ExecutionDuration.Round(time.Millisecond))
 	}
 
 	out += fmt.Sprintf("\n- **Totals:** %d passed, %d failed, %d skipped.\n", passed, failed, skipped)
@@ -113,6 +147,14 @@ func (r *ParityReporter) GenerateMarkdownReport() string {
 		}
 	}
 	return out
+}
+
+func joinDifferences(differences []string) string {
+	return strings.Join(differences, "; ")
+}
+
+func escapeCell(value string) string {
+	return strings.ReplaceAll(value, "|", "\\|")
 }
 
 // WriteReportToFile outputs the report to the specified file path.

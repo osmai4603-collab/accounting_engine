@@ -53,4 +53,3 @@
 
 1. انخفاض مقياس `accounting_deadlocks_detected_total` إلى الصفر أو المعدل الطبيعي.
 2. استقرار `accounting_posting_duration_seconds` ضمن المستويات المعتادة ($\le 50\text{ms}$).
-

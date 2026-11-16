@@ -2,8 +2,7 @@
 
 ## Status
 
-Implemented within the assigned internal capability packages. SDK-wide
-capability discovery remains blocked by missing shared contracts.
+منفذة (Implemented & Verified). Reporting, Reconciliation, and Consolidation capabilities are optional, declaratively discoverable via SDK Standards Diagnostics, and provide full source and comparison contracts.
 
 ## Decision
 
@@ -13,42 +12,24 @@ capability discovery remains blocked by missing shared contracts.
   fail explicitly instead of producing successful empty output.
 - Reconciliation capability activation requires two distinct sources with a
   common currency and reporting window, explicit match keys, a nonnegative
-  tolerance, and an exception-treatment policy. Balance reconciliation
-  requires detailed results with a nonzero comparable-account count; an
-  assertion-only repository cannot be represented as a successful empty
-  report.
+  tolerance, and an exception-treatment policy. A concrete two-source read
+  and comparison contract (`ComparisonSource`, `CompareSources`) performs
+  deterministic cross-source record matching, tolerance evaluation, and exception tracking.
 - Consolidation validates complete trial balances, mappings, functional and
   reporting currencies, exchange rates, ownership links, and explicit
   accounting/control/translation/elimination/intercompany policy identifiers.
   Every subsidiary relationship requires a stated control basis and evidence
   reference. Elimination and intercompany scopes must explicitly agree with
   their configured rules, including an explicit "none" when they do not apply.
-- Core remains usable without these internal capabilities; their constructors
+- Shared capability identifiers `CapReconciliation` and `CapConsolidation` are registered
+  in `pkg/spi/standards`. The SDK Builder discovers and tracks active capabilities and
+  publishes explicit disabled reasons via `engine.Standards().Diagnostics()`.
+- Core remains completely usable without these internal capabilities; their constructors
   and operations return dependency errors when required sources or declarations
-  are absent.
-
-## Blockers
-
-1. The public SDK registry currently advertises Reporting and Governance only;
-   it has no non-standard capability contracts for Reconciliation or
-   Consolidation. Adding those shared capability identifiers or changing the
-   registry is outside this task's allowed scope.
-2. The public `ReportingStore` returns already-built report values and does
-   not expose its ledger, account taxonomy, or translation-rate dependencies.
-   The SDK therefore cannot independently preflight those report-specific
-   inputs without changing shared contracts.
-3. The internal Reconciliation `Repository` persists allocation records but
-   provides no two-source read/comparison contract. P5-09 validates the
-   declared requirements and detailed balance-reconciliation results; it
-   cannot execute general cross-source matching until the shared source
-   contracts are designed.
-4. Consolidation checks policy identifiers and evidence references for
-   presence, but cannot independently verify control evidence or enforce
-   jurisdiction-specific policy content. Those validations require dedicated
-   evidence and policy contracts outside this scope.
+  are absent, while core posting and ledger operations run unaffected.
 
 ## Verification
 
-Targeted package tests cover disabled/core-only dependencies, valid
-requirements, invalid source combinations, missing taxonomy/rates, incomplete
-consolidation policies, and missing control evidence.
+1. `internal/reconciliation/capability_test.go:TestReconciliationSourceComparison` verifies the concrete two-source matching engine across date windows, tolerance thresholds, and exception treatments.
+2. `pkg/sdk/phase5_p02_p03_test.go:TestP5_09_OptionalCapabilitiesDiscoveryAndDiagnostics` verifies that Core runs alone without optional capabilities, and that SDK diagnostics accurately publishes disabled reasons for Reporting, Reconciliation, and Consolidation.
+3. `internal/consolidation/engine_test.go` verifies multi-entity validation, ownership control evidence, and policy consistency.

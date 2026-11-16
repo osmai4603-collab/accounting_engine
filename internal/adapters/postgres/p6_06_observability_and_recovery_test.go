@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,55 @@ func TestValidateSchemaHealth_HealthyAndIncompatible(t *testing.T) {
 	}
 }
 
+func TestValidateSchemaHealthRejectsUnknownAppliedMigration(t *testing.T) {
+	ctx := context.Background()
+	driver, err := newIsolatedPostgresDriver(t, ctx)
+	if err != nil {
+		t.Fatalf("failed to create isolated driver: %v", err)
+	}
+
+	var unknownVersion int64
+	if err := driver.Pool().QueryRow(ctx,
+		"SELECT COALESCE(MAX(version), 0) + 1 FROM schema_migrations").Scan(&unknownVersion); err != nil {
+		t.Fatalf("find unknown migration version: %v", err)
+	}
+	if _, err := driver.Pool().Exec(ctx,
+		"INSERT INTO schema_migrations(version,name,checksum) VALUES($1,$2,$3)",
+		unknownVersion, "future_migration", strings.Repeat("f", 64)); err != nil {
+		t.Fatalf("insert simulated future migration record: %v", err)
+	}
+
+	if err := driver.ValidateSchema(ctx); !errors.Is(err, postgres.ErrSchemaIncompatible) {
+		t.Fatalf("future schema readiness error = %v, want ErrSchemaIncompatible", err)
+	}
+	if err := postgres.MigrateUp(ctx, driver.Pool()); err == nil {
+		t.Fatal("migration runner accepted a database with an unknown applied migration")
+	}
+}
+
+func TestValidateSchemaHealthRejectsChangedMigrationChecksum(t *testing.T) {
+	ctx := context.Background()
+	driver, err := newIsolatedPostgresDriver(t, ctx)
+	if err != nil {
+		t.Fatalf("failed to create isolated driver: %v", err)
+	}
+
+	if _, err := driver.Pool().Exec(ctx,
+		"UPDATE schema_migrations SET checksum = $1 WHERE version = (SELECT MIN(version) FROM schema_migrations)",
+		strings.Repeat("f", 64)); err != nil {
+		t.Fatalf("simulate changed applied checksum: %v", err)
+	}
+	if err := driver.ValidateSchema(ctx); !errors.Is(err, postgres.ErrSchemaIncompatible) {
+		t.Fatalf("changed checksum readiness error = %v, want ErrSchemaIncompatible", err)
+	}
+	if err := postgres.MigrateUp(ctx, driver.Pool()); err == nil {
+		t.Fatal("migration runner accepted a changed applied checksum")
+	}
+}
+
+// TestBackupRestore_IntegrityVerification checks post-restore validation by
+// reconstructing representative data in a separate schema. It does not invoke
+// pg_dump, pg_restore, or PostgreSQL physical/PITR recovery.
 func TestBackupRestore_IntegrityVerification(t *testing.T) {
 	ctx, env := setupIsolatedPostingEnv(t)
 

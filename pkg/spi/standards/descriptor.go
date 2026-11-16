@@ -24,6 +24,9 @@ const (
 	CapCurrencyTranslation Capability = "currency_translation"
 	CapScheduledJobs       Capability = "scheduled_jobs"
 
+	CapReconciliation Capability = "reconciliation"
+	CapConsolidation  Capability = "consolidation"
+
 	CapRevenueRecognition   Capability = "revenue_recognition"
 	CapDeferredTax          Capability = "deferred_tax"
 	CapLeaseAccounting      Capability = "lease_accounting"

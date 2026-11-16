@@ -236,4 +236,83 @@ func TestRecognitionRequiresNonemptyServiceEvidence(t *testing.T) {
 	}
 }
 
+func TestGoldenScenario_GS07_IFRS15RevenueRecognition(t *testing.T) {
+	licencePO := obligation("2026-01-01", "2026-01-01", PointInTime, "8000")
+	licencePO.Description = "Software Licence"
+	supportPO := obligation("2026-01-01", "2026-12-31", OverTime, "4000")
+	supportPO.Description = "Maintenance & Support"
+
+	input := assessedInput(t, licencePO, supportPO)
+	input.TransactionPrice = money(t, "10000.00", "USD")
+
+	app := &testRevenueApplication{}
+	mapping := testMapping()
+	workflow, err := NewRevenueWorkflow(mapping, app)
+	if err != nil {
+		t.Fatalf("NewRevenueWorkflow: %v", err)
+	}
+
+	contract, err := workflow.AddContract(input)
+	if err != nil {
+		t.Fatalf("AddContract: %v", err)
+	}
+
+	// Verify Relative-SSP Allocation
+	allocatedLicence := contract.AllocatedPrices[licencePO.ID].Amount()
+	allocatedSupport := contract.AllocatedPrices[supportPO.ID].Amount()
+	if !allocatedLicence.Equal(decimal.NewFromInt(666667).Shift(-2)) {
+		t.Fatalf("Licence allocation = %s, want 6666.67", allocatedLicence)
+	}
+	if !allocatedSupport.Equal(decimal.NewFromInt(333333).Shift(-2)) {
+		t.Fatalf("Support allocation = %s, want 3333.33", allocatedSupport)
+	}
+	if !allocatedLicence.Add(allocatedSupport).Equal(decimal.NewFromInt(10000)) {
+		t.Fatalf("Sum of allocations %s != 10000.00", allocatedLicence.Add(allocatedSupport))
+	}
+
+	// Step 5: Deliver licence and recognize revenue
+	eventID := uuid.New()
+	event := SatisfactionEvent{
+		ID:           eventID,
+		ObligationID: licencePO.ID,
+		Amount:       contract.AllocatedPrices[licencePO.ID],
+		Date:         time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC),
+		Evidence: ServiceDeliveryEvidence{
+			EvidenceReference: "DLV-2026-001",
+			Satisfied:         true,
+			MeasureBasis:      "customer_delivery_signoff",
+		},
+	}
+
+	updated, entry, err := workflow.Recognize(context.Background(), contract.ID, event)
+	if err != nil {
+		t.Fatalf("Recognize licence revenue: %v", err)
+	}
+	if len(app.entries) != 1 {
+		t.Fatalf("expected 1 posted entry, got %d", len(app.entries))
+	}
+	if !updated.RecognizedAmount.Amount().Equal(allocatedLicence) {
+		t.Fatalf("contract recognized = %s, want %s", updated.RecognizedAmount.Amount(), allocatedLicence)
+	}
+
+	// Validate balanced entry
+	var debitTotal, creditTotal decimal.Decimal
+	for _, line := range entry.Lines {
+		debitTotal = debitTotal.Add(line.Debit.Amount())
+		creditTotal = creditTotal.Add(line.Credit.Amount())
+	}
+	if !debitTotal.Equal(creditTotal) || !debitTotal.Equal(decimal.NewFromInt(666667).Shift(-2)) {
+		t.Fatalf("entry not balanced: debit=%s credit=%s", debitTotal, creditTotal)
+	}
+
+	// Retry idempotency
+	_, cachedEntry, err := workflow.Recognize(context.Background(), contract.ID, event)
+	if err != nil {
+		t.Fatalf("idempotent retry failed: %v", err)
+	}
+	if cachedEntry.ID != entry.ID || len(app.entries) != 1 {
+		t.Fatalf("retry caused duplicate posting: entries=%d", len(app.entries))
+	}
+}
+
 var _ RevenuePostingApplication = (*testRevenueApplication)(nil)

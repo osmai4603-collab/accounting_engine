@@ -614,14 +614,18 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 	start := time.Now()
 	defer func() {
 		unexpected := []string(nil)
+		semanticDifferences := []string{"none; normalized entry, reversal, trial-balance, and general-ledger outputs match"}
 		if t.Failed() {
 			unexpected = []string{"cross-adapter assertions failed; see the corresponding go test output"}
+			semanticDifferences = []string{"cross-adapter semantic assertions failed; see go test output"}
 		}
 		GlobalReporter.Record(ScenarioResult{
 			ScenarioName:          "CrossAdapterSemanticEquivalence",
 			AdapterName:           "all",
+			EngineVersion:         EngineVersion(),
 			Passed:                !t.Failed() && !t.Skipped(),
 			Skipped:               t.Skipped(),
+			SemanticDifferences:   semanticDifferences,
 			UnexpectedDifferences: unexpected,
 			ExecutionDuration:     time.Since(start),
 		})
@@ -754,12 +758,13 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 			},
 			SourceSystem: "parity-suite",
 		}
+		reversalDate := effDate.AddDate(0, 0, 1)
 		reversalResult, err := h.AppService.Reverse(ctx, publicapplication.ReverseEntryCommand{
 			Context:       commandContext,
 			CompanyID:     companyID,
 			EntryID:       posted.ID,
 			Reason:        "Cross-adapter parity reversal",
-			EffectiveDate: effDate,
+			EffectiveDate: reversalDate,
 		})
 		if err != nil {
 			t.Fatalf("%s: Reverse: %v", h.Name, err)
@@ -769,17 +774,24 @@ func TestContractParity_CrossAdapterSemanticEquivalence(t *testing.T) {
 			t.Fatalf("%s: GetEntry after reversal: %v", h.Name, err)
 		}
 
-		tb, err := h.Engine.Reporting().GetTrialBalance(ctx, companyID, effDate, "USD")
+		tb, err := h.Engine.Reporting().GetTrialBalance(ctx, companyID, reversalDate, "USD")
 		if err != nil {
 			t.Fatalf("%s: GetTrialBalance: %v", h.Name, err)
 		}
 
-		gl, err := h.Engine.Reporting().GetGeneralLedger(ctx, companyID, cashID, time.Time{}, effDate)
+		gl, err := h.Engine.Reporting().GetGeneralLedger(ctx, companyID, cashID, time.Time{}, reversalDate)
 		if err != nil {
 			t.Fatalf("%s: GetGeneralLedger: %v", h.Name, err)
 		}
-		if len(gl.Entries) != 1 || gl.Entries[0].EntryID != reversalResult.Entry.ID {
-			t.Fatalf("%s: general ledger entries do not identify the reversal: %#v", h.Name, gl.Entries)
+		if len(gl.Entries) != 2 {
+			t.Fatalf("%s: general ledger has %d entries, want original and reversal: %#v", h.Name, len(gl.Entries), gl.Entries)
+		}
+		entryIDs := map[types.JournalEntryID]bool{}
+		for _, line := range gl.Entries {
+			entryIDs[line.EntryID] = true
+		}
+		if !entryIDs[posted.ID] || !entryIDs[reversalResult.Entry.ID] {
+			t.Fatalf("%s: general ledger omits original or reversal: %#v", h.Name, gl.Entries)
 		}
 
 		return posted, reversalResult.Entry, originalAfterReversal, tb, gl

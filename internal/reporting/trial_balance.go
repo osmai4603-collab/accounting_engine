@@ -238,14 +238,7 @@ func listAccounts(repository Repository) ([]masterdata.Account, error) {
 	if repository == nil {
 		return nil, fmt.Errorf("%w: account taxonomy and ledger repository", ErrReportingDependencyMissing)
 	}
-	accounts, err := repository.ListAccounts(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	if len(accounts) == 0 {
-		return nil, ErrReportingTaxonomyMissing
-	}
-	return accounts, nil
+	return repository.ListAccounts(context.Background())
 }
 
 // Deprecated: Used when a report range cannot be represented by complete materialized periods.

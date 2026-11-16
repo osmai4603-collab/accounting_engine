@@ -345,4 +345,3 @@ func TestAdapterCapabilitiesDeclaration(t *testing.T) {
 }
 
 var _ = decimal.Zero
-

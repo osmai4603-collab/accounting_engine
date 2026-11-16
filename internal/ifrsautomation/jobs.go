@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,11 +78,18 @@ func (j LeaseJob) Generate(ctx context.Context, period Period) ([]posting.Journa
 			lease.CreatedBy == "" {
 			return nil, ErrJobConfiguration
 		}
-		schedule, err := lease.Contract.AmortizationSchedule()
+		contract := lease.Contract
+		if strings.TrimSpace(contract.Reference) == "" {
+			contract = contract.WithReference(lease.ID.String())
+		}
+		schedule, err := contract.AmortizationSchedule()
 		if err != nil {
 			return nil, fmt.Errorf("lease %s schedule: %w", lease.ID, err)
 		}
 		for _, line := range schedule {
+			if strings.TrimSpace(line.LeaseReference) == "" {
+				line.LeaseReference = lease.ID.String()
+			}
 			date := dateOnlyUTC(line.DueDate)
 			if date.Before(dateOnlyUTC(period.Start)) || date.After(dateOnlyUTC(period.End)) {
 				continue

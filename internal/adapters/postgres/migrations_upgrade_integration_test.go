@@ -10,12 +10,9 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 )
 
-// TestMigrationUpgradeFromPreviousVersionPreservesData simulates deploying the
-// current release over the previous schema version: it applies the full chain,
-// writes representative tenant data, rolls back exactly one migration (the
-// state of the previous release), then upgrades again. Existing rows must
-// survive and the final chain must match a clean install.
-func TestMigrationUpgradeFromPreviousVersionPreservesData(t *testing.T) {
+// TestMigrationUpgradeFromOldestSupportedSchemaPreservesData exercises the
+// full supported upgrade path from the baseline schema to the current chain.
+func TestMigrationUpgradeFromOldestSupportedSchemaPreservesData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -31,22 +28,28 @@ func TestMigrationUpgradeFromPreviousVersionPreservesData(t *testing.T) {
 		t.Fatalf("seed company before rollback: %v", err)
 	}
 
-	if err := postgres.MigrateDown(ctx, pool, 1); err != nil {
-		t.Fatalf("roll back to the previous release: %v", err)
+	if err := postgres.MigrateDown(ctx, pool, countUpMigrations(t)-1); err != nil {
+		t.Fatalf("roll back to the oldest supported baseline schema: %v", err)
+	}
+	if err := postgres.ValidateSchemaHealth(ctx, pool); err == nil {
+		t.Fatal("baseline schema unexpectedly passed current schema readiness check")
 	}
 
 	if err := postgres.MigrateUp(ctx, pool); err != nil {
-		t.Fatalf("upgrade from the previous release: %v", err)
+		t.Fatalf("upgrade from the baseline schema: %v", err)
 	}
 
 	var stored masterdata.Company
 	if err := pool.QueryRow(ctx,
 		`SELECT id, code, legal_name FROM companies WHERE id=$1`, companyID).
 		Scan(&stored.ID, &stored.Code, &stored.LegalName); err != nil {
-		t.Fatalf("company row lost across the upgrade: %v", err)
+		t.Fatalf("company row lost across the baseline-to-current upgrade: %v", err)
 	}
 	if stored.ID != companyID || stored.LegalName != "Upgrade Preservation Co" {
-		t.Fatalf("company row changed across the upgrade: %+v", stored)
+		t.Fatalf("company row changed across the baseline-to-current upgrade: %+v", stored)
+	}
+	if err := postgres.ValidateSchemaHealth(ctx, pool); err != nil {
+		t.Fatalf("current schema health after upgrade: %v", err)
 	}
 
 	var applied int
