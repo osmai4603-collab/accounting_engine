@@ -1,4 +1,9 @@
-# IFRS automation CLI
+# IFRS automation CLI (Historical Draft)
+
+> [!NOTE]
+> **Archived Specification:**
+> This document describes an early standalone CLI prototype (`agy ifrs`).
+> In the current architecture (completed in Phase P11-05), standards automation (IFRS 15, IFRS 9, IFRS 16, IAS 12) is natively integrated into the SDK Application Layer via `sdk.WithStandard` and automated journal posting pipelines. Refer to `docs/accounting/` and `docs/standards/` for normative documentation.
 
 The IFRS command reads company and account settings from a JSON file. Pass it
 with `--config`, or set `AGY_IFRS_CONFIG_PATH`:

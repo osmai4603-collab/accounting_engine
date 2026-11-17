@@ -19,7 +19,7 @@ v<MAJOR>.<MINOR>.<PATCH>
 - **PATCH:** Backward-compatible bug fixes and accounting edge-case corrections that preserve intended financial invariants.
 
 > [!NOTE]
-> Under SemVer 2.0.0 (Clause 4), major version zero (`0.y.z`) indicates initial development. While public API contracts are established under strict purity gates, production-unattended deployment remains gated by release approvals and operational criteria as documented in [P7-05 Release Readiness](./reports/release_readiness_p7-05.md).
+> Under SemVer 2.0.0 (Clause 4), major version zero (`0.y.z`) indicates an evolving API surface. The current `v0.2.0` baseline is considered production-ready for the embedded SDK and standalone service, with the previous NO-GO conditions formally cleared in [Release Readiness Report v0.2.0](./release_readiness_v0.2.0.md).
 
 ---
 

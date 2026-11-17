@@ -11,7 +11,10 @@
 | الملف المؤرشف | طبيعته الأصلية | سبب الأرشفة والبديل الساري |
 | --- | --- | --- |
 | `golden_accounting_benchmark.md` | مسودة بيانات محاسبية معيارية (11 نوفمبر 2026) | استُبدلت بالوثيقة المحاسبية المعتمدة للمهمة P4-08: [`docs/golden_accounting_scenarios.md`](../golden_accounting_scenarios.md). |
-| `production_certification_signoff.md` | تقييم سابق للجاهزية والشهادة الإنتاجية | تقرير تاريخي ملغى؛ البديل الساري هو تقرير الجاهزية الصادر لإصدار v0.1.0: [`docs/reports/release_readiness_p7-05.md`](../reports/release_readiness_p7-05.md). |
+| `production_certification_signoff.md` | تقييم سابق للجاهزية والشهادة الإنتاجية | تقرير تاريخي ملغى؛ البديل الساري المعتمد هو تقرير الجاهزية الشامل لإصدار v0.2.0: [`docs/release_readiness_v0.2.0.md`](../release_readiness_v0.2.0.md). |
 | `production_readiness_specification_and_verification.md` | مواصفات جاهزية مقترحة سابقة | وثيقة غير معيارية تضمنت مقترحات سابقة؛ البديل الساري هي سياسات التشغيل والفحوصات في [`docs/operations/`](../operations/) وبوابات [`docs/ci.md`](../ci.md). |
-| `gap_analysis_and_standards_verification_report.md` | تقرير تدقيق وفحص فجوات (11 نوفمبر 2026) | فحص قديم تم إجراؤه قبل تنفيذ مراحل إعادة التصميم P0–P7. تم استيعاب الفجوات ومعالجتها في الكود وخريطة الامتثال [`docs/ENGINE_COMPLIANCE_MATRIX.md`](../ENGINE_COMPLIANCE_MATRIX.md). |
-| `execute_paralism.md` | دليل خطوات التنفيذ المتوازي لمهام P3 إلى P7 | اكتملت كافة مهام المراحل P3–P7 وتم تسجيل قراراتها ومخرجاتها في سجلات [`docs/ard/`](../ard/)، بينما تخضع المهام الحالية لـ [`docs/execution_plan_overview.md`](../execution_plan_overview.md). |
+| `gap_analysis_and_standards_verification_report.md` | تقرير تدقيق وفحص فجوات (11 نوفمبر 2026) | فحص قديم تم إجراؤه قبل تنفيذ مراحل إعادة التصميم P0–P12. تم استيعاب الفجوات ومعالجتها في الكود و[`docs/release_readiness_v0.2.0.md`](../release_readiness_v0.2.0.md). |
+| `reports/release_readiness_p7-05.md` | تقرير الجاهزية المرحلة P7 لـ v0.1.0 (NO-GO) | تقرير مرحلي مؤقت تم تجاوزه ورفع شرطه بالكامل في [`docs/release_readiness_v0.2.0.md`](../release_readiness_v0.2.0.md) بنسبة 100% GO. |
+| `ifrs_automation.md` | مسودة أداة CLI مبكرة لمعايير IFRS | استُبدلت بالتكامل البرمجي المباشر عبر الـ SDK Application Layer وموديولات المعايير (`modules/*`) المنجزة في P11-05. |
+| `root-facade.md` | إرشادات هجرة مرحلية من Root API إلى `pkg/sdk` | وثيقة مرحلية للمهمة P1-05؛ البديل المعتمد هو [`docs/sdk_developer_guide.md`](../sdk_developer_guide.md). |
+| `release_notes/v0.1.0.md` | ملاحظات إصدار v0.1.0 المبدئي | تم دمجها وأرشفتها رسمياً في [`docs/reports/release_archive_v0.1.0.md`](../reports/release_archive_v0.1.0.md) و[`RELEASE_NOTES.md`](../../RELEASE_NOTES.md). |

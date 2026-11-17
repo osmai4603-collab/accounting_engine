@@ -4,7 +4,7 @@
 - **Date:** 2026-11-16
 - **Module:** `github.com/osmai4603-collab/accounting_engine`
 - **Release Type:** Initial Developer Preview / Embedded SDK Release
-- **Related Records:** [P7-05 Release Readiness](./release_readiness_p7-05.md), [Contract Parity Report](./contract_parity_report.md), [ARD-P7-05](../ard/ARD-P7-05.md), [ARD-P7-06](../ard/ARD-P7-06.md).
+- **Related Records:** [Archived P7-05 Release Readiness](../archive/reports/release_readiness_p7-05.md), [Contract Parity Report](./contract_parity_report.md), [ARD-P7-05](../ard/ARD-P7-05.md), [ARD-P7-06](../ard/ARD-P7-06.md).
 
 ---
 
