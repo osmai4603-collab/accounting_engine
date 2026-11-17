@@ -1,5 +1,190 @@
 # Accounting Engine Release Notes
 
+## Version v0.2.0 (2026-11-17)
+
+**Release Type:** Minor Feature & Operational Hardening Release  
+**Official Module Path:** `github.com/osmai4603-collab/accounting_engine`  
+**Governing Documents:** [Compatibility Policy](docs/compatibility_policy.md), [SDK Developer Guide](docs/sdk_developer_guide.md), [Release Readiness Report v0.2.0](docs/release_readiness_v0.2.0.md), [Disaster Recovery Runbook](docs/operations/runbooks/disaster_recovery_runbook.md).
+
+---
+
+### 1. Overview and Architecture
+
+`v0.2.0` is a major advancement that completes all architectural, accounting, and operational gaps identified after `v0.1.0`. The release delivers complete accounting core workflows (Atomic Year-End Closing, Dual-Method Cash Flows), public SPI subledgers (AR/AP, Fixed Assets, Treasury), automated standards posting with deterministic idempotency for IFRS/IAS modules, operational rate limiting for standalone deployments, and comprehensive fault recovery verification.
+
+Most critically, **the conditional NO-GO advisory on standalone production deployment has been officially lifted** following a successful end-to-end disaster recovery drill on PostgreSQL with verified accounting integrity and zero data loss (RPO = 0).
+
+---
+
+### 2. Key Capabilities in v0.2.0
+
+#### A. Operational Hardening & Disaster Recovery (`P12`)
+
+- **Automated Live Disaster Recovery Drill (`P12-01`):** Verified full physical backup (`pg_dump -Fc`) and restore (`pg_restore`) against independent PostgreSQL databases. Achieved RTO ≈ 1.49s and RPO = 0 with 100% pass on all 6 core accounting integrity checks (double-entry balance, perpetual balance reconciliation, unbroken audit hash chain, strict RLS tenant isolation, idempotency key preservation, and monotonic sequence continuity).
+- **Transport Rate Limiting for Standalone Service (`P12-02`):** Token Bucket algorithm protecting HTTP (`429 Too Many Requests`) and gRPC (`RESOURCE_EXHAUSTED`) endpoints with bounded memory usage, IP-based pre-auth shielding, and per-tenant authenticated quotas. The embedded SDK core remains 100% lightweight and free of network rate limiting constraints.
+- **Performance Benchmarks & Baseline (`P12-03`):** Official benchmark suite covering draft creation, posting pipeline, concurrent posting, balance sheet generation, cash flow generation, and year-end closing across both Memory and PostgreSQL adapters.
+- **Event Ingestion Fault Recovery (`P12-04`):** Verified effectively-once processing via durable idempotency, graceful transient error retries, deterministic failure logging, and crash resumption of pending `started` events.
+
+#### B. Automated Standards Posting Pipeline (`P11`)
+
+- **Automated Posting via Application Layer (`P11-05`):** Unified `StandardPostingCapability` in `pkg/spi/standards` orchestrating automated journal entry generation for:
+  - **IFRS 15:** Performance obligation satisfaction, variable consideration adjustments, and contract modifications.
+  - **IFRS 9:** Amortized cost classification, EIR interest accruals, and stage-based ECL provisions.
+  - **IFRS 16:** Right-of-Use amortization, lease liabilities, short-term/low-value exemptions, and lessor accounting.
+  - **IAS 12 / IFRIC 23:** Deferred tax computations, tax rate reconciliation disclosures, and uncertain tax treatments.
+- **Chart of Accounts Validation:** Mandatory verification of target accounts via `MasterDataReader` prior to draft generation.
+- **Deterministic Idempotency:** SHA-1 payload hashing guaranteeing replay safety across all standard transactions.
+
+#### C. Public Subledgers SPI (`P10`)
+
+- **Accounts Receivable & Payable (AR/AP) (`P10-01`):** Open-item tracking, aging analysis, and settlement matching exposed via public SPI with strict separation of commercial workflows from ledger moves.
+- **Fixed Assets (`P10-02`):** Asset register, straight-line and accelerated depreciation schedules, and disposal accounting.
+- **Treasury & Bank Reconciliation (`P10-03`):** Statement parsing, bank transaction matching, uncleared items tracking, and discrepancy resolution.
+- **Foreign Exchange Accounting (`P10-04`):** Transaction currency handling, spot revaluation, and realized/unrealized FX gain/loss recognition under IAS 21.
+
+#### D. Core Accounting Lifecycle (`P9`)
+
+- **Atomic Year-End Closing (`P9-01`):** Single Unit of Work (Single UoW) closing nominal accounts, transferring net income to retained earnings, creating new fiscal year opening entries, and hard-closing the fiscal period.
+- **Cash Flow Statement Dual-Method (`P9-02`):** Direct and Indirect cash flow calculation according to IAS 7 with presentation alignment under IFRS 18.
+- **Adjusting Entries (`P9-03`) & Period Lifecycle (`P9-04`):** Explicit accrual/deferral adjusting entries and audited reopening controls.
+- **Structured Disclosures (`P9-05`):** Multi-version disclosure notes linked to financial statement nodes.
+
+#### E. Architectural Integrity (`P8`)
+
+- **Single Unit of Work Atomic Posting (`P8-04`):** All posting operations execute in an all-or-nothing atomic transaction across storage ports.
+- **Fail-Fast Bootstrap (`P8-05`):** Engine builder fails immediately if required capabilities lack their corresponding persistent storage stores.
+- **Advisory Locks (`P8-03`):** Replaced in-memory mutexes with database-level session advisory locks for multi-instance concurrency safety.
+- **StandardModule Ports SPI (`P8-01`):** Refactored standard modules to depend cleanly on `storage.Ports`.
+
+---
+
+### 3. Deprecations & Compatibility
+
+- **`AccountTypeRevenue` Alias Deprecation (`P8-02`):** `types.AccountTypeRevenue` is formally marked **Deprecated** in favor of `types.AccountTypeIncome` in compliance with [ADR-0008](docs/adr/ADR-0008-account-type-revenue-alias.md). Backward compatibility is fully preserved as a type alias without requiring data migrations.
+- **Root Package Facade Deprecation:** The root `accounting_engine.Engine` facade remains deprecated and will be removed in `v1.0.0`. Consumers must use `pkg/sdk.NewBuilder()`.
+
+---
+
+### 4. Database Migrations
+
+PostgreSQL schema migrations have been extended from 11 to **32 sequential migrations** under `internal/adapters/postgres/migrations/`, adding support for perpetual account balances, analytical dimensions, reporting taxonomies, governance binding, public event idempotency, subledger reconciliation exceptions, and standards tracking.
+
+All migrations follow the zero-downtime Expand/Contract pattern documented in [docs/migration_policy.md](docs/migration_policy.md).
+
+---
+
+### 5. Known Limitations & Boundaries
+
+1. **Authentication & Authorization Boundary:** User authentication and commercial RBAC remain the responsibility of the host system ([ADR-0004](docs/adr/ADR-0004-auth-and-company-context.md)). The engine requires a valid, trusted `ExecutionContext`.
+2. **Rate Limiting Boundary:** Transport rate limiting operates in-memory per service instance. Horizontally scaled clusters should deploy an external API gateway.
+3. **Standards Scope Limits:**
+   - IFRS 9 Hedge Accounting is explicitly deferred to future releases.
+   - IAS 21 supports functional currency transactions and revaluations; foreign subsidiary financial statement translation is deferred.
+   - Local tax calculations and statutory tax returns remain external host responsibilities.
+4. **Memory Storage:** Memory adapter remains strictly non-durable and intended for automated unit testing and CI.
+
+---
+
+### 6. Release Readiness & Go/No-Go Decision
+
+As officially evaluated in [Release Readiness Report v0.2.0](docs/release_readiness_v0.2.0.md):
+
+- **Embedded SDK Library:** **GO (100% Production Ready)**.
+- **Standalone Service Deployment:** **GO (100% Production Ready; previous NO-GO officially lifted)**.
+- **Release Gate Evaluation:** All Release Gates **G1 through G12** evaluated and passed with 100% supporting automated evidence.
+
+---
+
+## Version v0.2.0 (2026-11-17)
+
+**Release Type:** Minor Feature & Operational Hardening Release  
+**Official Module Path:** `github.com/osmai4603-collab/accounting_engine`  
+**Governing Documents:** [Compatibility Policy](docs/compatibility_policy.md), [SDK Developer Guide](docs/sdk_developer_guide.md), [Release Readiness Report v0.2.0](docs/release_readiness_v0.2.0.md), [Disaster Recovery Runbook](docs/operations/runbooks/disaster_recovery_runbook.md).
+
+---
+
+### 1. Overview and Architecture
+
+`v0.2.0` is a major advancement that completes all architectural, accounting, and operational gaps identified after `v0.1.0`. The release delivers complete accounting core workflows (Atomic Year-End Closing, Dual-Method Cash Flows), public SPI subledgers (AR/AP, Fixed Assets, Treasury), automated standards posting with deterministic idempotency for IFRS/IAS modules, operational rate limiting for standalone deployments, and comprehensive fault recovery verification.
+
+Most critically, **the conditional NO-GO advisory on standalone production deployment has been officially lifted** following a successful end-to-end disaster recovery drill on PostgreSQL with verified accounting integrity and zero data loss (RPO = 0).
+
+---
+
+### 2. Key Capabilities in v0.2.0
+
+#### A. Operational Hardening & Disaster Recovery (`P12`)
+- **Automated Live Disaster Recovery Drill (`P12-01`):** Verified full physical backup (`pg_dump -Fc`) and restore (`pg_restore`) against independent PostgreSQL databases. Achieved RTO ≈ 1.49s and RPO = 0 with 100% pass on all 6 core accounting integrity checks (double-entry balance, perpetual balance reconciliation, unbroken audit hash chain, strict RLS tenant isolation, idempotency key preservation, and monotonic sequence continuity).
+- **Transport Rate Limiting for Standalone Service (`P12-02`):** Token Bucket algorithm protecting HTTP (`429 Too Many Requests`) and gRPC (`RESOURCE_EXHAUSTED`) endpoints with bounded memory usage, IP-based pre-auth shielding, and per-tenant authenticated quotas. The embedded SDK core remains 100% lightweight and free of network rate limiting constraints.
+- **Performance Benchmarks & Baseline (`P12-03`):** Official benchmark suite covering draft creation, posting pipeline, concurrent posting, balance sheet generation, cash flow generation, and year-end closing across both Memory and PostgreSQL adapters.
+- **Event Ingestion Fault Recovery (`P12-04`):** Verified effectively-once processing via durable idempotency, graceful transient error retries, deterministic failure logging, and crash resumption of pending `started` events.
+
+#### B. Automated Standards Posting Pipeline (`P11`)
+- **Automated Posting via Application Layer (`P11-05`):** Unified `StandardPostingCapability` in `pkg/spi/standards` orchestrating automated journal entry generation for:
+  - **IFRS 15:** Performance obligation satisfaction, variable consideration adjustments, and contract modifications.
+  - **IFRS 9:** Amortized cost classification, EIR interest accruals, and stage-based ECL provisions.
+  - **IFRS 16:** Right-of-Use amortization, lease liabilities, short-term/low-value exemptions, and lessor accounting.
+  - **IAS 12 / IFRIC 23:** Deferred tax computations, tax rate reconciliation disclosures, and uncertain tax treatments.
+- **Chart of Accounts Validation:** Mandatory verification of target accounts via `MasterDataReader` prior to draft generation.
+- **Deterministic Idempotency:** SHA-1 payload hashing guaranteeing replay safety across all standard transactions.
+
+#### C. Public Subledgers SPI (`P10`)
+- **Accounts Receivable & Payable (AR/AP) (`P10-01`):** Open-item tracking, aging analysis, and settlement matching exposed via public SPI with strict separation of commercial workflows from ledger moves.
+- **Fixed Assets (`P10-02`):** Asset register, straight-line and accelerated depreciation schedules, and disposal accounting.
+- **Treasury & Bank Reconciliation (`P10-03`):** Statement parsing, bank transaction matching, uncleared items tracking, and discrepancy resolution.
+- **Foreign Exchange Accounting (`P10-04`):** Transaction currency handling, spot revaluation, and realized/unrealized FX gain/loss recognition under IAS 21.
+
+#### D. Core Accounting Lifecycle (`P9`)
+- **Atomic Year-End Closing (`P9-01`):** Single Unit of Work (Single UoW) closing nominal accounts, transferring net income to retained earnings, creating new fiscal year opening entries, and hard-closing the fiscal period.
+- **Cash Flow Statement Dual-Method (`P9-02`):** Direct and Indirect cash flow calculation according to IAS 7 with presentation alignment under IFRS 18.
+- **Adjusting Entries (`P9-03`) & Period Lifecycle (`P9-04`):** Explicit accrual/deferral adjusting entries and audited reopening controls.
+- **Structured Disclosures (`P9-05`):** Multi-version disclosure notes linked to financial statement nodes.
+
+#### E. Architectural Integrity (`P8`)
+- **Single Unit of Work Atomic Posting (`P8-04`):** All posting operations execute in an all-or-nothing atomic transaction across storage ports.
+- **Fail-Fast Bootstrap (`P8-05`):** Engine builder fails immediately if required capabilities lack their corresponding persistent storage stores.
+- **Advisory Locks (`P8-03`):** Replaced in-memory mutexes with database-level session advisory locks for multi-instance concurrency safety.
+- **StandardModule Ports SPI (`P8-01`):** Refactored standard modules to depend cleanly on `storage.Ports`.
+
+---
+
+### 3. Deprecations & Compatibility
+
+- **`AccountTypeRevenue` Alias Deprecation (`P8-02`):** `types.AccountTypeRevenue` is formally marked **Deprecated** in favor of `types.AccountTypeIncome` in compliance with [ADR-0008](docs/adr/ADR-0008-account-type-revenue-alias.md). Backward compatibility is fully preserved as a type alias without requiring data migrations.
+- **Root Package Facade Deprecation:** The root `accounting_engine.Engine` facade remains deprecated and will be removed in `v1.0.0`. Consumers must use `pkg/sdk.NewBuilder()`.
+
+---
+
+### 4. Database Migrations
+
+PostgreSQL schema migrations have been extended from 11 to **32 sequential migrations** under `internal/adapters/postgres/migrations/`, adding support for perpetual account balances, analytical dimensions, reporting taxonomies, governance binding, public event idempotency, subledger reconciliation exceptions, and standards tracking.
+
+All migrations follow the zero-downtime Expand/Contract pattern documented in [docs/migration_policy.md](docs/migration_policy.md).
+
+---
+
+### 5. Known Limitations & Boundaries
+
+1. **Authentication & Authorization Boundary:** User authentication and commercial RBAC remain the responsibility of the host system ([ADR-0004](docs/adr/ADR-0004-auth-and-company-context.md)). The engine requires a valid, trusted `ExecutionContext`.
+2. **Rate Limiting Boundary:** Transport rate limiting operates in-memory per service instance. Horizontally scaled clusters should deploy an external API gateway.
+3. **Standards Scope Limits:**
+   - IFRS 9 Hedge Accounting is explicitly deferred to future releases.
+   - IAS 21 supports functional currency transactions and revaluations; foreign subsidiary financial statement translation is deferred.
+   - Local tax calculations and statutory tax returns remain external host responsibilities.
+4. **Memory Storage:** Memory adapter remains strictly non-durable and intended for automated unit testing and CI.
+
+---
+
+### 6. Release Readiness & Go/No-Go Decision
+
+As officially evaluated in [Release Readiness Report v0.2.0](docs/release_readiness_v0.2.0.md):
+
+- **Embedded SDK Library:** **GO (100% Production Ready)**.
+- **Standalone Service Deployment:** **GO (100% Production Ready; previous NO-GO officially lifted)**.
+- **Release Gate Evaluation:** All Release Gates **G1 through G12** evaluated and passed with 100% supporting automated evidence.
+
+---
+
 ## Version v0.1.0 (2026-11-16)
 
 **Release Type:** Initial Developer Preview / Embedded SDK Release  

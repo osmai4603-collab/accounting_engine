@@ -2,6 +2,7 @@ package ias12
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,16 +10,31 @@ import (
 	ias12engine "github.com/osmai4603-collab/accounting_engine/internal/ias12"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	publicreporting "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	apitypes "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/shopspring/decimal"
 )
 
 type fakeApplication struct{ publicapplication.Service }
 type fakeEntryReader struct{ standards.EntryReader }
-type fakeMasterDataReader struct{ standards.MasterDataReader }
+type fakeMasterDataReader struct{}
+
+func (fakeMasterDataReader) GetCompany(context.Context, apitypes.CompanyID) (masterdata.Company, error) {
+	return masterdata.Company{}, nil
+}
+func (fakeMasterDataReader) GetAccount(context.Context, apitypes.CompanyID, apitypes.AccountID) (masterdata.Account, error) {
+	return masterdata.Account{}, nil
+}
+func (fakeMasterDataReader) GetAccountByCode(context.Context, apitypes.CompanyID, string) (masterdata.Account, error) {
+	return masterdata.Account{}, nil
+}
+func (fakeMasterDataReader) GetJournalByCode(context.Context, apitypes.CompanyID, string) (masterdata.Journal, error) {
+	return masterdata.Journal{}, nil
+}
 
 func validPorts() standards.ModulePorts {
 	return standards.NewModulePorts(fakeEntryReader{}, nil, fakeMasterDataReader{}, fakeApplication{})
@@ -137,4 +153,139 @@ func TestModuleProvidesTaxReconciliationDisclosure(t *testing.T) {
 	if len(disclosures) != 1 || disclosures[0].Code != ias12engine.TaxReconciliationDisclosureCode {
 		t.Fatalf("IAS 12 module disclosures = %+v, want tax reconciliation", disclosures)
 	}
+}
+
+type recordingAppService struct {
+	publicapplication.Service
+	created publicapplication.CreateDraftCommand
+	posted  publicapplication.PostEntryCommand
+	entryID apitypes.JournalEntryID
+}
+
+func (r *recordingAppService) CreateDraft(_ context.Context, cmd publicapplication.CreateDraftCommand) (publicapplication.EntryResult, error) {
+	r.created = cmd
+	if r.entryID == (apitypes.JournalEntryID{}) {
+		r.entryID = apitypes.NewJournalEntryID()
+	}
+	return publicapplication.EntryResult{
+		Entry: ledger.JournalEntry{ID: r.entryID, Status: ledger.EntryDraft},
+	}, nil
+}
+
+func (r *recordingAppService) CreateDraftWithID(_ context.Context, cmd publicapplication.CreateDraftCommand, id apitypes.JournalEntryID) (publicapplication.EntryResult, error) {
+	r.created = cmd
+	r.entryID = id
+	return publicapplication.EntryResult{
+		Entry: ledger.JournalEntry{ID: r.entryID, Status: ledger.EntryDraft},
+	}, nil
+}
+
+func (r *recordingAppService) Post(_ context.Context, cmd publicapplication.PostEntryCommand) (publicapplication.EntryResult, error) {
+	r.posted = cmd
+	r.entryID = cmd.EntryID
+	return publicapplication.EntryResult{
+		Entry: ledger.JournalEntry{ID: cmd.EntryID, Status: ledger.EntryPosted},
+	}, nil
+}
+
+func (r *recordingAppService) GetEntry(_ context.Context, query publicapplication.GetEntryQuery) (ledger.JournalEntry, error) {
+	if r.entryID != (apitypes.JournalEntryID{}) && query.EntryID == r.entryID {
+		status := ledger.EntryDraft
+		if r.posted.EntryID == r.entryID {
+			status = ledger.EntryPosted
+		}
+		return ledger.JournalEntry{ID: r.entryID, Status: status}, nil
+	}
+	return ledger.JournalEntry{}, errors.New("not found")
+}
+
+func TestIAS12PostingWorkflow(t *testing.T) {
+	app := &recordingAppService{}
+	ports := standards.NewModulePorts(fakeEntryReader{}, nil, fakeMasterDataReader{}, app)
+	module := &Module{}
+	if err := module.Initialize(context.Background(), ports); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	companyID := uuid.New()
+	journalID := uuid.New()
+	ctx := publicapplication.WithPrincipal(context.Background(), publicapplication.Principal{
+		ActorID:    "tax-accountant",
+		CompanyIDs: []apitypes.CompanyID{apitypes.CompanyID(companyID)},
+	})
+
+	money := func(v string) financialtypes.Money {
+		m, err := financialtypes.NewMoney(decimal.RequireFromString(v), "USD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	accounts := ias12engine.DeferredTaxAccounts{
+		Expense: uuid.New(),
+		DTA:     uuid.New(),
+		DTL:     uuid.New(),
+	}
+
+	t.Run("post deferred tax entry", func(t *testing.T) {
+		input := ias12engine.DeferredTaxEntryInput{
+			CompanyID: companyID,
+			JournalID: journalID,
+			EntryDate: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+			CreatedBy: "tax-accountant",
+			Previous: ias12engine.DeferredTaxPosition{
+				DTA: money("100"),
+				DTL: money("50"),
+			},
+			Closing: ias12engine.DeferredTaxPosition{
+				DTA: money("250"),
+				DTL: money("80"),
+			},
+			Accounts: accounts,
+		}
+
+		result, err := module.PostDeferredTax(ctx, input, "TAX-POS-2026", "idem-tax-def-1")
+		if err != nil {
+			t.Fatalf("PostDeferredTax: %v", err)
+		}
+		if result.Entry.Status != ledger.EntryPosted {
+			t.Errorf("status = %s, want %s", result.Entry.Status, ledger.EntryPosted)
+		}
+		if app.created.ReferenceID != "TAX-POS-2026" {
+			t.Errorf("ReferenceID = %s, want TAX-POS-2026", app.created.ReferenceID)
+		}
+		if app.created.Context.IdempotencyKey != "idem-tax-def-1" {
+			t.Errorf("IdempotencyKey = %s, want idem-tax-def-1", app.created.Context.IdempotencyKey)
+		}
+		if app.created.SourceModule != "ias12" {
+			t.Errorf("SourceModule = %s, want ias12", app.created.SourceModule)
+		}
+	})
+
+	t.Run("post current tax entry", func(t *testing.T) {
+		input := ias12engine.CurrentTaxEntryInput{
+			CompanyID:        companyID,
+			JournalID:        journalID,
+			ExpenseAccountID: uuid.New(),
+			PayableAccountID: uuid.New(),
+			EntryDate:        time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+			CreatedBy:        "tax-accountant",
+			Amount:           money("5000"),
+		}
+
+		result, err := module.PostCurrentTax(ctx, input, "CURR-TAX-2026", "idem-tax-curr-1")
+		if err != nil {
+			t.Fatalf("PostCurrentTax: %v", err)
+		}
+		if result.Entry.Status != ledger.EntryPosted {
+			t.Errorf("status = %s, want %s", result.Entry.Status, ledger.EntryPosted)
+		}
+		if app.created.ReferenceID != "CURR-TAX-2026" {
+			t.Errorf("ReferenceID = %s, want CURR-TAX-2026", app.created.ReferenceID)
+		}
+		if app.created.Context.IdempotencyKey != "idem-tax-curr-1" {
+			t.Errorf("IdempotencyKey = %s, want idem-tax-curr-1", app.created.Context.IdempotencyKey)
+		}
+	})
 }

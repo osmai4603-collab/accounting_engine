@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/ratelimit"
 	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 )
 
@@ -31,6 +32,7 @@ var (
 	ErrInvalidPostgresDSN     = errors.New("invalid PostgreSQL DSN: must begin with postgres:// or postgresql://")
 	ErrProductionAuthRequired = errors.New("production environment requires an explicit secure AUTH_MODE (gateway-hmac, jwt-hs256, or jwt-rs256); anonymous HTTP/gRPC access is prohibited")
 	ErrInvalidAuthConfig      = errors.New("invalid service authentication configuration")
+	ErrInvalidRateLimitConfig = errors.New("invalid rate limit configuration")
 )
 
 // defaultAuthClockSkew bounds accepted credential clock drift.
@@ -50,6 +52,7 @@ type Config struct {
 	DBMaxConnIdle time.Duration
 	DBMaxConnLife time.Duration
 	AllowInMemory bool
+	RateLimit     ratelimit.Config
 
 	// Service boundary authentication. Embedded Library deployments never read
 	// these fields; they apply only to the optional Standalone Service.
@@ -161,8 +164,18 @@ func (c Config) Validate() error {
 	if err := c.validateAuth(); err != nil {
 		return err
 	}
+	if err := c.rateLimitConfig().Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRateLimitConfig, err)
+	}
 
 	return nil
+}
+
+func (c Config) rateLimitConfig() ratelimit.Config {
+	if c.RateLimit == (ratelimit.Config{}) {
+		return ratelimit.DefaultConfig()
+	}
+	return c.RateLimit
 }
 
 // validateAuth enforces fail-closed service boundary authentication. Embedded
@@ -248,6 +261,10 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rateLimit, err := parseRateLimitConfig()
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		AppEnv:           appEnv,
@@ -264,6 +281,7 @@ func LoadConfig() (Config, error) {
 		AuthJWTIssuer:    strings.TrimSpace(os.Getenv("AUTH_JWT_ISSUER")),
 		AuthJWTAudience:  strings.TrimSpace(os.Getenv("AUTH_JWT_AUDIENCE")),
 		AuthClockSkew:    authClockSkew,
+		RateLimit:        rateLimit,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -271,6 +289,48 @@ func LoadConfig() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseRateLimitConfig() (ratelimit.Config, error) {
+	config := ratelimit.DefaultConfig()
+	if raw, exists := os.LookupEnv("RATE_LIMIT_ENABLED"); exists {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return ratelimit.Config{}, fmt.Errorf("%w: RATE_LIMIT_ENABLED must be a boolean", ErrInvalidRateLimitConfig)
+		}
+		config.Enabled = enabled
+	}
+	for _, setting := range []struct {
+		name  string
+		value *int
+	}{
+		{name: "RATE_LIMIT_READ_REQUESTS", value: &config.ReadLimit},
+		{name: "RATE_LIMIT_WRITE_REQUESTS", value: &config.WriteLimit},
+		{name: "RATE_LIMIT_CLIENT_READ_REQUESTS", value: &config.ClientReadLimit},
+		{name: "RATE_LIMIT_CLIENT_WRITE_REQUESTS", value: &config.ClientWriteLimit},
+		{name: "RATE_LIMIT_MAX_KEYS", value: &config.MaxKeys},
+	} {
+		raw := strings.TrimSpace(os.Getenv(setting.name))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return ratelimit.Config{}, fmt.Errorf("%w: %s must be a positive integer", ErrInvalidRateLimitConfig, setting.name)
+		}
+		*setting.value = value
+	}
+	if raw := strings.TrimSpace(os.Getenv("RATE_LIMIT_WINDOW")); raw != "" {
+		window, err := time.ParseDuration(raw)
+		if err != nil {
+			return ratelimit.Config{}, fmt.Errorf("%w: RATE_LIMIT_WINDOW must be a Go duration (for example 1m)", ErrInvalidRateLimitConfig)
+		}
+		config.Window = window
+	}
+	if err := config.Validate(); err != nil {
+		return ratelimit.Config{}, fmt.Errorf("%w: %v", ErrInvalidRateLimitConfig, err)
+	}
+	return config, nil
 }
 
 func parseAuthClockSkew(raw string) (time.Duration, error) {

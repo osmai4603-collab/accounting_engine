@@ -3,12 +3,23 @@ package ifrs16
 import (
 	"context"
 	"fmt"
+	"sync"
 
+	"github.com/google/uuid"
+	internalifrs16 "github.com/osmai4603-collab/accounting_engine/internal/ifrs16"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
+	"github.com/shopspring/decimal"
 )
 
-type Module struct{}
+type Module struct {
+	mu    sync.RWMutex
+	ports standards.ModulePorts
+}
 
 var (
 	_ standards.StandardModule  = (*Module)(nil)
@@ -38,9 +49,9 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 				{ID: "IFRS16-EXEMPTION-SHORTTERM-01", Summary: "Apply the short-term exemption as an alternative accounting treatment: at most a twelve-month term without a purchase option, charging payments to profit or loss straight-line with an accrued/prepaid contra.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/exemptions.go:ExemptibleLease.ExpenseSchedule", TestEvidence: "internal/ifrs16/exemptions_test.go:TestShortTermExemptionEligibilityAndExpense"},
 				{ID: "IFRS16-EXEMPTION-LOWVALUE-01", Summary: "Apply the low-value exemption as an alternative accounting treatment for underlying assets at or below a host-configurable individual-value threshold, charging payments to profit or loss straight-line.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/exemptions.go:NewExemptibleLease", TestEvidence: "internal/ifrs16/exemptions_test.go:TestLowValueExemptionThresholdAndExpense"},
 				{ID: "IFRS16-DISCLOSURE-PAYLOAD-01", Summary: "Build structured IFRS 16 disclosure payloads for the P9-05 framework: lease expense and income from host-supplied balances, and the future lease payments maturity analysis derived from the lessee schedule.", Status: standards.RequirementLimited, Implementation: "internal/ifrs16/disclosures.go:BuildLeaseExpenseDisclosure", TestEvidence: "internal/ifrs16/disclosures_test.go"},
+				{ID: "IFRS16-POSTING-WORKFLOW", Summary: "Post lessee, lessor, and exemption lease drafts through the public application service with real account mappings and idempotency.", Status: standards.RequirementLimited, Implementation: "modules/ifrs16/module.go:PostCommencement", TestEvidence: "modules/ifrs16/module_test.go"},
 			},
 			UnimplementedRequirements: []standards.StandardRequirement{
-				{ID: "IFRS16-POSTING-WORKFLOW", Summary: "Persistent lease workflow with durable retry handling and application-layer posting.", Status: standards.RequirementNotImplemented},
 				{ID: "IFRS16-SALE-LEASEBACK", Summary: "Sale-and-leaseback transactions and subleases.", Status: standards.RequirementNotImplemented},
 				{ID: "IFRS16-DISCLOSURE-PROVIDER", Summary: "Module-level DisclosureProvider retrieval from durable company lease state.", Status: standards.RequirementNotImplemented},
 			},
@@ -134,7 +145,297 @@ func (m *Module) ValidateDependencies(ports standards.ModulePorts) error {
 }
 
 func (m *Module) Initialize(ctx context.Context, ports standards.ModulePorts) error {
-	return m.ValidateDependencies(ports)
+	if err := m.ValidateDependencies(ports); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ports = ports
+	return nil
+}
+
+func (m *Module) PostCommencement(
+	ctx context.Context,
+	contract internalifrs16.LeaseContract,
+	accounts internalifrs16.LeaseAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildCommencementEntry(contract, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-LEASE-COMMENCEMENT",
+		EntityID:       contract.Reference,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostPayment(
+	ctx context.Context,
+	contractRef string,
+	period internalifrs16.SchedulePeriod,
+	accounts internalifrs16.LeaseAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildPaymentEntry(period, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-LEASE-PAYMENT",
+		EntityID:       contractRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostDepreciation(
+	ctx context.Context,
+	contractRef string,
+	period internalifrs16.SchedulePeriod,
+	accounts internalifrs16.LeaseAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildDepreciationEntry(period, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-LEASE-DEPRECIATION",
+		EntityID:       contractRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostLessorOperatingIncome(
+	ctx context.Context,
+	contractRef string,
+	period internalifrs16.StraightLineLeasePeriod,
+	accounts internalifrs16.LessorAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildLessorOperatingIncomeEntry(period, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-LESSOR-OPERATING",
+		EntityID:       contractRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostLessorFinanceCommencement(
+	ctx context.Context,
+	contract internalifrs16.FinanceLeaseContract,
+	accounts internalifrs16.LessorAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildLessorFinanceCommencementEntry(contract, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-LESSOR-FINANCE",
+		EntityID:       contract.Reference,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostExemptionExpense(
+	ctx context.Context,
+	leaseRef string,
+	period internalifrs16.ExemptionPeriod,
+	accounts internalifrs16.ExemptionAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 16: module ports and application service are required")
+	}
+
+	entry, err := internalifrs16.BuildExemptionExpenseEntry(period, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-16-EXEMPTION",
+		EntityID:       leaseRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func convertPostingLines(postingLines []posting.JournalEntryLine) ([]ledger.EntryLine, error) {
+	lines := make([]ledger.EntryLine, 0, len(postingLines))
+	for i, l := range postingLines {
+		debitAmt := l.Debit
+		creditAmt := l.Credit
+		lineCurrency := debitAmt.Currency()
+		if lineCurrency == "" {
+			lineCurrency = creditAmt.Currency()
+		}
+		pubDebit, err := types.NewMoney(debitAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d debit: %w", i, err)
+		}
+		pubCredit, err := types.NewMoney(creditAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d credit: %w", i, err)
+		}
+		txAmt := pubDebit
+		if txAmt.Amount().IsZero() {
+			txAmt = pubCredit
+		}
+		lines = append(lines, ledger.EntryLine{
+			ID:                  types.NewJournalEntryLineID(),
+			AccountID:           types.AccountID(l.AccountID),
+			TransactionAmount:   txAmt,
+			TransactionCurrency: lineCurrency,
+			ExchangeRate:        decimal.NewFromInt(1),
+			FunctionalDebit:     pubDebit,
+			FunctionalCredit:    pubCredit,
+		})
+	}
+	return lines, nil
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {

@@ -19,6 +19,7 @@ type drillSnapshot struct {
 	Lines            map[string]int64             // company -> line count
 	AuditLogs        map[string]int64             // company -> audit log count
 	IdempotencyKeys  map[string]map[string]string // company -> key -> status
+	ReversalKeys     map[string]map[string]string // company -> reversal idempotency key -> payload hash
 	JournalSequence  map[string]int64             // company -> current_sequence
 	MaxEntryNumbers  map[string]int64             // company -> max entry_number
 	FunctionalTotals map[string][2]string         // company -> [Σdebit, Σcredit] minor
@@ -38,6 +39,7 @@ func captureSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool) dril
 		Lines:            map[string]int64{},
 		AuditLogs:        map[string]int64{},
 		IdempotencyKeys:  map[string]map[string]string{},
+		ReversalKeys:     map[string]map[string]string{},
 		JournalSequence:  map[string]int64{},
 		MaxEntryNumbers:  map[string]int64{},
 		FunctionalTotals: map[string][2]string{},
@@ -154,8 +156,29 @@ func captureSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool) dril
 	}
 	keyRows.Close()
 
+	// Reversal idempotency keys live inside the reversing move payload.
+	reversalRows, err := pool.Query(ctx, `
+		SELECT company_id::text, entry->>'idempotency_key', entry->>'idempotency_payload_hash'
+		FROM account_moves
+		WHERE classification = 'reversing' AND entry->>'idempotency_key' <> ''
+		ORDER BY 1, 2`)
+	if err != nil {
+		t.Fatalf("snapshot reversal idempotency keys: %v", err)
+	}
+	for reversalRows.Next() {
+		var company, key, payloadHash string
+		if err := reversalRows.Scan(&company, &key, &payloadHash); err != nil {
+			t.Fatalf("scan reversal idempotency snapshot: %v", err)
+		}
+		if snapshot.ReversalKeys[company] == nil {
+			snapshot.ReversalKeys[company] = map[string]string{}
+		}
+		snapshot.ReversalKeys[company][key] = payloadHash
+	}
+	reversalRows.Close()
+
 	yearRows, err := pool.Query(ctx, `
-		SELECT companies.code, fiscal_years.name, fiscal_years.state
+		SELECT companies.code, fiscal_years.code, fiscal_years.state
 		FROM fiscal_years JOIN companies ON companies.id = fiscal_years.company_id
 		ORDER BY 1, 2`)
 	if err != nil {
@@ -270,7 +293,7 @@ func countUnderRLSContext(
 // filteredUpdateUnderRLSContext runs an UPDATE under the probe role and returns
 // how many rows it actually touched; cross-tenant writes must touch zero rows.
 func filteredUpdateUnderRLSContext(
-	t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID uuid.UUID,
+	t *testing.T, ctx context.Context, pool *pgxpool.Pool, contextCompanyID, targetCompanyID uuid.UUID,
 ) int64 {
 	t.Helper()
 	conn, err := pool.Acquire(ctx)
@@ -285,11 +308,11 @@ func filteredUpdateUnderRLSContext(
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET ROLE")
 	}()
 	if _, err := conn.Exec(ctx,
-		"SELECT set_config('app.current_company_id', $1, false)", companyID.String()); err != nil {
+		"SELECT set_config('app.current_company_id', $1, false)", contextCompanyID.String()); err != nil {
 		t.Fatalf("set RLS context: %v", err)
 	}
 	tag, err := conn.Exec(ctx,
-		`UPDATE companies SET legal_name = legal_name || '-tampered' WHERE id = $1`, companyID)
+		`UPDATE companies SET legal_name = legal_name || '-tampered' WHERE id = $1`, targetCompanyID)
 	if err != nil {
 		t.Fatalf("cross-tenant UPDATE probe: %v", err)
 	}

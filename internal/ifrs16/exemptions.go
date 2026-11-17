@@ -259,6 +259,13 @@ func (b *ExemptionEntryBuilder) BuildExpenseEntry(
 	return buildExemptionExpenseEntry(period, accounts, companyID, journalID, createdBy)
 }
 
+// BuildExemptionExpenseEntry creates a balanced draft for one period's straight-line lease expense.
+func BuildExemptionExpenseEntry(
+	period ExemptionPeriod, accounts ExemptionAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildExemptionExpenseEntry(period, accounts, companyID, journalID, createdBy)
+}
+
 func buildExemptionExpenseEntry(
 	period ExemptionPeriod, accounts ExemptionAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {

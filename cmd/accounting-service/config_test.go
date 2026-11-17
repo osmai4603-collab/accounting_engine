@@ -46,6 +46,9 @@ func clearEnv(t *testing.T) {
 		"APP_ENV", "ENV", "ENVIRONMENT", "DATABASE_DSN", "ALLOW_IN_MEMORY", "GRPC_PORT", "HTTP_PORT",
 		"AUTH_MODE", "AUTH_SECRET", "AUTH_JWT_PUBLIC_KEY", "AUTH_JWT_PUBLIC_KEY_FILE",
 		"AUTH_JWT_ISSUER", "AUTH_JWT_AUDIENCE", "AUTH_CLOCK_SKEW",
+		"RATE_LIMIT_ENABLED", "RATE_LIMIT_READ_REQUESTS", "RATE_LIMIT_WRITE_REQUESTS",
+		"RATE_LIMIT_CLIENT_READ_REQUESTS", "RATE_LIMIT_CLIENT_WRITE_REQUESTS",
+		"RATE_LIMIT_WINDOW", "RATE_LIMIT_MAX_KEYS",
 	} {
 		unsetEnvHelper(t, k)
 	}
@@ -252,6 +255,51 @@ func TestInvalidPortConfigurations(t *testing.T) {
 	setEnvHelper(t, "GRPC_PORT", "-1")
 	if _, err := LoadConfig(); !errors.Is(err, ErrInvalidPort) {
 		t.Fatalf("expected ErrInvalidPort for negative GRPC_PORT, got %v", err)
+	}
+}
+
+func TestRateLimitConfigurationDefaultsAndOverrides(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "test")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig defaults: %v", err)
+	}
+	if !config.RateLimit.Enabled || config.RateLimit.ReadLimit != 60 ||
+		config.RateLimit.WriteLimit != 20 || config.RateLimit.ClientReadLimit != 600 ||
+		config.RateLimit.ClientWriteLimit != 200 || config.RateLimit.Window != time.Minute {
+		t.Fatalf("unexpected rate limit defaults: %+v", config.RateLimit)
+	}
+
+	setEnvHelper(t, "RATE_LIMIT_ENABLED", "false")
+	setEnvHelper(t, "RATE_LIMIT_READ_REQUESTS", "125")
+	setEnvHelper(t, "RATE_LIMIT_WRITE_REQUESTS", "7")
+	setEnvHelper(t, "RATE_LIMIT_CLIENT_READ_REQUESTS", "900")
+	setEnvHelper(t, "RATE_LIMIT_CLIENT_WRITE_REQUESTS", "80")
+	setEnvHelper(t, "RATE_LIMIT_WINDOW", "30s")
+	setEnvHelper(t, "RATE_LIMIT_MAX_KEYS", "500")
+	config, err = LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig overrides: %v", err)
+	}
+	if config.RateLimit.Enabled || config.RateLimit.ReadLimit != 125 ||
+		config.RateLimit.WriteLimit != 7 || config.RateLimit.ClientReadLimit != 900 ||
+		config.RateLimit.ClientWriteLimit != 80 || config.RateLimit.Window != 30*time.Second ||
+		config.RateLimit.MaxKeys != 500 {
+		t.Fatalf("unexpected overridden rate limit configuration: %+v", config.RateLimit)
+	}
+}
+
+func TestInvalidRateLimitConfigurationFailsClosed(t *testing.T) {
+	clearEnv(t)
+	setEnvHelper(t, "APP_ENV", "test")
+	setEnvHelper(t, "DATABASE_DSN", "memory")
+	setEnvHelper(t, "RATE_LIMIT_WRITE_REQUESTS", "0")
+
+	if _, err := LoadConfig(); !errors.Is(err, ErrInvalidRateLimitConfig) {
+		t.Fatalf("expected ErrInvalidRateLimitConfig, got %v", err)
 	}
 }
 

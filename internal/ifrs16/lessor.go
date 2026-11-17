@@ -510,6 +510,27 @@ func (b *LessorEntryBuilder) BuildFinanceReceiptEntry(
 	return buildFinanceReceiptEntry(period, accounts, companyID, journalID, createdBy)
 }
 
+// BuildLessorOperatingIncomeEntry creates a balanced draft for one period's straight-line lease income.
+func BuildLessorOperatingIncomeEntry(
+	period StraightLineLeasePeriod, accounts LessorAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildOperatingIncomeEntry(period, accounts, companyID, journalID, createdBy)
+}
+
+// BuildLessorFinanceCommencementEntry creates a balanced draft derecognizing the asset and recognizing the net investment in lease.
+func BuildLessorFinanceCommencementEntry(
+	contract FinanceLeaseContract, accounts LessorAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildFinanceCommencementEntry(contract, accounts, companyID, journalID, createdBy)
+}
+
+// BuildLessorFinanceReceiptEntry creates a balanced draft for one period's finance lease receipt and finance income.
+func BuildLessorFinanceReceiptEntry(
+	period FinanceLeasePeriod, accounts LessorAccounts, companyID, journalID uuid.UUID, createdBy string,
+) (posting.JournalEntry, error) {
+	return buildFinanceReceiptEntry(period, accounts, companyID, journalID, createdBy)
+}
+
 func buildOperatingInitialDirectCostsEntry(
 	contract OperatingLeaseContract, accounts LessorAccounts, companyID, journalID uuid.UUID, createdBy string,
 ) (posting.JournalEntry, error) {

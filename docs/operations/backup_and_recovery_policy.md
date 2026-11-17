@@ -64,13 +64,18 @@ pg_dump --host="$PGHOST" --username="$PGUSER" --dbname="$PGDATABASE" \
 6. شغّل التحقق من سلسلة التدقيق عبر `governance.VerifyAuditIntegrity` باستخدام Repository موثوق، إن كان ذلك مفعلاً لتلك البيئة؛ لا يوجد أمر CLI عام لهذا الفحص.
 7. سجل النسخة والهدف، إصدار PostgreSQL والتطبيق، مدة الاستعادة، نتائج الفحوصات، الفجوات، القائم بالإجراء والإجراءات التصحيحية. قارن القياس الفعلي بأهداف البيئة المعتمدة.
 
-## 5. حدود اختبارات المستودع
+## 5. حدود اختبارات المستودع وتمرين الاستعادة المكتمل
 
-`TestBackupRestore_IntegrityVerification` في `internal/adapters/postgres/p6_06_observability_and_recovery_test.go` يهيئ مخططين PostgreSQL معزولين، وينشئ بيانات ممثلة في المصدر ثم يعيد إنشاء الشركة والقيد في الوجهة ويتحقق من المخطط والرصيد. لا ينفذ `pg_basebackup` أو `pg_dump` أو `pg_restore` أو PITR، ولا يثبت RPO/RTO أو فحص كل بيانات قاعدة فعلية. تبقى الاستعادة من نسخة فعلية تمريناً تشغيلياً مطلوباً؛ لا يُستبدل بهذا الاختبار.
+1. **تمرين الاستعادة الفعلي (P12-01):** تم إنجاز تمرين استعادة فعلي مؤتمت بالكامل عبر `test/dr/dr_drill_test.go` يستخدم `pg_dump -Fc` و`pg_restore` فعليين على قواعد PostgreSQL مستقلة. أثبت التمرين استعادة المخطط بدون إعادة ترحيل، واجتياز فحوصات السلامة المحاسبية الستة بنسبة 100% (توازن القيود، مطابقة الأرصدة، سلامة سلسلة الهاش، عزل المستأجرين RLS، ثبات مفاتيح Idempotency، وسلامة التسلسلات)، واستئناف عمليات المحرك بالكامل (RTO ≈ 1.5s, RPO = 0). انظر [ARD-P12-01](../ard/ARD-P12-01.md) و [Disaster Recovery Runbook](runbooks/disaster_recovery_runbook.md).
+2. **اختبار التكامل المعزول:** اختبار `TestBackupRestore_IntegrityVerification` في `internal/adapters/postgres/p6_06_observability_and_recovery_test.go` يهيئ مخططين PostgreSQL معزولين لبيان سلامة النقل وإعادة البناء.
 
-تشغيل اختبارات التكامل ذات الصلة:
+تشغيل اختبارات التعافي والاستعادة:
 
 ```bash
+# تمرين الاستعادة الفعلي الكامل (pg_dump / pg_restore وفحوصات السلامة الستة)
+go test -v ./test/dr
+
+# اختبارات التكامل الداخلي
 go test ./internal/adapters/postgres -run 'TestBackupRestore_IntegrityVerification|TestValidateSchemaHealth'
 ```
 

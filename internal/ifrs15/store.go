@@ -130,4 +130,3 @@ func (s *InMemoryContractStore) DeleteContract(ctx context.Context, companyID, i
 	delete(companyMap, id)
 	return nil
 }
-

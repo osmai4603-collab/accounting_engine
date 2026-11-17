@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	servicemiddleware "github.com/osmai4603-collab/accounting_engine/cmd/accounting-service/middleware"
+	"github.com/osmai4603-collab/accounting_engine/internal/ratelimit"
 	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
@@ -448,10 +450,17 @@ func TestHTTPRejectsInvalidTrialBalanceCurrencyBeforeCallingService(t *testing.T
 }
 
 func TestHTTPRateLimitReturnsStructuredError(t *testing.T) {
-	handler := newRequestRateLimitMiddleware(newRequestRateLimiter(),
+	limiter, err := ratelimit.New(ratelimit.Config{
+		Enabled: true, ReadLimit: 1, WriteLimit: 1,
+		ClientReadLimit: 100, ClientWriteLimit: 100, Window: time.Minute, MaxKeys: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := servicemiddleware.RateLimit(limiter,
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	var response *httptest.ResponseRecorder
-	for i := 0; i < httpRateLimitRequests+1; i++ {
+	for i := 0; i < 2; i++ {
 		response = httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/test", nil))
 	}
@@ -462,6 +471,77 @@ func TestHTTPRateLimitReturnsStructuredError(t *testing.T) {
 	if response.Code != http.StatusTooManyRequests || body.Error.Code != "rate_limit_exceeded" ||
 		response.Header().Get("Retry-After") == "" {
 		t.Fatalf("unexpected rate-limit response: status=%d body=%+v headers=%v", response.Code, body, response.Header())
+	}
+}
+
+func TestHTTPClientRateLimitProtectsRequestsBeforeAuthentication(t *testing.T) {
+	config := ratelimit.DefaultConfig()
+	config.ClientReadLimit = 1
+	limiter, err := ratelimit.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := servicemiddleware.ClientIPRateLimit(limiter,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	for i := 0; i < 2; i++ {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+		request.RemoteAddr = "192.0.2.10:1234"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if i == 0 && response.Code != http.StatusNoContent {
+			t.Fatalf("first client request status = %d, want %d", response.Code, http.StatusNoContent)
+		}
+		if i == 1 && (response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "") {
+			t.Fatalf("second client request status/headers = %d %v, want 429 with Retry-After", response.Code, response.Header())
+		}
+	}
+}
+
+func TestHTTPRateLimitUsesTenantIsolationAndExcludesHealth(t *testing.T) {
+	limiter, err := ratelimit.New(ratelimit.Config{
+		Enabled: true, ReadLimit: 1, WriteLimit: 1,
+		ClientReadLimit: 100, ClientWriteLimit: 100, Window: time.Minute, MaxKeys: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := servicemiddleware.RateLimit(limiter,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/trial-balance", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request = request.WithContext(publicapplication.WithPrincipal(request.Context(), publicapplication.Principal{TenantID: "tenant-a"}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("first tenant request status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/trial-balance", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request = request.WithContext(publicapplication.WithPrincipal(request.Context(), publicapplication.Principal{TenantID: "tenant-a"}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeated tenant request status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/trial-balance", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	request = request.WithContext(publicapplication.WithPrincipal(request.Context(), publicapplication.Principal{TenantID: "tenant-b"}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("independent tenant request status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("health request status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
 

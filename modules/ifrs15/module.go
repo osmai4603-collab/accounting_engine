@@ -8,8 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	internalifrs15 "github.com/osmai4603-collab/accounting_engine/internal/ifrs15"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/shopspring/decimal"
 )
@@ -212,6 +215,110 @@ func (m *Module) SetContractStore(store internalifrs15.ContractStore) {
 	m.store = store
 }
 
+// RevenuePostingAdapter adapts standards.StandardPostingCapability to internalifrs15.RevenuePostingApplication.
+type RevenuePostingAdapter struct {
+	poster      standards.StandardPostingCapability
+	standardRef string
+}
+
+func NewRevenuePostingAdapter(poster standards.StandardPostingCapability) *RevenuePostingAdapter {
+	return &RevenuePostingAdapter{
+		poster:      poster,
+		standardRef: "IFRS-15-REV-REC",
+	}
+}
+
+func (a *RevenuePostingAdapter) PostRevenueEntry(
+	ctx context.Context,
+	entry posting.JournalEntry,
+	idempotencyKey string,
+) error {
+	if a == nil || a.poster == nil {
+		return fmt.Errorf("IFRS 15 posting: posting capability is required")
+	}
+
+	lines := make([]ledger.EntryLine, 0, len(entry.Lines))
+	var currency string
+	for i, l := range entry.Lines {
+		debitAmt := l.Debit
+		creditAmt := l.Credit
+		lineCurrency := debitAmt.Currency()
+		if lineCurrency == "" {
+			lineCurrency = creditAmt.Currency()
+		}
+		if currency == "" {
+			currency = lineCurrency
+		}
+
+		pubDebit, err := types.NewMoney(debitAmt.Amount(), lineCurrency)
+		if err != nil {
+			return fmt.Errorf("IFRS 15 posting line %d debit: %w", i, err)
+		}
+		pubCredit, err := types.NewMoney(creditAmt.Amount(), lineCurrency)
+		if err != nil {
+			return fmt.Errorf("IFRS 15 posting line %d credit: %w", i, err)
+		}
+
+		txAmt := pubDebit
+		if txAmt.Amount().IsZero() {
+			txAmt = pubCredit
+		}
+
+		lines = append(lines, ledger.EntryLine{
+			ID:                  types.NewJournalEntryLineID(),
+			AccountID:           types.AccountID(l.AccountID),
+			TransactionAmount:   txAmt,
+			TransactionCurrency: lineCurrency,
+			ExchangeRate:        decimal.NewFromInt(1),
+			FunctionalDebit:     pubDebit,
+			FunctionalCredit:    pubCredit,
+		})
+	}
+
+	entityID := entry.DocumentReference
+	if entityID == "" {
+		entityID = entry.ID.String()
+	}
+
+	req := standards.StandardPostingRequest{
+		EntryID:        types.JournalEntryID(entry.ID),
+		StandardRef:    a.standardRef,
+		EntityID:       entityID,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(entry.CompanyID),
+		JournalID:      types.JournalID(entry.JournalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	_, err := a.poster.PostStandardEntry(ctx, req)
+	return err
+}
+
+// NewRevenueWorkflow creates a production RevenueWorkflow wired to the module's ports and durable store.
+func (m *Module) NewRevenueWorkflow(mapping internalifrs15.RevenueJournalMapping, opts ...internalifrs15.WorkflowOption) (*internalifrs15.RevenueWorkflow, error) {
+	m.mu.RLock()
+	ports := m.ports
+	store := m.store
+	m.mu.RUnlock()
+
+	if ports == nil || ports.Application() == nil {
+		return nil, fmt.Errorf("IFRS 15: module ports and application service are required")
+	}
+
+	adapter := NewRevenuePostingAdapter(ports.Posting())
+	allOpts := make([]internalifrs15.WorkflowOption, 0, len(opts)+1)
+	if store != nil {
+		allOpts = append(allOpts, internalifrs15.WithWorkflowContractStore(store))
+	}
+	allOpts = append(allOpts, opts...)
+
+	return internalifrs15.NewRevenueWorkflow(mapping, adapter, allOpts...)
+}
+
 // GetDisclosures implements standards.DisclosureProvider for IFRS 15.
 // Produces structured disclosures for:
 // 1. IFRS15-REV-DISAGG: Disaggregation of revenue (Point in Time vs Over Time).
@@ -229,10 +336,8 @@ func (m *Module) GetDisclosures(
 		return nil, nil
 	}
 
-	currency := strings.ToUpper(strings.TrimSpace(query.Currency))
-	if currency == "" {
-		currency = "USD"
-	}
+	requestedCurrency := strings.ToUpper(strings.TrimSpace(query.Currency))
+	currency := requestedCurrency
 
 	store := m.ContractStore()
 	var contracts []internalifrs15.Contract
@@ -255,21 +360,26 @@ func (m *Module) GetDisclosures(
 	remainingBreakdown := make([]map[string]any, 0)
 
 	for _, c := range contracts {
-		if query.Currency != "" && !strings.EqualFold(c.Currency, query.Currency) {
+		if requestedCurrency != "" && !strings.EqualFold(c.Currency, requestedCurrency) {
 			continue
 		}
-		if currency == "USD" && c.Currency != "" {
-			currency = c.Currency
+		if currency == "" {
+			currency = strings.ToUpper(c.Currency)
+		} else if !strings.EqualFold(currency, c.Currency) {
+			return nil, fmt.Errorf(
+				"IFRS 15 disclosures: contracts use multiple currencies; specify a currency in the query",
+			)
+		}
+
+		asset, liability, err := c.ContractBalances()
+		if err != nil {
+			return nil, fmt.Errorf("IFRS 15 disclosures: contract %s balances: %w", c.ID, err)
 		}
 
 		totalBilled = totalBilled.Add(c.BilledAmount.Amount())
 		totalRecognized = totalRecognized.Add(c.RecognizedAmount.Amount())
-
-		asset, liability, err := c.ContractBalances()
-		if err == nil {
-			totalContractAssets = totalContractAssets.Add(asset.Amount())
-			totalContractLiabilities = totalContractLiabilities.Add(liability.Amount())
-		}
+		totalContractAssets = totalContractAssets.Add(asset.Amount())
+		totalContractLiabilities = totalContractLiabilities.Add(liability.Amount())
 
 		for _, obl := range c.Obligations {
 			allocated := c.AllocatedPrices[obl.ID].Amount()
@@ -288,16 +398,20 @@ func (m *Module) GetDisclosures(
 				totalRemainingPrice = totalRemainingPrice.Add(remAmount)
 				remainingObligationsCount++
 				remainingBreakdown = append(remainingBreakdown, map[string]any{
-					"contract_id":         c.ID.String(),
-					"obligation_id":       obl.ID.String(),
-					"description":         obl.Description,
-					"pattern":             string(obl.RecognitionPattern),
-					"allocated_amount":    allocated.StringFixed(2),
-					"recognized_amount":   recognized.StringFixed(2),
-					"unsatisfied_amount":  remAmount.StringFixed(2),
+					"contract_id":        c.ID.String(),
+					"obligation_id":      obl.ID.String(),
+					"description":        obl.Description,
+					"pattern":            string(obl.RecognitionPattern),
+					"allocated_amount":   allocated.StringFixed(2),
+					"recognized_amount":  recognized.StringFixed(2),
+					"unsatisfied_amount": remAmount.StringFixed(2),
 				})
 			}
 		}
+	}
+
+	if currency == "" {
+		currency = "USD"
 	}
 
 	totalRevenue := pointInTimeTotal.Add(overTimeTotal)

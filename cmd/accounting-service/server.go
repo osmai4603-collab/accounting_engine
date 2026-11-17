@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	servicemiddleware "github.com/osmai4603-collab/accounting_engine/cmd/accounting-service/middleware"
 	"github.com/osmai4603-collab/accounting_engine/internal/observability"
+	"github.com/osmai4603-collab/accounting_engine/internal/ratelimit"
 	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
@@ -81,6 +83,14 @@ func newHTTPServer(cfg Config, engine sdk.Engine, healthChecks ...func(context.C
 }
 
 func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceauth.Verifier, healthChecks ...func(context.Context) error) *http.Server {
+	limiter, err := ratelimit.New(cfg.rateLimitConfig())
+	if err != nil {
+		log.Printf("Rate limit configuration is invalid; refusing to serve HTTP requests: %v", err)
+		return configureHTTPServer(cfg, &http.Server{
+			Addr:    ":" + cfg.HTTPPort,
+			Handler: configurationErrorHandler{reason: err},
+		})
+	}
 	var health func(context.Context) error
 	if len(healthChecks) > 0 {
 		health = healthChecks[0]
@@ -131,11 +141,11 @@ func newHTTPServerWithVerifier(cfg Config, engine sdk.Engine, verifier serviceau
 		writeHTTPError(w, r, http.StatusNotFound, "not_found", "endpoint not found")
 	})
 
-	var handler http.Handler = mux
+	var handler http.Handler = servicemiddleware.RateLimit(limiter, mux)
 	if boundary := newHTTPAuthBoundary(cfg, verifier); boundary != nil {
 		handler = boundary.middleware(handler)
 	}
-	handler = newRequestRateLimitMiddleware(newRequestRateLimiter(), handler)
+	handler = servicemiddleware.ClientIPRateLimit(limiter, handler)
 
 	return configureHTTPServer(cfg, &http.Server{
 		Addr:              ":" + cfg.HTTPPort,

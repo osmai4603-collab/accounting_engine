@@ -3,12 +3,23 @@ package ifrs9
 import (
 	"context"
 	"fmt"
+	"sync"
 
+	"github.com/google/uuid"
+	internalifrs9 "github.com/osmai4603-collab/accounting_engine/internal/ifrs9"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
+	"github.com/shopspring/decimal"
 )
 
-type Module struct{}
+type Module struct {
+	mu    sync.RWMutex
+	ports standards.ModulePorts
+}
 
 var (
 	_ standards.StandardModule  = (*Module)(nil)
@@ -112,7 +123,134 @@ func (m *Module) ValidateDependencies(ports standards.ModulePorts) error {
 }
 
 func (m *Module) Initialize(ctx context.Context, ports standards.ModulePorts) error {
-	return m.ValidateDependencies(ports)
+	if err := m.ValidateDependencies(ports); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ports = ports
+	return nil
+}
+
+func (m *Module) PostSubsequentMeasurement(
+	ctx context.Context,
+	result internalifrs9.MeasurementResult,
+	accounts internalifrs9.MeasurementAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 9: module ports and application service are required")
+	}
+
+	entry, err := internalifrs9.BuildMeasurementEntry(result, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-9-SUBSEQUENT-MEASUREMENT",
+		EntityID:       result.InstrumentID.String(),
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostVersionedECL(
+	ctx context.Context,
+	result internalifrs9.VersionedECLResult,
+	accounts internalifrs9.ECLCategoryAccounts,
+	companyID, journalID uuid.UUID,
+	createdBy string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IFRS 9: module ports and application service are required")
+	}
+
+	entry, err := internalifrs9.BuildVersionedECLApplicationEntry(result, accounts, companyID, journalID, createdBy)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	entityID := result.InputFingerprint
+	if entityID == "" {
+		entityID = entry.DocumentReference
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IFRS-9-ECL",
+		EntityID:       entityID,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(companyID),
+		JournalID:      types.JournalID(journalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func convertPostingLines(postingLines []posting.JournalEntryLine) ([]ledger.EntryLine, error) {
+	lines := make([]ledger.EntryLine, 0, len(postingLines))
+	for i, l := range postingLines {
+		debitAmt := l.Debit
+		creditAmt := l.Credit
+		lineCurrency := debitAmt.Currency()
+		if lineCurrency == "" {
+			lineCurrency = creditAmt.Currency()
+		}
+		pubDebit, err := types.NewMoney(debitAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d debit: %w", i, err)
+		}
+		pubCredit, err := types.NewMoney(creditAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d credit: %w", i, err)
+		}
+		txAmt := pubDebit
+		if txAmt.Amount().IsZero() {
+			txAmt = pubCredit
+		}
+		lines = append(lines, ledger.EntryLine{
+			ID:                  types.NewJournalEntryLineID(),
+			AccountID:           types.AccountID(l.AccountID),
+			TransactionAmount:   txAmt,
+			TransactionCurrency: lineCurrency,
+			ExchangeRate:        decimal.NewFromInt(1),
+			FunctionalDebit:     pubDebit,
+			FunctionalCredit:    pubCredit,
+		})
+	}
+	return lines, nil
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {

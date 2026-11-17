@@ -304,4 +304,3 @@ func ApplyCumulativeCatchUpModification(
 
 	return updated, entry, nil
 }
-

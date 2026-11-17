@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	serviceinterceptors "github.com/osmai4603-collab/accounting_engine/cmd/accounting-service/interceptors"
+	"github.com/osmai4603-collab/accounting_engine/internal/ratelimit"
 	"github.com/osmai4603-collab/accounting_engine/internal/serviceauth"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
@@ -50,7 +52,7 @@ func RunGRPCServer(ctx context.Context, cfg Config, engine sdk.Engine) error {
 		return err
 	}
 	defer listener.Close()
-	grpcServer := newGRPCServerWithVerifier(engine, verifier)
+	grpcServer := newGRPCServerWithVerifier(engine, verifier, cfg)
 	log.Printf("Starting Standalone Accounting Service gRPC Daemon on %s", addr)
 
 	serverErrors := make(chan error, 1)
@@ -87,15 +89,48 @@ func newGRPCServer(engine sdk.Engine) *grpc.Server {
 
 // newGRPCServerWithVerifier installs authentication interceptors when verifier
 // is non-nil. Reflection streams are protected by the same stream interceptor.
-func newGRPCServerWithVerifier(engine sdk.Engine, verifier serviceauth.Verifier) *grpc.Server {
+func newGRPCServerWithVerifier(engine sdk.Engine, verifier serviceauth.Verifier, configs ...Config) *grpc.Server {
 	options := make([]grpc.ServerOption, 0, 2)
 	requirePrincipal := verifier != nil
+	config := Config{}
+	if len(configs) > 0 {
+		config = configs[0]
+	}
+	limiter, limitErr := ratelimit.New(config.rateLimitConfig())
+	if limitErr != nil {
+		log.Printf("Rate limit configuration is invalid; refusing gRPC requests: %v", limitErr)
+	}
+	var unaryInterceptors []grpc.UnaryServerInterceptor
+	var streamInterceptors []grpc.StreamServerInterceptor
+	if limitErr == nil {
+		unaryInterceptors = append(unaryInterceptors, serviceinterceptors.ClientUnaryRateLimit(limiter))
+		streamInterceptors = append(streamInterceptors, serviceinterceptors.ClientStreamRateLimit(limiter))
+	}
 	if verifier != nil {
 		boundary := &grpcAuthBoundary{verifier: verifier}
-		options = append(options,
-			grpc.UnaryInterceptor(boundary.unaryInterceptor),
-			grpc.StreamInterceptor(boundary.streamInterceptor),
-		)
+		unaryInterceptors = append(unaryInterceptors, boundary.unaryInterceptor)
+		streamInterceptors = append(streamInterceptors, boundary.streamInterceptor)
+	}
+	if limitErr != nil {
+		unaryInterceptors = append(unaryInterceptors, func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
+			return nil, status.Error(codes.Internal, "rate limit configuration unavailable")
+		})
+		streamInterceptors = append(streamInterceptors, func(any, grpc.ServerStream, *grpc.StreamServerInfo, grpc.StreamHandler) error {
+			return status.Error(codes.Internal, "rate limit configuration unavailable")
+		})
+	} else {
+		unaryInterceptors = append(unaryInterceptors, serviceinterceptors.UnaryRateLimit(limiter))
+		streamInterceptors = append(streamInterceptors, serviceinterceptors.StreamRateLimit(limiter))
+	}
+	if len(unaryInterceptors) == 1 {
+		options = append(options, grpc.UnaryInterceptor(unaryInterceptors[0]))
+	} else if len(unaryInterceptors) > 1 {
+		options = append(options, grpc.ChainUnaryInterceptor(unaryInterceptors...))
+	}
+	if len(streamInterceptors) == 1 {
+		options = append(options, grpc.StreamInterceptor(streamInterceptors[0]))
+	} else if len(streamInterceptors) > 1 {
+		options = append(options, grpc.ChainStreamInterceptor(streamInterceptors...))
 	}
 	server := grpc.NewServer(options...)
 	service := &GRPCServer{engine: engine, requirePrincipal: requirePrincipal}

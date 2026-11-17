@@ -168,4 +168,3 @@ func TestFinancingComponent_ValidationErrors(t *testing.T) {
 		t.Errorf("expected ErrInvalidPeriod for inverted customer financing dates, got %v", err)
 	}
 }
-

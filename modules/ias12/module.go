@@ -3,14 +3,22 @@ package ias12
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	ias12engine "github.com/osmai4603-collab/accounting_engine/internal/ias12"
+	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	publicreporting "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
+	"github.com/shopspring/decimal"
 )
 
 type Module struct {
+	mu          sync.RWMutex
+	ports       standards.ModulePorts
 	disclosures standards.DisclosureProvider
 }
 
@@ -44,11 +52,11 @@ func (m *Module) Descriptor() standards.ModuleDescriptor {
 				{ID: "IAS12-CURRENT-TAX-ESTIMATE-01", Summary: "Estimate current tax from a supplied nonnegative taxable-profit base and the profile rate effective at period end.", Status: standards.RequirementLimited, Implementation: "internal/ias12/profile.go:MeasureCurrentTax", TestEvidence: "internal/ias12/profile_test.go"},
 				{ID: "IFRIC23-UNCERTAIN-TAX-TREATMENTS-01", Summary: "Apply probable-acceptance, most-likely-amount, or expected-value measurement to host-assessed uncertain tax treatments, with explicit unit-of-account, examination, provenance, and reassessment evidence.", Status: standards.RequirementLimited, Implementation: "internal/ias12/uncertain.go:MeasureUncertainTaxTreatment", TestEvidence: "internal/ias12/uncertain_test.go"},
 				{ID: "IAS12-TAX-RATE-RECONCILIATION-01", Summary: "Build a structured, versioned tax-rate reconciliation disclosure from a validated IAS 12 reconciliation report.", Status: standards.RequirementLimited, Implementation: "internal/ias12/disclosures.go:BuildTaxReconciliationDisclosure", TestEvidence: "internal/ias12/disclosures_test.go"},
+				{ID: "IAS12-POSTING-WORKFLOW", Summary: "Post deferred tax and current tax drafts through the public application service with real account mappings and idempotency.", Status: standards.RequirementLimited, Implementation: "modules/ias12/module.go:PostDeferredTax", TestEvidence: "modules/ias12/module_test.go:TestIAS12PostingWorkflow"},
 			},
 			UnimplementedRequirements: []standards.StandardRequirement{
 				{ID: "IAS12-CURRENT-TAX-WORKFLOW", Summary: "Full current-tax determination including jurisdictional adjustments, losses, credits, tax-return preparation, and filing.", Status: standards.RequirementNotImplemented},
 				{ID: "IAS12-PRESENTATION-DISCLOSURE", Summary: "Full tax presentation and disclosure workflows beyond the bounded tax-rate reconciliation.", Status: standards.RequirementNotImplemented},
-				{ID: "IAS12-POSTING-WORKFLOW", Summary: "Application-integrated tax workflow with host-verified mapping, authorization, persistence, and posting.", Status: standards.RequirementNotImplemented},
 			},
 			Exclusions: []string{
 				"Local tax law interpretation, tax-return preparation, loss/credit utilization, tax filing, offsetting, and full tax presentation and disclosure.",
@@ -113,7 +121,133 @@ func (m *Module) ValidateDependencies(ports standards.ModulePorts) error {
 }
 
 func (m *Module) Initialize(ctx context.Context, ports standards.ModulePorts) error {
-	return m.ValidateDependencies(ports)
+	if err := m.ValidateDependencies(ports); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ports = ports
+	return nil
+}
+
+func (m *Module) PostDeferredTax(
+	ctx context.Context,
+	input ias12engine.DeferredTaxEntryInput,
+	entityRef string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IAS 12: module ports and application service are required")
+	}
+
+	entry, err := ias12engine.GenerateDeferredTaxEntry(input)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	if entityRef == "" {
+		entityRef = input.CompanyID.String() + "-deferred-tax"
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IAS-12-DEFERRED-TAX",
+		EntityID:       entityRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(input.CompanyID),
+		JournalID:      types.JournalID(input.JournalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func (m *Module) PostCurrentTax(
+	ctx context.Context,
+	input ias12engine.CurrentTaxEntryInput,
+	entityRef string,
+	idempotencyKey string,
+) (publicapplication.EntryResult, error) {
+	m.mu.RLock()
+	ports := m.ports
+	m.mu.RUnlock()
+	if ports == nil || ports.Application() == nil {
+		return publicapplication.EntryResult{}, fmt.Errorf("IAS 12: module ports and application service are required")
+	}
+
+	entry, err := ias12engine.GenerateCurrentTaxEntry(input)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	lines, err := convertPostingLines(entry.Lines)
+	if err != nil {
+		return publicapplication.EntryResult{}, err
+	}
+
+	if entityRef == "" {
+		entityRef = input.CompanyID.String() + "-current-tax"
+	}
+
+	req := standards.StandardPostingRequest{
+		StandardRef:    "IAS-12-CURRENT-TAX",
+		EntityID:       entityRef,
+		IdempotencyKey: idempotencyKey,
+		CompanyID:      types.CompanyID(input.CompanyID),
+		JournalID:      types.JournalID(input.JournalID),
+		EffectiveDate:  entry.EntryDate,
+		PostingDate:    entry.EntryDate,
+		Description:    entry.Reference,
+		Lines:          lines,
+		Classification: ledger.EntryClassRegular,
+	}
+
+	return ports.Posting().PostStandardEntry(ctx, req)
+}
+
+func convertPostingLines(postingLines []posting.JournalEntryLine) ([]ledger.EntryLine, error) {
+	lines := make([]ledger.EntryLine, 0, len(postingLines))
+	for i, l := range postingLines {
+		debitAmt := l.Debit
+		creditAmt := l.Credit
+		lineCurrency := debitAmt.Currency()
+		if lineCurrency == "" {
+			lineCurrency = creditAmt.Currency()
+		}
+		pubDebit, err := types.NewMoney(debitAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d debit: %w", i, err)
+		}
+		pubCredit, err := types.NewMoney(creditAmt.Amount(), lineCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("line %d credit: %w", i, err)
+		}
+		txAmt := pubDebit
+		if txAmt.Amount().IsZero() {
+			txAmt = pubCredit
+		}
+		lines = append(lines, ledger.EntryLine{
+			ID:                  types.NewJournalEntryLineID(),
+			AccountID:           types.AccountID(l.AccountID),
+			TransactionAmount:   txAmt,
+			TransactionCurrency: lineCurrency,
+			ExchangeRate:        decimal.NewFromInt(1),
+			FunctionalDebit:     pubDebit,
+			FunctionalCredit:    pubCredit,
+		})
+	}
+	return lines, nil
 }
 
 func (m *Module) RegisterRules(registrar events.RuleRegistrar) error {

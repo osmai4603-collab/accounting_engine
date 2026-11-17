@@ -17,6 +17,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/pkg/sdk"
 	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/shopspring/decimal"
 )
 
@@ -1022,4 +1023,201 @@ func generalLedgerSummary(report reporting.GeneralLedgerReport) string {
 	}
 	return fmt.Sprintf("%s/%s opening=%s ending=%s [%s]",
 		report.AccountCode, report.AccountName, report.OpeningBalance, report.EndingBalance, out)
+}
+
+// ------------------------------------------------------------- Test: Standards Posting Workflow Parity
+
+func TestContractParity_StandardsPostingWorkflow(t *testing.T) {
+	ForEachAdapter(t, "StandardsPostingWorkflow", func(t *testing.T, h *AdapterHarness, f UnifiedFixture) {
+		ctx := context.Background()
+		poster := standards.NewStandardPoster(h.AppService, h.MasterData)
+
+		cmdCtx := publicapplication.WithPrincipal(ctx, publicapplication.Principal{
+			ActorID:    "parity-auditor",
+			CompanyIDs: []types.CompanyID{f.Company.ID},
+		})
+
+		amount200, err := types.NewMoneyFromString("200.00", f.FunctionalCurrency)
+		if err != nil {
+			t.Fatalf("create amount: %v", err)
+		}
+		zero, err := types.Zero(f.FunctionalCurrency)
+		if err != nil {
+			t.Fatalf("create zero: %v", err)
+		}
+
+		effDate := time.Date(2026, time.January, 20, 0, 0, 0, 0, time.UTC)
+
+		// 1. Verify Chart of Accounts Enforcement: Non-existent account must be rejected
+		fakeAccountID := types.NewAccountID()
+		badLines := []ledger.EntryLine{
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: fakeAccountID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: amount200, FunctionalCredit: zero,
+			},
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.RevenueAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: zero, FunctionalCredit: amount200,
+			},
+		}
+		badReq := standards.StandardPostingRequest{
+			StandardRef:    "IFRS-15-REV-REC",
+			EntityID:       "contract-bad-acc",
+			IdempotencyKey: "bad-acc-key",
+			CompanyID:      f.Company.ID,
+			JournalID:      types.JournalID(f.Journal.ID),
+			EffectiveDate:  effDate,
+			Lines:          badLines,
+		}
+		if _, err := poster.PostStandardEntry(cmdCtx, badReq); !errors.Is(err, standards.ErrAccountNotFound) {
+			t.Fatalf("expected ErrAccountNotFound for fake account ID, got: %v", err)
+		}
+
+		// 2. IFRS 15 Revenue Recognition Posting
+		validLines15 := []ledger.EntryLine{
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.ReceivableAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: amount200, FunctionalCredit: zero,
+			},
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.RevenueAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: zero, FunctionalCredit: amount200,
+			},
+		}
+		revReq := standards.StandardPostingRequest{
+			StandardRef:    "IFRS-15-REV-REC",
+			EntityID:       "CONTRACT-IFRS15-001",
+			IdempotencyKey: "idem-parity-ifrs15-1",
+			CompanyID:      f.Company.ID,
+			JournalID:      types.JournalID(f.Journal.ID),
+			EffectiveDate:  effDate,
+			Description:    "Period revenue milestone",
+			Lines:          validLines15,
+		}
+		revResult, err := poster.PostStandardEntry(cmdCtx, revReq)
+		if err != nil {
+			t.Fatalf("IFRS 15 posting failed: %v", err)
+		}
+		if revResult.Entry.Status != ledger.EntryPosted {
+			t.Fatalf("expected IFRS 15 entry to be posted, got: %s", revResult.Entry.Status)
+		}
+
+		// 3. Strict Idempotency: Re-posting identical request returns same entry
+		revReplay, err := poster.PostStandardEntry(cmdCtx, revReq)
+		if err != nil {
+			t.Fatalf("IFRS 15 idempotent replay failed: %v", err)
+		}
+		if revReplay.Entry.ID != revResult.Entry.ID {
+			t.Fatalf("idempotent replay entry ID = %s, want %s", revReplay.Entry.ID, revResult.Entry.ID)
+		}
+
+		// 4. IFRS 9 ECL Posting
+		validLines9 := []ledger.EntryLine{
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.ExpenseAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: amount200, FunctionalCredit: zero,
+			},
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.ReceivableAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: zero, FunctionalCredit: amount200,
+			},
+		}
+		eclReq := standards.StandardPostingRequest{
+			StandardRef:    "IFRS-9-ECL",
+			EntityID:       "INSTRUMENT-IFRS9-001",
+			IdempotencyKey: "idem-parity-ifrs9-1",
+			CompanyID:      f.Company.ID,
+			JournalID:      types.JournalID(f.Journal.ID),
+			EffectiveDate:  effDate,
+			Description:    "Stage 1 ECL provision",
+			Lines:          validLines9,
+		}
+		eclResult, err := poster.PostStandardEntry(cmdCtx, eclReq)
+		if err != nil {
+			t.Fatalf("IFRS 9 posting failed: %v", err)
+		}
+		if eclResult.Entry.Status != ledger.EntryPosted {
+			t.Fatalf("expected IFRS 9 entry to be posted, got: %s", eclResult.Entry.Status)
+		}
+
+		// 5. IFRS 16 Lease Posting
+		leaseReq := standards.StandardPostingRequest{
+			StandardRef:    "IFRS-16-LEASE",
+			EntityID:       "LEASE-IFRS16-001",
+			IdempotencyKey: "idem-parity-ifrs16-1",
+			CompanyID:      f.Company.ID,
+			JournalID:      types.JournalID(f.Journal.ID),
+			EffectiveDate:  effDate,
+			Description:    "Monthly lease amortization",
+			Lines:          validLines9,
+		}
+		leaseResult, err := poster.PostStandardEntry(cmdCtx, leaseReq)
+		if err != nil {
+			t.Fatalf("IFRS 16 posting failed: %v", err)
+		}
+		if leaseResult.Entry.Status != ledger.EntryPosted {
+			t.Fatalf("expected IFRS 16 entry to be posted, got: %s", leaseResult.Entry.Status)
+		}
+
+		// 6. IAS 12 Tax Posting
+		validLines12 := []ledger.EntryLine{
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.ExpenseAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: amount200, FunctionalCredit: zero,
+			},
+			{
+				ID: types.NewJournalEntryLineID(), AccountID: f.PayableAccount.ID,
+				TransactionAmount: amount200, TransactionCurrency: f.FunctionalCurrency,
+				ExchangeRate: decimal.NewFromInt(1), FunctionalDebit: zero, FunctionalCredit: amount200,
+			},
+		}
+		taxReq := standards.StandardPostingRequest{
+			StandardRef:    "IAS-12-TAX",
+			EntityID:       "TAX-IAS12-001",
+			IdempotencyKey: "idem-parity-ias12-1",
+			CompanyID:      f.Company.ID,
+			JournalID:      types.JournalID(f.Journal.ID),
+			EffectiveDate:  effDate,
+			Description:    "Current period tax accrual",
+			Lines:          validLines12,
+		}
+		taxResult, err := poster.PostStandardEntry(cmdCtx, taxReq)
+		if err != nil {
+			t.Fatalf("IAS 12 posting failed: %v", err)
+		}
+		if taxResult.Entry.Status != ledger.EntryPosted {
+			t.Fatalf("expected IAS 12 entry to be posted, got: %s", taxResult.Entry.Status)
+		}
+
+		// 7. Verify entries retrieved through GetEntry Query
+		queryCtx := publicapplication.Context{
+			Principal: publicapplication.Principal{
+				ActorID:    "parity-auditor",
+				CompanyIDs: []types.CompanyID{f.Company.ID},
+			},
+		}
+		for _, eID := range []types.JournalEntryID{revResult.Entry.ID, eclResult.Entry.ID, leaseResult.Entry.ID, taxResult.Entry.ID} {
+			retrieved, err := h.AppService.GetEntry(cmdCtx, publicapplication.GetEntryQuery{
+				Context:   queryCtx,
+				CompanyID: f.Company.ID,
+				EntryID:   eID,
+			})
+			if err != nil {
+				t.Fatalf("GetEntry %s failed: %v", eID, err)
+			}
+			if retrieved.Status != ledger.EntryPosted {
+				t.Errorf("entry %s status = %s, want %s", eID, retrieved.Status, ledger.EntryPosted)
+			}
+			if len(retrieved.Lines) != 2 {
+				t.Errorf("entry %s lines = %d, want 2", eID, len(retrieved.Lines))
+			}
+		}
+	})
 }

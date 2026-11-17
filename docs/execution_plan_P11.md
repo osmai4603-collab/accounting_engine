@@ -210,11 +210,31 @@
 - **الاعتماديات:** `P11-01`، `P11-02`، `P11-03`، و `P11-04`.
 
 - **معايير القبول:**
-  - [ ] جميع الوحدات المعيارية تُرحّل قيودها عبر مسار Application Layer الرسمي دون SQL مباشر.
-  - [ ] كل قيد يحمل مرجع المعيار ومعرف الكيان ومفتاح عدم التكرار.
-  - [ ] منع تكرار الترحيل لنفس العملية ونفس الفترة (Strict Idempotency).
-  - [ ] فشل الترحيل لا يترك حالة المعيار مؤكدة.
-  - [ ] تكافؤ تام في السلوك والقيود بين PostgreSQL و Memory.
+  - [x] جميع الوحدات المعيارية تُرحّل قيودها عبر مسار Application Layer الرسمي دون SQL مباشر.
+  - [x] كل قيد يحمل مرجع المعيار ومعرف الكيان ومفتاح عدم التكرار.
+  - [x] منع تكرار الترحيل لنفس العملية ونفس الفترة (Strict Idempotency).
+  - [x] فشل الترحيل لا يترك حالة المعيار مؤكدة.
+  - [x] تكافؤ تام في السلوك والقيود بين PostgreSQL و Memory.
+
+- **أدلة الإنجاز والتنفيذ (Implementation & Verification Evidence):**
+  1. **عقد الترحيل الموحد والتحقق المسبق (`pkg/spi/standards/posting.go`):**
+     - تم توحيد واجهة `StandardPostingCapability` وتوفير بنية `StandardPostingRequest` التي تلزم وجود `StandardRef` و `IdempotencyKey` و `Lines` متوازنة دفترياً ($\sum Debit = \sum Credit$).
+     - التحقق المسبق من وجود الحسابات عبر `MasterDataReader.GetAccount` لكل طرف قيد ورفض الحسابات الاصطناعية أو غير الموجودة فوراً قبل إنشاء المسودة.
+     - خلو الحزمة `pkg/spi/standards/` بنسبة 100% من استيراد أي حزم داخلية (`internal/`) أو قديمة (`pkg/spi/legacy/`).
+  2. **ربط الوحدات المعيارية الأربع بمنافذ الترحيل:**
+     - `modules/ifrs15`: ربط `RevenueWorkflow` بمحول `RevenuePostingAdapter` الذي يستدعي `ports.Posting().PostStandardEntry` ذرياً مع حفظ حالة العقد المستمر في `ContractStore` فقط بعد نجاح الترحيل.
+     - `modules/ifrs9`: ربط القياس اللاحق (`PostSubsequentMeasurement`) وتحديث مخصص الخسائر الائتمانية المتوقعة (`PostVersionedECL`) مع الترحيل الرسمي عبر `ports.Posting()`.
+     - `modules/ifrs16`: إضافة مسار الترحيل لجميع سيناريوهات الإيجار (`PostCommencement`, `PostPayment`, `PostDepreciation`, `PostLessorOperatingIncome`, `PostLessorFinanceCommencement`, `PostLessorFinanceReceipt`, `PostExemptionExpense`)، ونقل متطلب الترحيل إلى `SupportedRequirements`.
+     - `modules/ias12`: توفير `PostDeferredTax` و `PostCurrentTax` لترحيل الالتزامات والأصول الضريبية المؤجلة والجارية عبر مسار الترحيل القياسي المنتظم (`ledger.EntryClassRegular`)، وتحديث مصفوفة المتطلبات المدعومة.
+  3. **عدم التكرار الحتمي والذرية (Strict Idempotency & Fault Injection):**
+     - اشتقاق معرّف القيد الحتمي بنظام `UUIDv5/SHA-1` المبني على `CompanyID:StandardRef:IdempotencyKey` عند عدم تزويد معرّف صريح، مما يضمن كشف الترحيل المسبق عبر `GetEntry` وإعادة النتيجة مع وسم `IdempotentReplay: true` دون تكرار إنشاء المسودات أو مضاعفة القيود في دفتر الأستاذ العام.
+     - اختبارات حقن الفشل أثبتت بقاء حالات العقود والمراكز غير مؤكدة عند فشل ترحيل القيد.
+  4. **اختبارات التكافؤ والتكامل:**
+     - اختبارات الوحدة: `pkg/spi/standards/posting_test.go` و `modules/*/*_test.go` بنجاح 100%.
+     - اختبار التكافؤ التعاقدي: `TestContractParity_StandardsPostingWorkflow` في `test/contract_parity/contract_parity_test.go` أثبت تطابق السلوك بنسبة 100% بين `memory` و `postgres` و `external`.
+     - اختبار التكامل الشامل لجميع المعايير: `test/standards/posting_workflow_parity_test.go` بنجاح تام.
+  5. **وثيقة قرار التصميم المعماري (ARD):**
+     - تم توثيق كامل القرارات والتفاصيل في [ARD-P11-05](file:///home/osm/StudioProjects/cashflow_system/accounting_engine/docs/ard/ARD-P11-05.md).
 
 ---
 

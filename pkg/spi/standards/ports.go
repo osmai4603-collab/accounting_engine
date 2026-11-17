@@ -56,6 +56,7 @@ type ModulePorts interface {
 	Balance() BalanceReader
 	MasterData() MasterDataReader
 	Application() publicapplication.Service
+	Posting() StandardPostingCapability
 }
 
 type modulePorts struct {
@@ -85,6 +86,7 @@ func (p *modulePorts) Entries() EntryReader                   { return p.entries
 func (p *modulePorts) Balance() BalanceReader                 { return p.balance }
 func (p *modulePorts) MasterData() MasterDataReader           { return p.masterData }
 func (p *modulePorts) Application() publicapplication.Service { return p.application }
+func (p *modulePorts) Posting() StandardPostingCapability     { return NewStandardPostingCapability(p) }
 
 // ValidateStandardModulePorts reports every port that is structurally required
 // to initialize any standard module. Feature-specific requirements remain the

@@ -175,4 +175,3 @@ func ReassessVariableConsideration(contract Contract, fixedPrice financialtypes.
 	contract.Status = ContractStatusModified
 	return cloneContract(contract), nil
 }
-

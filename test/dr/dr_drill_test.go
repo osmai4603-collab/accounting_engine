@@ -2,9 +2,9 @@ package drdrill
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,9 +38,9 @@ func TestDRDrill_FullRecovery(t *testing.T) {
 	t.Run("03_schema_health", func(t *testing.T) { verifySchemaHealth(t, ctx, env, snapshot) })
 	t.Run("04_double_entry_balance", func(t *testing.T) { verifyDoubleEntryBalance(t, ctx, env) })
 	t.Run("05_balances_match_moves", func(t *testing.T) { verifyBalancesMatchMoves(t, ctx, env, companies) })
-	t.Run("06_audit_hash_chain", func(t *testing.T) { verifyAuditHashChain(t, ctx, env) })
-	t.Run("07_rls_tenant_isolation", func(t *testing.T) { verifyRLSTenantIsolation(t, ctx, env, companies) })
-	t.Run("08_idempotency_keys", func(t *testing.T) { verifyIdempotencyKeys(t, ctx, env) })
+	t.Run("06_audit_hash_chain", func(t *testing.T) { verifyAuditHashChain(t, ctx, env, companies) })
+	t.Run("07_rls_tenant_isolation", func(t *testing.T) { verifyRLSTenantIsolation(t, ctx, env, snapshot, companies) })
+	t.Run("08_idempotency_keys", func(t *testing.T) { verifyIdempotencyKeys(t, ctx, env, snapshot) })
 	t.Run("09_sequences", func(t *testing.T) { verifySequenceContinuity(t, ctx, env) })
 	t.Run("10_snapshot_parity_rpo", func(t *testing.T) { verifySnapshotParity(t, ctx, env, snapshot) })
 	t.Run("11_engine_resumption", func(t *testing.T) { verifyEngineResumption(t, ctx, env, companies) })
@@ -71,8 +71,7 @@ func provisionProductionLikeSource(t *testing.T, ctx context.Context, env *drill
 
 func runBackup(t *testing.T, ctx context.Context, env *drillEnvironment) {
 	t.Helper()
-	backupDir := t.TempDir()
-	backupPath := filepath.Join(backupDir, "dr_drill_backup.dump")
+	backupPath := env.backupDir + "/dr_drill_backup.dump"
 	env.backupPath = backupPath
 
 	start := time.Now()
@@ -116,8 +115,18 @@ func runRestore(t *testing.T, ctx context.Context, env *drillEnvironment) {
 	if env.restoreOut != "" {
 		t.Logf("pg_restore output: %s", env.restoreOut)
 	}
+	env.restored = true
 	t.Logf("pg_restore completed in %s",
 		env.restoreEnd.Sub(env.restoreStart).Round(time.Millisecond))
+}
+
+// requireRestore skips integrity checks when the restore phase did not
+// complete; the parent test has already failed in that case.
+func requireRestore(t *testing.T, env *drillEnvironment) {
+	t.Helper()
+	if !env.restored {
+		t.Skip("restore phase did not complete; integrity verification is not applicable")
+	}
 }
 
 // restoredTargetPool connects to the restored database without mutating it.
@@ -135,6 +144,7 @@ func restoredTargetPool(t *testing.T, ctx context.Context, env *drillEnvironment
 // needs no re-migration before serving traffic.
 func verifySchemaHealth(t *testing.T, ctx context.Context, env *drillEnvironment, snapshot drillSnapshot) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 
@@ -159,6 +169,7 @@ func verifySchemaHealth(t *testing.T, ctx context.Context, env *drillEnvironment
 // units, and every company totals balance as well.
 func verifyDoubleEntryBalance(t *testing.T, ctx context.Context, env *drillEnvironment) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 
@@ -201,6 +212,7 @@ func verifyBalancesMatchMoves(
 	t *testing.T, ctx context.Context, env *drillEnvironment, companies []*drillCompany,
 ) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 	driver := postgres.NewWithPool(pool)
@@ -234,10 +246,37 @@ func verifyBalancesMatchMoves(
 		len(companyPeriods))
 }
 
+// companyAuditRepository adapts the driver's company-scoped audit access to
+// the governance.Repository contract so VerifyAuditIntegrity can walk one
+// company's hash chain.
+type companyAuditRepository struct {
+	driver    *postgres.Driver
+	companyID uuid.UUID
+}
+
+func (r companyAuditRepository) AppendAuditLog(context.Context, governance.FinancialAuditLog) error {
+	return fmt.Errorf("drill audit repository is read-only")
+}
+
+func (r companyAuditRepository) GetLastAuditLog(ctx context.Context) (*governance.FinancialAuditLog, error) {
+	return r.driver.GetLastAuditLogForCompany(ctx, r.companyID)
+}
+
+func (r companyAuditRepository) IterateAuditLogs(
+	ctx context.Context, fromID int64, handler governance.AuditLogHandler,
+) error {
+	return r.driver.IterateAuditLogsForCompany(ctx, r.companyID, fromID, handler)
+}
+
+var _ governance.Repository = companyAuditRepository{}
+
 // verifyAuditHashChain is integrity check 3: the tamper-evident audit hash
 // chain survived the restore with no gaps or recomputed-hash mismatches.
-func verifyAuditHashChain(t *testing.T, ctx context.Context, env *drillEnvironment) {
+func verifyAuditHashChain(
+	t *testing.T, ctx context.Context, env *drillEnvironment, companies []*drillCompany,
+) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 	driver := postgres.NewWithPool(pool)
@@ -249,23 +288,29 @@ func verifyAuditHashChain(t *testing.T, ctx context.Context, env *drillEnvironme
 	if auditLogs == 0 {
 		t.Fatal("restored database contains no audit logs to verify")
 	}
-	verified, err := governance.VerifyAuditIntegrity(ctx, driver)
-	if err != nil {
-		t.Fatalf("restored audit chain verification failed: %v", err)
+	for _, company := range companies {
+		verified, err := governance.VerifyAuditIntegrity(ctx, companyAuditRepository{
+			driver: driver, companyID: company.companyID,
+		})
+		if err != nil {
+			t.Fatalf("restored audit chain for company %s failed verification: %v", company.name, err)
+		}
+		if !verified {
+			t.Fatalf("restored audit chain for company %s is broken", company.name)
+		}
 	}
-	if !verified {
-		t.Fatal("restored audit chain is broken")
-	}
-	t.Logf("audit hash chain verified across %d restored audit logs", auditLogs)
+	t.Logf("audit hash chain verified for %d companies across %d restored audit logs",
+		len(companies), auditLogs)
 }
 
 // verifyRLSTenantIsolation is integrity check 4: after the restore, Row-Level
 // Security still prevents any cross-company access. The probe role is a
 // NOBYPASSRLS non-superuser, so the policies actually apply to it.
 func verifyRLSTenantIsolation(
-	t *testing.T, ctx context.Context, env *drillEnvironment, companies []*drillCompany,
+	t *testing.T, ctx context.Context, env *drillEnvironment, snapshot drillSnapshot, companies []*drillCompany,
 ) {
 	t.Helper()
+	requireRestore(t, env)
 	if len(companies) < 2 {
 		t.Fatal("RLS isolation check requires at least two provisioned companies")
 	}
@@ -273,7 +318,11 @@ func verifyRLSTenantIsolation(
 	defer pool.Close()
 	companyA, companyB := companies[0], companies[1]
 
-	// A tenant-scoped policy table must show only the rows of the context
+	if err := grantProbeAccess(ctx, pool); err != nil {
+		t.Fatalf("grant probe privileges on restored database: %v", err)
+	}
+
+	// Tenant-scoped policy tables must show only the rows of the context
 	// company and hide the other tenant completely.
 	for _, table := range []string{"posting_idempotency", "account_balances"} {
 		visibleToA := countUnderRLSContext(t, ctx, pool, companyA.companyID, table, "company_id = $1", companyA.companyID.String())
@@ -282,6 +331,9 @@ func verifyRLSTenantIsolation(
 		noContext := countUnderRLSContext(t, ctx, pool, companyA.companyID, table, "company_id = $1", "")
 		t.Logf("%s under RLS: A sees %d rows, B sees %d rows, A sees %d of B's rows, no-context sees %d rows",
 			table, visibleToA, visibleToB, crossView, noContext)
+		if table == "account_balances" && visibleToA == 0 {
+			t.Fatalf("RLS regression: company A lost visibility of its own rows in %s", table)
+		}
 		if crossView != 0 {
 			t.Fatalf("RLS leak: company A can observe %d rows of company B in %s", crossView, table)
 		}
@@ -290,28 +342,42 @@ func verifyRLSTenantIsolation(
 		}
 	}
 
-	// The core ledger tables carry FORCE ROW LEVEL SECURITY with no permissive
-	// policy: the probe role must see zero rows even under a company context.
+	// The core ledger tables carry company-scoped policies: the probe role
+	// must see exactly the context company's rows and none of the others.
+	expectedMoves := int64(0)
+	for _, count := range snapshot.Moves[companyA.companyID.String()] {
+		expectedMoves += count
+	}
 	coreTables := []string{"account_moves", "account_move_lines", "financial_audit_logs", "journals"}
 	for _, table := range coreTables {
-		visible := countUnderRLSContext(t, ctx, pool, companyA.companyID, table, "company_id = $1", companyA.companyID.String())
-		if visible != 0 {
-			t.Fatalf("RLS leak: probe role observed %d rows in core table %s", visible, table)
+		ownView := countUnderRLSContext(t, ctx, pool, companyA.companyID, table, "company_id = $1", companyA.companyID.String())
+		crossView := countUnderRLSContext(t, ctx, pool, companyB.companyID, table, "company_id = $1", companyA.companyID.String())
+		noContext := countUnderRLSContext(t, ctx, pool, companyA.companyID, table, "company_id = $1", "")
+		t.Logf("%s under RLS: A sees %d of its own rows, %d of B's rows, %d without context",
+			table, ownView, crossView, noContext)
+		if ownView == 0 {
+			t.Fatalf("RLS regression: company A lost visibility of its own rows in %s", table)
+		}
+		if table == "account_moves" && ownView != expectedMoves {
+			t.Fatalf("RLS row scope for %s: probe sees %d rows, want the pre-backup count %d",
+				table, ownView, expectedMoves)
+		}
+		if crossView != 0 {
+			t.Fatalf("RLS leak: company A can observe %d rows of company B in %s", crossView, table)
+		}
+		if noContext != 0 {
+			t.Fatalf("RLS leak: %d rows visible in %s without a company context", noContext, table)
 		}
 	}
-	t.Log("core ledger tables (account_moves, account_move_lines, financial_audit_logs, journals) deny every " +
-		"non-privileged role; ledger access stays behind the service account")
+	t.Log("restored RLS policies scope every ledger table to the requested company only")
 
 	// Cross-tenant writes must be filtered to zero affected rows.
-	if err := grantProbeAccess(ctx, pool); err != nil {
-		t.Fatalf("grant probe privileges on restored database: %v", err)
-	}
 	var originalName string
 	if err := pool.QueryRow(ctx,
 		"SELECT legal_name FROM companies WHERE id = $1", companyB.companyID).Scan(&originalName); err != nil {
 		t.Fatalf("read company B legal name: %v", err)
 	}
-	if affected := filteredUpdateUnderRLSContext(t, ctx, pool, companyB.companyID); affected != 0 {
+	if affected := filteredUpdateUnderRLSContext(t, ctx, pool, companyA.companyID, companyB.companyID); affected != 0 {
 		t.Fatalf("cross-tenant UPDATE touched %d rows of company B while scoped to company A", affected)
 	}
 	var afterName string
@@ -325,42 +391,58 @@ func verifyRLSTenantIsolation(
 	t.Log("cross-tenant read and write attempts are fully filtered by restored RLS policies")
 }
 
-// verifyIdempotencyKeys is integrity check 5: no idempotency key was lost and
-// every key keeps its recorded operation status after the restore.
-func verifyIdempotencyKeys(t *testing.T, ctx context.Context, env *drillEnvironment) {
+// verifyIdempotencyKeys is integrity check 5: no idempotency key was lost
+// after the restore — both the reversal idempotency keys embedded in
+// reversing moves and the unit-of-work idempotency records.
+func verifyIdempotencyKeys(
+	t *testing.T, ctx context.Context, env *drillEnvironment, source drillSnapshot,
+) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 
-	var keys int64
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM posting_idempotency").Scan(&keys); err != nil {
-		t.Fatalf("count restored idempotency keys: %v", err)
+	var reversalKeys int64
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM account_moves
+		WHERE classification = 'reversing' AND entry->>'idempotency_key' <> ''`).Scan(&reversalKeys); err != nil {
+		t.Fatalf("count restored reversal idempotency keys: %v", err)
 	}
-	if keys == 0 {
-		t.Fatal("restored database lost all posting idempotency keys")
+	if reversalKeys == 0 {
+		t.Fatal("restored database lost all reversal idempotency keys")
 	}
 	var duplicates int64
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM (
-			SELECT company_id, idempotency_key FROM posting_idempotency
-			GROUP BY company_id, idempotency_key HAVING count(*) > 1
+			SELECT company_id, entry->>'idempotency_key' AS key FROM account_moves
+			WHERE classification = 'reversing' AND entry->>'idempotency_key' <> ''
+			GROUP BY company_id, key HAVING count(*) > 1
 		) duplicated`).Scan(&duplicates); err != nil {
-		t.Fatalf("check idempotency key uniqueness: %v", err)
+		t.Fatalf("check reversal idempotency key uniqueness: %v", err)
 	}
 	if duplicates != 0 {
-		t.Fatalf("found %d duplicated idempotency keys after restore", duplicates)
+		t.Fatalf("found %d duplicated reversal idempotency keys after restore", duplicates)
 	}
-	var completed, inFlight int64
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM posting_idempotency WHERE status = 'completed'").Scan(&completed); err != nil {
-		t.Fatalf("count completed idempotency rows: %v", err)
+
+	restored := captureSnapshot(t, ctx, pool)
+	for company, keys := range source.ReversalKeys {
+		restoredKeys, ok := restored.ReversalKeys[company]
+		if !ok || len(restoredKeys) != len(keys) {
+			t.Fatalf("reversal idempotency keys for company %s: source %d keys, restored %d keys",
+				company, len(keys), len(restoredKeys))
+		}
+		for key, payloadHash := range keys {
+			if restoredKeys[key] != payloadHash {
+				t.Fatalf("reversal idempotency key %s/%s payload hash changed across restore", company, key)
+			}
+		}
 	}
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM posting_idempotency WHERE status IN ('started', 'retryable_failure')`).Scan(&inFlight); err != nil {
-		t.Fatalf("count in-flight idempotency rows: %v", err)
+	if len(source.IdempotencyKeys) != len(restored.IdempotencyKeys) {
+		t.Fatalf("unit-of-work idempotency keys changed across restore: source %d companies, restored %d",
+			len(source.IdempotencyKeys), len(restored.IdempotencyKeys))
 	}
-	t.Logf("restored database holds %d idempotency keys (%d completed, %d in-flight); all preserved and unique",
-		keys, completed, inFlight)
+	t.Logf("restored database preserves %d reversal idempotency keys with payload hashes intact; "+
+		"unit-of-work idempotency records identical", reversalKeys)
 }
 
 // verifySequenceContinuity is integrity check 6: journal sequence counters and
@@ -368,6 +450,7 @@ func verifyIdempotencyKeys(t *testing.T, ctx context.Context, env *drillEnvironm
 // cannot reuse or duplicate numbers.
 func verifySequenceContinuity(t *testing.T, ctx context.Context, env *drillEnvironment) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 
@@ -407,6 +490,7 @@ func verifySnapshotParity(
 	t *testing.T, ctx context.Context, env *drillEnvironment, source drillSnapshot,
 ) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 	restored := captureSnapshot(t, ctx, pool)
@@ -422,6 +506,7 @@ func verifyEngineResumption(
 	t *testing.T, ctx context.Context, env *drillEnvironment, companies []*drillCompany,
 ) {
 	t.Helper()
+	requireRestore(t, env)
 	pool := restoredTargetPool(t, ctx, env)
 	defer pool.Close()
 	driver := postgres.NewWithPool(pool)
@@ -448,6 +533,12 @@ func verifyEngineResumption(
 	}
 
 	// 2. New draft on the restored database, in the first period of FY2027.
+	var preResumeSequence int64
+	if err := pool.QueryRow(ctx,
+		"SELECT current_sequence FROM journals WHERE company_id = $1 AND id = $2",
+		company.companyID, company.journalID).Scan(&preResumeSequence); err != nil {
+		t.Fatalf("read pre-resumption journal sequence: %v", err)
+	}
 	date := time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC)
 	amount := "111.00"
 	draft, err := appService.CreateDraft(ctx, publicapplication.CreateDraftCommand{
@@ -467,24 +558,25 @@ func verifyEngineResumption(
 	if err != nil {
 		t.Fatalf("create draft on restored database: %v", err)
 	}
-	if _, err := appService.Post(ctx, postCommandFor(company, draft.Entry.ID)); err != nil {
+	posted, err := appService.Post(ctx, postCommandFor(company, draft.Entry.ID))
+	if err != nil {
 		t.Fatalf("post draft on restored database: %v", err)
 	}
-	if draft.Entry.SequenceNumber != company.maxSequence+1 {
+	if posted.Entry.SequenceNumber != preResumeSequence+1 {
 		t.Fatalf("post-restore sequence number = %d, want %d (continuation of the pre-backup sequence)",
-			draft.Entry.SequenceNumber, company.maxSequence+1)
+			posted.Entry.SequenceNumber, preResumeSequence+1)
 	}
-	company.maxSequence = draft.Entry.SequenceNumber
+	company.maxSequence = posted.Entry.SequenceNumber
 
 	// 3. Idempotent reversal replays identically on the restored database.
 	reversalKey := "dr-drill-resume-reversal"
-	reversed, err := appService.Reverse(ctx, reverseCommandFor(company, draft.Entry.ID, reversalKey,
-		"Approved post-restore correction"))
+	reversalCommand := reverseCommandForDate(company, draft.Entry.ID, reversalKey,
+		"Approved post-restore correction", time.Date(2027, 1, 16, 0, 0, 0, 0, time.UTC))
+	reversed, err := appService.Reverse(ctx, reversalCommand)
 	if err != nil {
 		t.Fatalf("reverse post-restore entry: %v", err)
 	}
-	replayed, err := appService.Reverse(ctx, reverseCommandFor(company, draft.Entry.ID, reversalKey,
-		"Approved post-restore correction"))
+	replayed, err := appService.Reverse(ctx, reversalCommand)
 	if err != nil {
 		t.Fatalf("replay idempotent reversal: %v", err)
 	}
@@ -530,7 +622,6 @@ func verifyEngineResumption(
 	}
 	command := closeCommandFor(company, false)
 	command.FiscalYearID = types.FiscalYearID(company.nextYear.ID)
-	command.NextFiscalYearID = types.FiscalYearID(uuid.Nil)
 	result, err := closer.ExecuteYearEndClosing(ctx, command)
 	if err != nil {
 		t.Fatalf("execute FY2027 close on restored database: %v", err)
@@ -541,7 +632,9 @@ func verifyEngineResumption(
 	if result.OpeningEntryID != (types.JournalEntryID{}) {
 		t.Fatalf("FY2027 close unexpectedly generated an opening entry %s", result.OpeningEntryID)
 	}
-	expectedNet := decimal.RequireFromString(amount)
+	// The new revenue entry was reversed under a strict idempotency key, so
+	// the fiscal year closes with exactly zero net income.
+	expectedNet := decimal.Zero
 	actualNet, err := decimal.NewFromString(result.NetIncome)
 	if err != nil || !actualNet.Equal(expectedNet) {
 		t.Fatalf("FY2027 net income = %q, want %s", result.NetIncome, expectedNet)

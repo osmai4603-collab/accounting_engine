@@ -183,4 +183,3 @@ func TestVariableConsideration_SubsequentReassessment(t *testing.T) {
 		t.Errorf("final price = %s, want 1500.00", finalContract.TransactionPrice.Amount())
 	}
 }
-

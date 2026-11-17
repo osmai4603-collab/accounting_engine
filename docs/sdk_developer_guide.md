@@ -59,6 +59,42 @@ non-nil service object: disabled SDK services return a capability-not-
 implemented error. The standards registry is the public capability-discovery
 surface; it is not a deployment readiness or compliance signal.
 
+## Event delivery and recovery
+
+Event consumers should use at-least-once delivery and supply the same
+`IdempotencyKey` whenever they retry or redeliver an event. The durable identity
+includes the company and source system; equal keys from different sources are
+isolated. A repeated key with the same payload returns the original posted
+entry, while a changed payload is rejected as a conflict. Configure both the
+event idempotency store and posting ports in `storage.Ports.Events` and
+`storage.Ports`; the SDK deliberately has no process-local idempotency fallback.
+
+The durable record distinguishes `started`, `completed`, `retryable_failure`,
+and `terminal_failure`. Transient transaction, dependency, and transport
+failures can be retried with the original key and payload. Deterministic
+posting failures are recorded as terminal and must not be retried with that
+key. If a process stops with a `started` record, a later delivery can recover
+only when the record retains the reserved journal-entry identity and snapshot;
+after the configured wait policy, the SDK checks for an already-posted entry
+before resuming the posting attempt. This avoids creating a second journal
+entry when the original commit succeeded but the response or completion update
+was interrupted.
+
+Invalid event drafts that pass initial envelope checks but fail during draft
+creation or posting are recorded with their rejection reason. Invalid envelope
+fields rejected before a durable claim cannot have a durable failure record.
+Consumers should still treat the returned error as authoritative and avoid
+reusing the key with a corrected payload. Effectively-once posting depends on
+the adapter's durable uniqueness, company scoping, and atomic posting
+guarantees; it is not a claim of exactly-once message delivery.
+
+The recovery and fault-injection scenarios are exercised through the public
+SDK and storage contracts in
+[`event_fault_recovery_test.go`](../test/integration/event_fault_recovery_test.go).
+The in-memory integration adapter verifies the SDK lifecycle; production
+durability and cross-process guarantees must also be validated for the selected
+storage adapter.
+
 ## External consumer journey
 
 The executable consumer examples live in

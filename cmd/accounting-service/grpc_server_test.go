@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/ratelimit"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
@@ -125,6 +126,7 @@ func TestGeneratedProtobufMessageRoundTrip(t *testing.T) {
 		Currency:       "USD",
 		IdempotencyKey: "event-123",
 	}
+
 	encoded, err := proto.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +137,47 @@ func TestGeneratedProtobufMessageRoundTrip(t *testing.T) {
 	}
 	if !proto.Equal(want, got) {
 		t.Fatalf("protobuf round trip mismatch:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestGRPCRateLimitReturnsResourceExhaustedForWrites(t *testing.T) {
+	limitConfig := ratelimit.DefaultConfig()
+	limitConfig.ReadLimit = 10
+	limitConfig.WriteLimit = 1
+	server := newGRPCServerWithVerifier(&serviceTestEngine{}, nil, Config{RateLimit: limitConfig})
+	listener := bufconn.Listen(1 << 20)
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	request := &accountingv1.PostEntryRequest{CompanyId: uuid.NewString()}
+	first := new(accountingv1.PostEntryResponse)
+	if err := conn.Invoke(ctx, "/accounting.v1.AccountingService/PostEntry", request, first); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("first PostEntry status = %s, want InvalidArgument; err=%v", status.Code(err), err)
+	}
+
+	var trailers metadata.MD
+	second := new(accountingv1.PostEntryResponse)
+	err = conn.Invoke(ctx, "/accounting.v1.AccountingService/PostEntry", request, second, grpc.Trailer(&trailers))
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("second PostEntry status = %s, want ResourceExhausted; err=%v", status.Code(err), err)
+	}
+	if values := trailers.Get("retry-after"); len(values) != 1 || values[0] == "" {
+		t.Fatalf("Retry-After trailer = %v, want one value", values)
 	}
 }
 

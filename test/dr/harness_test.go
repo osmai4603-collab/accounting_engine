@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +58,8 @@ type drillEnvironment struct {
 	restoreStart   time.Time
 	restoreEnd     time.Time
 	restoreOut     string
+	restored       bool
+	backupDir      string
 }
 
 // baseAdminDSN resolves the administrative connection string: POSTGRES_URL is
@@ -125,6 +126,13 @@ func prepareDrillEnvironment(t *testing.T, ctx context.Context) *drillEnvironmen
 	env := &drillEnvironment{t: t}
 	env.adminDSN = baseAdminDSN(t)
 
+	backupDir, err := os.MkdirTemp("", "dr_drill_backup_")
+	if err != nil {
+		t.Fatalf("create backup directory: %v", err)
+	}
+	env.backupDir = backupDir
+	t.Cleanup(func() { _ = os.RemoveAll(backupDir) })
+
 	adminPool, err := pgxpool.New(ctx, env.adminDSN)
 	if err != nil {
 		t.Skipf("administrative PostgreSQL connection unavailable: %v", err)
@@ -134,6 +142,10 @@ func prepareDrillEnvironment(t *testing.T, ctx context.Context) *drillEnvironmen
 		t.Skipf("administrative PostgreSQL ping failed: %v", err)
 	}
 	env.adminPool = adminPool
+
+	if err := ensureProbeRole(ctx, adminPool); err != nil {
+		t.Fatalf("prepare RLS probe role: %v", err)
+	}
 
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	env.sourceDB = "dr_drill_" + suffix + "_src"
@@ -207,7 +219,7 @@ func ensureProbeRole(ctx context.Context, adminPool *pgxpool.Pool) error {
 func grantProbeAccess(ctx context.Context, pool *pgxpool.Pool) error {
 	statements := []string{
 		"GRANT USAGE ON SCHEMA public TO " + probeRole,
-		"GRANT SELECT ON ALL TABLES IN SCHEMA public TO " + probeRole,
+		"GRANT SELECT, UPDATE ON ALL TABLES IN SCHEMA public TO " + probeRole,
 	}
 	for _, statement := range statements {
 		if _, err := pool.Exec(ctx, statement); err != nil {
@@ -343,10 +355,17 @@ func postCommandFor(company *drillCompany, entryID types.JournalEntryID) publica
 }
 
 func reverseCommandFor(company *drillCompany, entryID types.JournalEntryID, key, reason string) publicapplication.ReverseEntryCommand {
+	return reverseCommandForDate(company, entryID, key, reason,
+		time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC))
+}
+
+func reverseCommandForDate(
+	company *drillCompany, entryID types.JournalEntryID, key, reason string, effectiveDate time.Time,
+) publicapplication.ReverseEntryCommand {
 	return publicapplication.ReverseEntryCommand{
 		Context: drillPrincipal(company), CompanyID: types.CompanyID(company.companyID),
 		EntryID: entryID, Reason: reason,
-		EffectiveDate:  time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
+		EffectiveDate:  effectiveDate,
 		IdempotencyKey: key,
 	}
 }
