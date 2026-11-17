@@ -1,6 +1,8 @@
 package ias12
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
@@ -38,6 +40,28 @@ func (u *Unit) Reconcile(input TaxReconciliationInput) (TaxReconciliationReport,
 		return TaxReconciliationReport{}, ErrInvalidInput
 	}
 	return Reconcile(input)
+}
+
+func (u *Unit) MeasureUncertainTaxTreatment(
+	treatment UncertainTaxTreatment,
+	asOf time.Time,
+) (UncertainTaxMeasurement, error) {
+	if u == nil {
+		return UncertainTaxMeasurement{}, ErrInvalidInput
+	}
+	return MeasureUncertainTaxTreatment(treatment, asOf)
+}
+
+func (u *Unit) ReassessUncertainTaxTreatment(
+	previous UncertainTaxTreatment,
+	updated UncertainTaxTreatment,
+	asOf time.Time,
+	reason string,
+) (TaxTreatmentReassessment, error) {
+	if u == nil {
+		return TaxTreatmentReassessment{}, ErrInvalidInput
+	}
+	return ReassessUncertainTaxTreatment(previous, updated, asOf, reason)
 }
 
 func (u *Unit) GenerateConfiguredDeferredTaxEntry(

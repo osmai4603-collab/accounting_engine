@@ -6,9 +6,12 @@
 // deductible differences to documented probable-profit support.
 // MeasureCurrentTax calculates a simple estimate from a supplied nonnegative
 // taxable-profit base and the profile rate effective at period end. Local tax
-// law, tax-return computation, credits, loss utilization, uncertain tax
-// positions, offsetting, presentation, and disclosure are outside this scope.
-// Reconcile prepares a tax reconciliation from caller-supplied values.
+// law, tax-return computation, credits, loss utilization, offsetting, and full
+// tax presentation are outside this scope.
+// MeasureUncertainTaxTreatment applies bounded IFRIC 23 measurement to
+// host-assessed outcomes; it does not determine legal facts or tax law.
+// Reconcile prepares a tax reconciliation from caller-supplied values, and
+// BuildTaxReconciliationDisclosure exposes that report as structured data.
 //
 // Configured entry helpers require host-provided mapping and application
 // configuration references, then create journal drafts only. This package

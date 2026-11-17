@@ -25,9 +25,11 @@ func (fixedLGD) LossGivenDefault(GeneralExposure) (decimal.Decimal, error) {
 }
 
 func TestCalculateGeneralECLStageHorizonAndEIRDiscount(t *testing.T) {
-	ead, _ := financialtypes.NewMoney(decimal.NewFromInt(1000), "USD")
+	ledgerBalance, _ := financialtypes.NewMoney(decimal.NewFromInt(900), "USD")
+	undrawn, _ := financialtypes.NewMoney(decimal.NewFromInt(100), "USD")
 	exposure := GeneralExposure{
-		ID: uuid.New(), Stage: Stage1, EAD: ead, RemainingLife: 2 * 365 * 24 * time.Hour,
+		ID: uuid.New(), Stage: Stage1, LedgerBalance: ledgerBalance, UndrawnCommitments: undrawn,
+		RemainingLife:         2 * 365 * 24 * time.Hour,
 		EffectiveInterestRate: decimal.Zero,
 	}
 
@@ -38,6 +40,9 @@ func TestCalculateGeneralECLStageHorizonAndEIRDiscount(t *testing.T) {
 	}
 	if got := stage1.RequiredECL.Amount().StringFixed(2); got != "50.00" {
 		t.Fatalf("Stage 1 ECL = %s, want 50.00", got)
+	}
+	if got := stage1.Exposures[0].EAD.Amount().StringFixed(2); got != "1000.00" {
+		t.Fatalf("calculated EAD = %s, want 1000.00", got)
 	}
 	exposure.Stage = Stage2
 	stage2, err := CalculateGeneralECL(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),

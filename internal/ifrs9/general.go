@@ -22,6 +22,8 @@ type GeneralExposure struct {
 	ID                    uuid.UUID
 	Stage                 Stage
 	EAD                   financialtypes.Money
+	LedgerBalance         financialtypes.Money
+	UndrawnCommitments    financialtypes.Money
 	RemainingLife         time.Duration
 	EffectiveInterestRate decimal.Decimal
 }
@@ -83,6 +85,7 @@ type GeneralExposureResult struct {
 	ExposureID uuid.UUID
 	Stage      Stage
 	Horizon    time.Duration
+	EAD        financialtypes.Money
 	PD         decimal.Decimal
 	LGD        decimal.Decimal
 	Discount   decimal.Decimal
@@ -118,19 +121,21 @@ func CalculateGeneralECL(
 	result := GeneralCalculationResult{AsOf: asOf.UTC(), Exposures: make([]GeneralExposureResult, 0, len(exposures))}
 	seen := make(map[uuid.UUID]struct{}, len(exposures))
 	for _, exposure := range exposures {
-		if exposure.ID == uuid.Nil || exposure.EAD.Currency() == "" || exposure.EAD.IsNegative() ||
+		ead, err := generalExposureEAD(exposure)
+		if err != nil || exposure.ID == uuid.Nil || ead.Currency() == "" || ead.IsNegative() ||
 			exposure.RemainingLife <= 0 ||
 			(exposure.Stage != Stage1 && exposure.Stage != Stage2 && exposure.Stage != Stage3) ||
 			!exposure.EffectiveInterestRate.GreaterThan(decimal.NewFromInt(-1)) {
 			return GeneralCalculationResult{}, fmt.Errorf("%w: %s", ErrInvalidGeneralExposure, exposure.ID)
 		}
+		exposure.EAD = ead
 		if _, ok := seen[exposure.ID]; ok {
 			return GeneralCalculationResult{}, fmt.Errorf("%w: duplicate exposure %s", ErrInvalidGeneralExposure, exposure.ID)
 		}
 		seen[exposure.ID] = struct{}{}
 		if currency == "" {
-			currency = exposure.EAD.Currency()
-		} else if currency != exposure.EAD.Currency() {
+			currency = ead.Currency()
+		} else if currency != ead.Currency() {
 			return GeneralCalculationResult{}, financialtypes.ErrCurrencyMismatch
 		}
 		horizon := exposure.RemainingLife
@@ -152,7 +157,7 @@ func CalculateGeneralECL(
 		if !fraction(pd) || !fraction(lgd) || !discount.IsPositive() {
 			return GeneralCalculationResult{}, ErrInvalidRiskEstimate
 		}
-		amount := exposure.EAD.Amount().Mul(pd).Mul(lgd).Mul(discount)
+		amount := ead.Amount().Mul(pd).Mul(lgd).Mul(discount)
 		ecl, err := financialtypes.NewMoney(amount, currency)
 		if err != nil {
 			return GeneralCalculationResult{}, err
@@ -161,7 +166,7 @@ func CalculateGeneralECL(
 		total = total.Add(ecl.Amount())
 		result.Exposures = append(result.Exposures, GeneralExposureResult{
 			ExposureID: exposure.ID, Stage: exposure.Stage, Horizon: horizon,
-			PD: pd, LGD: lgd, Discount: discount, ECL: ecl,
+			EAD: ead, PD: pd, LGD: lgd, Discount: discount, ECL: ecl,
 		})
 	}
 	if currency == "" {
@@ -170,6 +175,28 @@ func CalculateGeneralECL(
 	result.RequiredECL, _ = financialtypes.NewMoney(total, currency)
 	result.RequiredECL = result.RequiredECL.RoundForPosting()
 	return result, nil
+}
+
+func generalExposureEAD(exposure GeneralExposure) (financialtypes.Money, error) {
+	hasLedgerBalance := exposure.LedgerBalance.Currency() != ""
+	hasUndrawnCommitments := exposure.UndrawnCommitments.Currency() != ""
+	if hasLedgerBalance != hasUndrawnCommitments {
+		return financialtypes.Money{}, ErrInvalidGeneralExposure
+	}
+	if hasLedgerBalance {
+		ead, err := CalculateEAD(exposure.LedgerBalance, exposure.UndrawnCommitments)
+		if err != nil {
+			return financialtypes.Money{}, err
+		}
+		if exposure.EAD.Currency() != "" && !exposure.EAD.Equal(ead) {
+			return financialtypes.Money{}, ErrInvalidGeneralExposure
+		}
+		return ead, nil
+	}
+	if exposure.EAD.Currency() == "" || exposure.EAD.IsNegative() {
+		return financialtypes.Money{}, ErrInvalidGeneralExposure
+	}
+	return exposure.EAD, nil
 }
 
 // DiscountAtEIR discounts at a single expected-loss date represented by the

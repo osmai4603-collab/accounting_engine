@@ -53,14 +53,16 @@ type PerformanceObligation struct {
 }
 
 type Contract struct {
-	ID               uuid.UUID
-	CustomerID       uuid.UUID
-	Currency         string
-	TransactionPrice financialtypes.Money
-	Obligations      []PerformanceObligation
-	AllocatedPrices  map[uuid.UUID]financialtypes.Money
-	BilledAmount     financialtypes.Money
-	RecognizedAmount financialtypes.Money
+	ID               uuid.UUID                          `json:"id"`
+	CustomerID       uuid.UUID                          `json:"customer_id"`
+	Currency         string                             `json:"currency"`
+	TransactionPrice financialtypes.Money               `json:"transaction_price"`
+	Obligations      []PerformanceObligation            `json:"obligations"`
+	AllocatedPrices  map[uuid.UUID]financialtypes.Money `json:"allocated_prices"`
+	BilledAmount     financialtypes.Money               `json:"billed_amount"`
+	RecognizedAmount financialtypes.Money               `json:"recognized_amount"`
+	Status           ContractStatus                     `json:"status,omitempty"`
+	RecognizedPrices map[uuid.UUID]financialtypes.Money `json:"recognized_prices,omitempty"`
 }
 
 type RevenueScheduleEntry struct {
@@ -123,6 +125,10 @@ func NewContract(id, customerID uuid.UUID, transactionPrice financialtypes.Money
 		return Contract{}, err
 	}
 	copied := append([]PerformanceObligation(nil), obligations...)
+	recognizedPrices := make(map[uuid.UUID]financialtypes.Money, len(obligations))
+	for _, obligation := range obligations {
+		recognizedPrices[obligation.ID] = zero
+	}
 	return Contract{
 		ID:               id,
 		CustomerID:       customerID,
@@ -132,6 +138,8 @@ func NewContract(id, customerID uuid.UUID, transactionPrice financialtypes.Money
 		AllocatedPrices:  allocations,
 		BilledAmount:     zero,
 		RecognizedAmount: zero,
+		Status:           ContractStatusActive,
+		RecognizedPrices: recognizedPrices,
 	}, nil
 }
 
@@ -180,6 +188,11 @@ func (c Contract) Validate() error {
 	if c.BilledAmount.GreaterThan(c.TransactionPrice) ||
 		c.RecognizedAmount.GreaterThan(c.TransactionPrice) {
 		return ErrRecognitionExceeded
+	}
+	if c.Status != "" && c.Status != ContractStatusDraft &&
+		c.Status != ContractStatusActive && c.Status != ContractStatusModified &&
+		c.Status != ContractStatusSatisfied {
+		return ErrInvalidContract
 	}
 	return nil
 }
@@ -404,6 +417,9 @@ func (c Contract) ApplyRecognition(amount financialtypes.Money) (Contract, error
 		return Contract{}, ErrRecognitionExceeded
 	}
 	c.RecognizedAmount = recognized
+	if c.RecognizedAmount.Equal(c.TransactionPrice) {
+		c.Status = ContractStatusSatisfied
+	}
 	return c, nil
 }
 
@@ -480,4 +496,21 @@ func BuildRecognitionJournal(c Contract, amount financialtypes.Money, journalID 
 
 func dateOnly(value time.Time) time.Time {
 	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func cloneContract(contract Contract) Contract {
+	contract.Obligations = append([]PerformanceObligation(nil), contract.Obligations...)
+	allocations := make(map[uuid.UUID]financialtypes.Money, len(contract.AllocatedPrices))
+	for id, amount := range contract.AllocatedPrices {
+		allocations[id] = amount
+	}
+	contract.AllocatedPrices = allocations
+	if contract.RecognizedPrices != nil {
+		rec := make(map[uuid.UUID]financialtypes.Money, len(contract.RecognizedPrices))
+		for id, amount := range contract.RecognizedPrices {
+			rec[id] = amount
+		}
+		contract.RecognizedPrices = rec
+	}
+	return contract
 }

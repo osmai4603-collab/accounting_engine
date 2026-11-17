@@ -87,3 +87,35 @@ func TestVersionedGeneralECLWorkflowIsBoundedAndDoesNotPost(t *testing.T) {
 	}
 	t.Fatal("versioned general ECL workflow not declared")
 }
+
+func TestDescriptorDeclaresClassificationHedgeExclusionAndApplicationPosting(t *testing.T) {
+	descriptor := (&Module{}).Descriptor()
+	var classificationSupported, hedgeDeferred bool
+	for _, requirement := range descriptor.Profile.SupportedRequirements {
+		if requirement.ID == "IFRS9-CLASSIFICATION-MEASUREMENT-01" {
+			classificationSupported = requirement.Status == standards.RequirementLimited
+		}
+	}
+	for _, requirement := range descriptor.Profile.UnimplementedRequirements {
+		if requirement.ID == "IFRS9-HEDGE-ACCOUNTING" &&
+			requirement.Status == standards.RequirementNotImplemented {
+			hedgeDeferred = true
+		}
+	}
+	if !classificationSupported || !hedgeDeferred {
+		t.Fatalf("IFRS 9 classification support or hedge exclusion is missing: %+v", descriptor.Profile)
+	}
+	for _, workflowID := range []string{"financial-asset-subsequent-measurement", "versioned-general-ecl-posting"} {
+		var found bool
+		for _, workflow := range descriptor.Workflows {
+			if workflow.ID != workflowID {
+				continue
+			}
+			found = workflow.ProducesJournalEntries && workflow.RequiresJournalMapping &&
+				workflow.ApplicationContract == standards.ApplicationLedgerService
+		}
+		if !found {
+			t.Errorf("workflow %q is not wired to the application posting contract", workflowID)
+		}
+	}
+}

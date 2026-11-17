@@ -237,6 +237,9 @@ type PermanentDifference struct {
 	Amount financialtypes.Money
 }
 
+// TaxReconciliationInput expects CurrentTaxExpense and DeferredTaxExpense to
+// include the recognized effects relevant to the period. UncertainTaxTreatments
+// are supplementary disclosure detail and are not added to those totals.
 type TaxReconciliationInput struct {
 	Period                    MeasurementPeriod
 	AccountingProfitBeforeTax financialtypes.Money
@@ -244,17 +247,29 @@ type TaxReconciliationInput struct {
 	PermanentDifferences      []PermanentDifference
 	CurrentTaxExpense         financialtypes.Money
 	DeferredTaxExpense        financialtypes.Money
+	UncertainTaxTreatments    []UncertainTaxMeasurement
 }
 
 type TaxReconciliationReport struct {
+	Period                     MeasurementPeriod
 	AccountingProfitBeforeTax  financialtypes.Money
 	StatutoryTaxRate           decimal.Decimal
 	ExpectedTaxExpense         financialtypes.Money
 	PermanentDifferencesTax    financialtypes.Money
+	PermanentDifferences       []TaxReconciliationLine
+	CurrentTaxExpense          financialtypes.Money
+	DeferredTaxExpense         financialtypes.Money
+	UncertainTaxTreatments     []UncertainTaxMeasurement
 	TemporaryDifferencesChange financialtypes.Money
 	EffectiveTaxExpense        financialtypes.Money
 	EffectiveTaxRate           decimal.Decimal
 	EffectiveTaxRateAvailable  bool
+}
+
+type TaxReconciliationLine struct {
+	Description string
+	Amount      financialtypes.Money
+	TaxEffect   financialtypes.Money
 }
 
 func Reconcile(input TaxReconciliationInput) (TaxReconciliationReport, error) {
@@ -279,6 +294,7 @@ func Reconcile(input TaxReconciliationInput) (TaxReconciliationReport, error) {
 	}
 
 	permanentTax := decimal.Zero
+	permanentDifferences := make([]TaxReconciliationLine, 0, len(input.PermanentDifferences))
 	for _, difference := range input.PermanentDifferences {
 		if strings.TrimSpace(difference.Description) == "" {
 			return TaxReconciliationReport{}, ErrInvalidInput
@@ -289,7 +305,28 @@ func Reconcile(input TaxReconciliationInput) (TaxReconciliationReport, error) {
 		if difference.Amount.Currency() != currency {
 			return TaxReconciliationReport{}, ErrCurrencyMismatch
 		}
-		permanentTax = permanentTax.Add(difference.Amount.Amount().Mul(input.StatutoryRate.Value))
+		taxEffect := difference.Amount.Amount().Mul(input.StatutoryRate.Value)
+		taxEffectMoney, err := financialtypes.NewMoney(taxEffect, currency)
+		if err != nil {
+			return TaxReconciliationReport{}, err
+		}
+		permanentDifferences = append(permanentDifferences, TaxReconciliationLine{
+			Description: strings.TrimSpace(difference.Description),
+			Amount:      difference.Amount,
+			TaxEffect:   taxEffectMoney,
+		})
+		permanentTax = permanentTax.Add(taxEffect)
+	}
+	uncertainTreatments := append([]UncertainTaxMeasurement(nil), input.UncertainTaxTreatments...)
+	seenTreatments := make(map[string]struct{}, len(uncertainTreatments))
+	for _, treatment := range uncertainTreatments {
+		if err := validateUncertainTaxMeasurement(treatment, currency); err != nil {
+			return TaxReconciliationReport{}, err
+		}
+		if _, exists := seenTreatments[treatment.TreatmentID]; exists {
+			return TaxReconciliationReport{}, fmt.Errorf("%w: duplicate uncertain tax treatment %q", ErrInvalidInput, treatment.TreatmentID)
+		}
+		seenTreatments[treatment.TreatmentID] = struct{}{}
 	}
 
 	expectedTax := input.AccountingProfitBeforeTax.Amount().Mul(input.StatutoryRate.Value)
@@ -307,10 +344,15 @@ func Reconcile(input TaxReconciliationInput) (TaxReconciliationReport, error) {
 		return TaxReconciliationReport{}, err
 	}
 	report := TaxReconciliationReport{
+		Period:                     input.Period,
 		AccountingProfitBeforeTax:  input.AccountingProfitBeforeTax,
 		StatutoryTaxRate:           input.StatutoryRate.Value,
 		ExpectedTaxExpense:         expectedMoney,
 		PermanentDifferencesTax:    permanentMoney,
+		PermanentDifferences:       permanentDifferences,
+		CurrentTaxExpense:          input.CurrentTaxExpense,
+		DeferredTaxExpense:         input.DeferredTaxExpense,
+		UncertainTaxTreatments:     uncertainTreatments,
 		TemporaryDifferencesChange: input.DeferredTaxExpense,
 		EffectiveTaxExpense:        effectiveMoney,
 	}

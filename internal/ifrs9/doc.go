@@ -1,20 +1,20 @@
-// Package ifrs9 provides bounded ECL measurement APIs for trade receivables
-// and caller-supplied general-approach financial-asset exposures.
+// Package ifrs9 provides bounded financial-asset classification, subsequent
+// measurement, and ECL APIs, in addition to trade-receivable provision matrices.
+//
+// HostClassification validates final Business Model/SPPI references supplied
+// by the host but does not make those judgments. CalculateEffectiveInterestRate
+// derives EIR from dated contractual cash flows; MeasureSubsequentPeriod applies
+// the approved category, effective interest, stage-3 net-basis interest, and
+// category-specific fair-value destinations.
 //
 // CalculateSimplifiedECL applies lifetime matrix rates to receivables.
-// CalculateGeneralECL applies 12-month PD to Stage 1 and lifetime PD to
-// Stages 2 and 3, combines scenario-weighted PD with LGD and EAD, and discounts
-// expected losses using the effective interest rate. Model implementations
-// provide risk estimates and remain responsible for forward-looking scenario
-// support.
-// EvaluateVersionedECL calculates the same bounded general-approach measure
-// using explicit, versioned assumptions and source references, and returns a
-// fingerprint of all calculation inputs. Its host supplies stage evidence and
-// source snapshot identity; the function does not persist inputs or post.
+// CalculateGeneralECL and EvaluateVersionedECL apply scenario-weighted PD and
+// LGD to EAD, which can be computed from ledger balances and undrawn commitments.
+// The versioned API records provenance and category-specific allowance changes.
+// Journal drafts can be posted through the public application service using
+// PostJournalEntryThroughApplication.
 //
-// Unit loads receivables and allowance balances through explicit sources and
-// produces a balanced adjustment draft. It never substitutes a current
-// allowance for a requested historical balance; it does not persist or post.
-// No API in this package establishes IFRS 9 compliance or validates the
-// professional judgment behind host-supplied classifications and estimates.
+// The host remains responsible for source data, classification, staging
+// evidence, and risk assumptions. No API in this package establishes full
+// IFRS 9 compliance or replaces independent professional review.
 package ifrs9

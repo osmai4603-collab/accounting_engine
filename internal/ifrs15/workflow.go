@@ -40,18 +40,34 @@ type FiveStepAssessment struct {
 	DistinctObligationIDs       []uuid.UUID
 	TransactionPrice            financialtypes.Money
 	Obligations                 []PerformanceObligation
+
+	// Extended P11-01 assessments:
+	VariableEstimate   *VariableConsiderationEstimate
+	FinancingComponent *FinancingComponent
 }
 
 // NewAssessedContract validates the supported five-step inputs, then applies
-// relative standalone-selling-price allocation. Variable consideration and
-// significant financing components are rejected rather than estimated.
+// relative standalone-selling-price allocation. Supports fixed transaction price,
+// variable consideration (IFRS 15.56-58), and significant financing (IFRS 15.60-65).
 func NewAssessedContract(input FiveStepAssessment) (Contract, error) {
 	if input.ContractID == uuid.Nil || input.CustomerID == uuid.Nil ||
 		!input.Approved || !input.EnforceableRightsIdentified ||
 		!input.PaymentTermsIdentified || !input.CommercialSubstance ||
-		!input.CollectibilityProbable || !input.FixedTransactionPrice ||
-		input.HasVariableConsideration || input.HasSignificantFinancing {
+		!input.CollectibilityProbable {
 		return Contract{}, ErrRevenueAssessmentRequired
+	}
+	if !input.FixedTransactionPrice && !input.HasVariableConsideration {
+		return Contract{}, ErrRevenueAssessmentRequired
+	}
+	if input.HasVariableConsideration {
+		if input.VariableEstimate == nil || input.VariableEstimate.FinalAmount.Currency() == "" {
+			return Contract{}, ErrRevenueAssessmentRequired
+		}
+	}
+	if input.HasSignificantFinancing {
+		if input.FinancingComponent == nil {
+			return Contract{}, ErrRevenueAssessmentRequired
+		}
 	}
 	if len(input.DistinctObligationIDs) != len(input.Obligations) || len(input.Obligations) == 0 {
 		return Contract{}, fmt.Errorf("%w: all performance obligations must be host-assessed as distinct", ErrRevenueAssessmentRequired)
@@ -75,7 +91,24 @@ func NewAssessedContract(input FiveStepAssessment) (Contract, error) {
 	if len(distinct) != 0 {
 		return Contract{}, ErrRevenueAssessmentRequired
 	}
-	contract, err := NewContract(input.ContractID, input.CustomerID, input.TransactionPrice, input.Obligations)
+
+	effectivePrice := input.TransactionPrice
+	if input.HasVariableConsideration && input.VariableEstimate != nil {
+		if input.FixedTransactionPrice && input.TransactionPrice.Amount().IsPositive() {
+			var err error
+			effectivePrice, err = input.TransactionPrice.Add(input.VariableEstimate.FinalAmount)
+			if err != nil {
+				return Contract{}, err
+			}
+		} else {
+			effectivePrice = input.VariableEstimate.FinalAmount
+		}
+	}
+	if input.HasSignificantFinancing && input.FinancingComponent != nil {
+		effectivePrice = input.FinancingComponent.TransactionPrice
+	}
+
+	contract, err := NewContract(input.ContractID, input.CustomerID, effectivePrice, input.Obligations)
 	if err != nil {
 		return Contract{}, err
 	}
@@ -138,11 +171,24 @@ type postedRecognition struct {
 	entry    posting.JournalEntry
 }
 
-// RevenueWorkflow performs only measured recognition and commits in-memory
+// WorkflowOption configures optional RevenueWorkflow features like durable storage.
+type WorkflowOption func(*RevenueWorkflow)
+
+// WithWorkflowContractStore binds a durable ContractStore to the revenue workflow.
+func WithWorkflowContractStore(store ContractStore) WorkflowOption {
+	return func(w *RevenueWorkflow) {
+		if store != nil {
+			w.store = store
+		}
+	}
+}
+
+// RevenueWorkflow performs only measured recognition and commits durable
 // contract state after the configured application confirms successful posting.
 type RevenueWorkflow struct {
 	mapping RevenueJournalMapping
 	app     RevenuePostingApplication
+	store   ContractStore
 
 	mu             sync.RWMutex
 	contracts      map[uuid.UUID]Contract
@@ -151,20 +197,51 @@ type RevenueWorkflow struct {
 	posted         map[string]postedRecognition
 }
 
-func NewRevenueWorkflow(mapping RevenueJournalMapping, app RevenuePostingApplication) (*RevenueWorkflow, error) {
+func NewRevenueWorkflow(mapping RevenueJournalMapping, app RevenuePostingApplication, opts ...WorkflowOption) (*RevenueWorkflow, error) {
 	if err := mapping.Validate(); err != nil {
 		return nil, err
 	}
 	if app == nil {
 		return nil, ErrRevenueApplicationRequired
 	}
-	return &RevenueWorkflow{
-		mapping: mapping, app: app,
+	w := &RevenueWorkflow{
+		mapping:        mapping,
+		app:            app,
+		store:          NewInMemoryContractStore(),
 		contracts:      make(map[uuid.UUID]Contract),
 		recognizedByPO: make(map[uuid.UUID]map[uuid.UUID]financialtypes.Money),
 		pending:        make(map[string]pendingRecognition),
 		posted:         make(map[string]postedRecognition),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(w)
+		}
+	}
+
+	// Recover existing contracts from durable store if available
+	if w.store != nil {
+		existing, err := w.store.ListContracts(context.Background(), w.mapping.CompanyID)
+		if err == nil {
+			for _, c := range existing {
+				w.contracts[c.ID] = cloneContract(c)
+				recMap := make(map[uuid.UUID]financialtypes.Money, len(c.Obligations))
+				zero, _ := financialtypes.Zero(c.Currency)
+				for _, obl := range c.Obligations {
+					if c.RecognizedPrices != nil {
+						if amt, ok := c.RecognizedPrices[obl.ID]; ok {
+							recMap[obl.ID] = amt
+							continue
+						}
+					}
+					recMap[obl.ID] = zero
+				}
+				w.recognizedByPO[c.ID] = recMap
+			}
+		}
+	}
+
+	return w, nil
 }
 
 func (w *RevenueWorkflow) AddContract(input FiveStepAssessment) (Contract, error) {
@@ -194,6 +271,11 @@ func (w *RevenueWorkflow) AddContract(input FiveStepAssessment) (Contract, error
 	}
 	w.contracts[contract.ID] = contract
 	w.recognizedByPO[contract.ID] = recognized
+
+	if w.store != nil {
+		_ = w.store.SaveContract(context.Background(), w.mapping.CompanyID, contract)
+	}
+
 	return cloneContract(contract), nil
 }
 
@@ -202,9 +284,21 @@ func (w *RevenueWorkflow) Contract(id uuid.UUID) (Contract, bool) {
 		return Contract{}, false
 	}
 	w.mu.RLock()
-	defer w.mu.RUnlock()
 	contract, ok := w.contracts[id]
-	return cloneContract(contract), ok
+	w.mu.RUnlock()
+	if ok {
+		return cloneContract(contract), true
+	}
+	if w.store != nil {
+		stored, err := w.store.GetContract(context.Background(), w.mapping.CompanyID, id)
+		if err == nil {
+			w.mu.Lock()
+			w.contracts[id] = cloneContract(stored)
+			w.mu.Unlock()
+			return stored, true
+		}
+	}
+	return Contract{}, false
 }
 
 // Recognize posts the amount measured by the host and commits contract state
@@ -293,10 +387,23 @@ func (w *RevenueWorkflow) Recognize(
 		return Contract{}, posting.JournalEntry{}, err
 	}
 
+	if updated.RecognizedPrices == nil {
+		updated.RecognizedPrices = make(map[uuid.UUID]financialtypes.Money, len(updated.Obligations))
+	}
+	updated.RecognizedPrices[event.ObligationID] = nextPOAmount
+	if updated.RecognizedAmount.Equal(updated.TransactionPrice) {
+		updated.Status = ContractStatusSatisfied
+	}
+
 	w.contracts[contractID] = cloneContract(updated)
 	w.recognizedByPO[contractID][event.ObligationID] = nextPOAmount
 	w.posted[key] = postedRecognition{hash: hash, contract: cloneContract(updated), entry: pending.entry}
 	delete(w.pending, key)
+
+	if w.store != nil {
+		_ = w.store.SaveContract(ctx, w.mapping.CompanyID, updated)
+	}
+
 	return cloneContract(updated), pending.entry, nil
 }
 
@@ -325,14 +432,4 @@ func satisfactionHash(contractID uuid.UUID, event SatisfactionEvent) (string, er
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
-}
-
-func cloneContract(contract Contract) Contract {
-	contract.Obligations = append([]PerformanceObligation(nil), contract.Obligations...)
-	allocations := make(map[uuid.UUID]financialtypes.Money, len(contract.AllocatedPrices))
-	for id, amount := range contract.AllocatedPrices {
-		allocations[id] = amount
-	}
-	contract.AllocatedPrices = allocations
-	return contract
 }

@@ -1,16 +1,22 @@
-// Package ifrs15 models IFRS 15 revenue contracts and recognition schedules.
+// Package ifrs15 implements IFRS 15 Revenue from Contracts with Customers.
 //
-// Contract data represents the customer arrangement, performance obligations,
-// transaction price, allocation inputs, and related recognition state.
-// Contracts allocate transaction price by relative standalone selling price
-// and schedule point-in-time or over-time performance.
+// The package supports the five-step revenue recognition model:
+//  1. Identify the contract(s) with a customer.
+//  2. Identify the performance obligations in the contract.
+//  3. Determine the transaction price, including estimation and constraining of variable
+//     consideration (IFRS 15.56-58) and adjustment for significant financing components (IFRS 15.60-65).
+//  4. Allocate the transaction price to the performance obligations based on relative standalone selling prices.
+//  5. Recognize revenue when (or as) the entity satisfies a performance obligation.
 //
-// Unit coordinates advance billing and performance-obligation recognition,
-// maintains in-memory contract balances, and returns balanced general-ledger
-// journal drafts for deferred revenue, contract assets, and earned revenue.
-// Invoices and cash advances retain customer partner identifiers for
-// receivable-subledger reconciliation. RevenueWorkflow is the bounded path
-// that requires external service evidence, a real journal mapping, and an
-// application-backed poster before confirming recognition in-memory. Callers
-// remain responsible for durable storage, authorization, and posting recovery.
+// Contract modifications (IFRS 15.18-21) are supported across all three standard treatments:
+//   - Separate contract (IFRS 15.20): additional distinct goods/services at standalone selling prices.
+//   - Prospective treatment (IFRS 15.21(a)): termination of existing contract and creation of new contract.
+//   - Cumulative catch-up (IFRS 15.21(b)): single obligation with revised progress and price.
+//
+// Durable contract lifecycle states (Draft, Active, Modified, Satisfied) are persisted via ContractStore,
+// enabling recovery and resumption of recognition across process restarts.
+//
+// Explicit Exclusions:
+//   - Principal versus agent evaluations (IFRS 15.B34-B38) are not determined by the engine.
+//   - Complex intellectual property licensing evaluations (IFRS 15.B52-B63) are excluded.
 package ifrs15

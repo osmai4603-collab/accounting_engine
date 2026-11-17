@@ -18,11 +18,27 @@ func versionedGoldenInput(t *testing.T) VersionedECLInput {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstEAD, err := financialtypes.NewMoneyFromString("1000", "USD")
+	firstBalance, err := financialtypes.NewMoneyFromString("900", "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondEAD, err := financialtypes.NewMoneyFromString("500", "USD")
+	firstCommitments, err := financialtypes.NewMoneyFromString("100", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBalance, err := financialtypes.NewMoneyFromString("400", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCommitments, err := financialtypes.NewMoneyFromString("100", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAllowance, err := financialtypes.NewMoneyFromString("60", "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAllowance, err := financialtypes.NewMoneyFromString("40", "USD")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +59,12 @@ func versionedGoldenInput(t *testing.T) VersionedECLInput {
 		ExistingAllowance: allowance,
 		Exposures: []VersionedExposure{
 			{
-				ID: uuid.MustParse("10000000-0000-0000-0000-000000000001"), EAD: firstEAD,
+				ID:            uuid.MustParse("10000000-0000-0000-0000-000000000001"),
+				LedgerBalance: firstBalance, UndrawnCommitments: firstCommitments,
+				ExistingAllowance: firstAllowance,
+				Classification: HostClassification{
+					MeasurementCategory: AmortisedCost, BusinessModelReference: "bm-1", SPPIAssessmentReference: "sppi-1",
+				},
 				RemainingLife: 2 * 365 * 24 * time.Hour, EffectiveInterestRate: decimal.RequireFromString("0.1"),
 				LGD:           decimal.RequireFromString("0.5"),
 				StageEvidence: StageEvidence{PreviousStage: Stage1, DaysPastDue: 31, SICR: true},
@@ -53,7 +74,12 @@ func versionedGoldenInput(t *testing.T) VersionedECLInput {
 				},
 			},
 			{
-				ID: uuid.MustParse("10000000-0000-0000-0000-000000000002"), EAD: secondEAD,
+				ID:            uuid.MustParse("10000000-0000-0000-0000-000000000002"),
+				LedgerBalance: secondBalance, UndrawnCommitments: secondCommitments,
+				ExistingAllowance: secondAllowance,
+				Classification: HostClassification{
+					MeasurementCategory: AmortisedCost, BusinessModelReference: "bm-2", SPPIAssessmentReference: "sppi-2",
+				},
 				RemainingLife: 2 * 365 * 24 * time.Hour, EffectiveInterestRate: decimal.Zero,
 				LGD:           decimal.RequireFromString("0.4"),
 				StageEvidence: StageEvidence{PreviousStage: Stage3, CureConfirmed: true},
@@ -101,7 +127,7 @@ func TestEvaluateVersionedECLGolden(t *testing.T) {
 	if len(result.InputFingerprint) != 64 {
 		t.Fatalf("input fingerprint %q is not a SHA-256 digest", result.InputFingerprint)
 	}
-	if result.InputFingerprint != "223e926941d17bc9b53878c978cd8b2ef3f45803b0766d4d0c369a90c3301b72" {
+	if result.InputFingerprint != "162bafe0f74ad06bdc92cf7c4b9f40c7f69a49229898adb5ed7dff480b73a1d9" {
 		t.Errorf("golden input fingerprint = %s", result.InputFingerprint)
 	}
 }
@@ -150,6 +176,12 @@ func TestEvaluateVersionedECLFingerprintTracksProvenanceAndAssumptions(t *testin
 		{name: "scenario estimate", mutate: func(input *VersionedECLInput) {
 			input.Exposures[0].ScenarioPDs[0].PDLifetime = decimal.RequireFromString("0.21")
 		}},
+		{name: "host classification evidence", mutate: func(input *VersionedECLInput) {
+			input.Exposures[0].Classification.BusinessModelReference = "revised-host-assessment"
+		}},
+		{name: "undrawn commitment", mutate: func(input *VersionedECLInput) {
+			input.Exposures[0].UndrawnCommitments, _ = financialtypes.NewMoneyFromString("110", "USD")
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -170,6 +202,46 @@ func TestEvaluateVersionedECLFingerprintTracksProvenanceAndAssumptions(t *testin
 	}
 }
 
+func TestVersionedECLSeparatesACAndFVOCIAllowances(t *testing.T) {
+	input := versionedGoldenInput(t)
+	input.Exposures[1].Classification.MeasurementCategory = FVOCI
+	result, err := EvaluateVersionedECL(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.CategoryChanges) != 2 {
+		t.Fatalf("category changes = %d, want AC and FVOCI", len(result.CategoryChanges))
+	}
+	if result.CategoryChanges[0].Category != AmortisedCost ||
+		result.CategoryChanges[0].AllowanceChange.Amount().StringFixed(2) != "72.23" ||
+		result.CategoryChanges[1].Category != FVOCI ||
+		result.CategoryChanges[1].AllowanceChange.Amount().StringFixed(2) != "-4.00" {
+		t.Fatalf("category allowance movements = %+v", result.CategoryChanges)
+	}
+	accounts := ECLCategoryAccounts{
+		AmortisedCost: ECLAccounts{ImpairmentLoss: uuid.New(), Allowance: uuid.New()},
+		FVOCI:         ECLAccounts{ImpairmentLoss: uuid.New(), OCIReserve: uuid.New()},
+	}
+	entries, err := BuildVersionedECLEntries(result, accounts, uuid.New(), uuid.New(), "risk_officer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("category entries = %d, want 2", len(entries))
+	}
+	if entries[0].Lines[1].AccountID != accounts.AmortisedCost.Allowance ||
+		entries[1].Lines[0].AccountID != accounts.FVOCI.OCIReserve {
+		t.Fatalf("category entries use incorrect allowance destinations: %+v", entries)
+	}
+	combined, err := BuildVersionedECLApplicationEntry(result, accounts, uuid.New(), uuid.New(), "risk_officer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combined.Lines) != 4 {
+		t.Fatalf("combined ECL journal lines = %d, want 4", len(combined.Lines))
+	}
+}
+
 func TestEvaluateVersionedECLRequiresCompleteProvenanceAndAssumptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -182,6 +254,9 @@ func TestEvaluateVersionedECLRequiresCompleteProvenanceAndAssumptions(t *testing
 		{name: "assumptions", mutate: func(input *VersionedECLInput) { input.Assumptions = nil }},
 		{name: "stage assumptions", mutate: func(input *VersionedECLInput) { input.Assumptions[1].Value = "31" }},
 		{name: "evaluation date", mutate: func(input *VersionedECLInput) { input.EvaluationDate = time.Time{} }},
+		{name: "missing host classification", mutate: func(input *VersionedECLInput) {
+			input.Exposures[0].Classification.SPPIAssessmentReference = ""
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -245,6 +320,14 @@ func TestEvaluateVersionedECLRejectsIncompleteScenarioData(t *testing.T) {
 	input.Exposures[0].ScenarioPDs = input.Exposures[0].ScenarioPDs[:1]
 	if _, err := EvaluateVersionedECL(input); !errors.Is(err, ErrInvalidVersionedInput) {
 		t.Fatalf("incomplete scenario PDs error = %v, want ErrInvalidVersionedInput", err)
+	}
+}
+
+func TestEvaluateVersionedECLRejectsFVTPL(t *testing.T) {
+	input := versionedGoldenInput(t)
+	input.Exposures[0].Classification.MeasurementCategory = FVTPL
+	if _, err := EvaluateVersionedECL(input); !errors.Is(err, ErrECLNotApplicable) {
+		t.Fatalf("FVTPL ECL error = %v, want ErrECLNotApplicable", err)
 	}
 }
 
