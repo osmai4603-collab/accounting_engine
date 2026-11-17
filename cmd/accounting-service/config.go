@@ -164,18 +164,24 @@ func (c Config) Validate() error {
 	if err := c.validateAuth(); err != nil {
 		return err
 	}
-	if err := c.rateLimitConfig().Validate(); err != nil {
+	if err := c.RateLimitConfig().Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidRateLimitConfig, err)
 	}
 
 	return nil
 }
 
-func (c Config) rateLimitConfig() ratelimit.Config {
+// RateLimitConfig returns the configured rate limit policy, falling back to
+// DefaultConfig when zero-valued.
+func (c Config) RateLimitConfig() ratelimit.Config {
 	if c.RateLimit == (ratelimit.Config{}) {
 		return ratelimit.DefaultConfig()
 	}
 	return c.RateLimit
+}
+
+func (c Config) rateLimitConfig() ratelimit.Config {
+	return c.RateLimitConfig()
 }
 
 // validateAuth enforces fail-closed service boundary authentication. Embedded

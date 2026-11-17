@@ -270,13 +270,14 @@ func (m *Module) GetDisclosures(
 	if m == nil {
 		return nil, fmt.Errorf("IAS 12: module is nil")
 	}
-	provider := m.disclosures
-	if provider == nil {
-		var err error
-		provider, err = ias12engine.NewTaxReconciliationDisclosureProvider()
-		if err != nil {
-			return nil, fmt.Errorf("IAS 12: initialize empty disclosure provider: %w", err)
-		}
+	if ctx == nil {
+		return nil, fmt.Errorf("IAS 12: context is required")
 	}
-	return provider.GetDisclosures(ctx, query)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if m.disclosures == nil {
+		return []publicreporting.StructuredDisclosure{}, nil
+	}
+	return m.disclosures.GetDisclosures(ctx, query)
 }

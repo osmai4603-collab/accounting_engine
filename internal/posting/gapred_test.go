@@ -176,9 +176,16 @@ func newLegacyEngine(t *testing.T) (*posting.Engine, *legacyRepository, *memory.
 	if err := driver.CreateFiscalYear(context.Background(), year); err != nil {
 		t.Fatal(err)
 	}
+	journalID := uuid.New()
+	if err := driver.CreateJournal(context.Background(), masterdata.Journal{
+		ID: journalID, CompanyID: companyID, Code: "GEN", Name: "General Journal",
+		Type: masterdata.JournalTypeGeneral, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	repo := &legacyRepository{driver: driver}
 	engine := posting.NewEngine(repo, nil)
-	return engine, repo, driver, companyID, uuid.New(), year.Periods[2].ID
+	return engine, repo, driver, companyID, journalID, year.Periods[2].ID
 }
 
 // GAP-PST-04: a repository without atomic reversal support must fail before
