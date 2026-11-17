@@ -3,6 +3,7 @@ package masterdata
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ func NewService(repo Repository) *Service {
 type PeriodLifecycleRepository interface {
 	TransitionPeriodStateContext(context.Context, uuid.UUID, uuid.UUID, PeriodState, uuid.UUID, string) error
 	ReopenPeriodContext(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) error
+}
+
+type PeriodApprovalLifecycleRepository interface {
+	ReopenPeriodWithApprovalContext(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, string) error
 }
 
 // TransitionPeriodStateContext applies a close transition with an identified
@@ -54,8 +59,8 @@ func (s *Service) TransitionPeriodStateContext(
 	return repository.TransitionPeriodStateContext(ctx, companyID, periodID, state, actorID, strings.TrimSpace(reason))
 }
 
-// ReopenPeriodContext is the only service operation that can reopen a period;
-// it requires an actor and a non-blank reason and is audited by the store.
+// ReopenPeriodContext is retained for compatibility. Reopening requires an
+// approval reference and therefore must use ReopenPeriodWithApprovalContext.
 func (s *Service) ReopenPeriodContext(
 	ctx context.Context,
 	companyID, periodID, actorID uuid.UUID,
@@ -75,6 +80,33 @@ func (s *Service) ReopenPeriodContext(
 		return ErrCompanyScopeRequired
 	}
 	return repository.ReopenPeriodContext(ctx, companyID, periodID, actorID, strings.TrimSpace(reason))
+}
+
+// ReopenPeriodWithApprovalContext reopens a closed period with the full audit
+// metadata supplied by the host authorization workflow.
+func (s *Service) ReopenPeriodWithApprovalContext(
+	ctx context.Context,
+	companyID, periodID, actorID, approvalID uuid.UUID,
+	reason string,
+) error {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return errors.New("fiscal period context is required")
+		}
+		return ctx.Err()
+	}
+	reason = strings.TrimSpace(reason)
+	if actorID == uuid.Nil || reason == "" {
+		return ErrPeriodReopenRequiresAudit
+	}
+	if approvalID == uuid.Nil {
+		return ErrPeriodReopenRequiresApproval
+	}
+	repository, ok := s.repo.(PeriodApprovalLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.ReopenPeriodWithApprovalContext(ctx, companyID, periodID, actorID, approvalID, reason)
 }
 
 // Deprecated: use RegisterAccountContext.
@@ -637,11 +669,12 @@ func (s *Service) GetAdjustmentPeriodForCompanyDateContext(ctx context.Context, 
 	}
 	regularPeriod, err := repository.GetPeriodByDateForCompanyContext(ctx, companyID, date)
 	if err != nil {
-		return FiscalPeriod{}, err
+		return FiscalPeriod{}, fmt.Errorf("resolve fiscal year for adjustment period %d: %w", periodNumber, err)
 	}
 	period, err := repository.GetPeriodByNumberForCompanyContext(ctx, companyID, regularPeriod.FiscalYearID, periodNumber)
 	if err != nil {
-		return FiscalPeriod{}, err
+		return FiscalPeriod{}, fmt.Errorf("load adjustment period %d in fiscal year %s: %w",
+			periodNumber, regularPeriod.FiscalYearID, err)
 	}
 	expectedType := FiscalPeriodTypeYearEndAdjustment
 	if periodNumber == 14 {

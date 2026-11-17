@@ -34,6 +34,15 @@ type FixedAssetLedgerRepository interface {
 	AtomicFixedAssetConfirmationRepository
 }
 
+type FixedAssetAdjustmentApproval struct {
+	Authorized         bool
+	Reason             string
+	ApprovalReference  string
+	ApprovedBy         string
+	ApprovedAt         time.Time
+	TargetPeriodNumber int
+}
+
 func NewFixedAssetLedger(repo FixedAssetLedgerRepository, _ JournalCreator) *FixedAssetLedger {
 	return &FixedAssetLedger{repo: repo}
 }
@@ -188,6 +197,7 @@ type DepreciationAttachment struct {
 	CompanyID     uuid.UUID
 	Amount        financialtypes.Money
 	AsOf          time.Time
+	EntryID       uuid.UUID
 	expectedAsset FixedAsset
 	UpdatedAsset  FixedAsset
 }
@@ -203,7 +213,8 @@ func (a *DepreciationAttachment) ValidateAttachment(ctx context.Context, entry p
 	if a.AssetID == uuid.Nil || a.CompanyID == uuid.Nil || a.AsOf.IsZero() ||
 		a.expectedAsset.ID != a.AssetID || a.expectedAsset.CompanyID != a.CompanyID ||
 		a.expectedAsset.IsCWIP || a.expectedAsset.DisposedAt != nil ||
-		entry.ID == uuid.Nil || entry.Status != posting.EntryDraft {
+		entry.ID == uuid.Nil || (a.EntryID != uuid.Nil && entry.ID != a.EntryID) ||
+		entry.Status != posting.EntryDraft {
 		return ErrInvalidAsset
 	}
 	if a.CompanyID != entry.CompanyID {
@@ -410,6 +421,34 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 	asOf time.Time,
 	posterID string,
 ) (posting.JournalEntry, error) {
+	return l.depreciateAssetAtomic(ctx, engine, assetID, journalID, asOf, posterID, nil)
+}
+
+func (l *FixedAssetLedger) DepreciateAssetAdjustingAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID, journalID uuid.UUID,
+	asOf time.Time,
+	posterID string,
+	approval FixedAssetAdjustmentApproval,
+) (posting.JournalEntry, error) {
+	if !approval.Authorized || strings.TrimSpace(approval.Reason) == "" ||
+		strings.TrimSpace(approval.ApprovalReference) == "" ||
+		strings.TrimSpace(approval.ApprovedBy) == "" || approval.ApprovedAt.IsZero() ||
+		strings.TrimSpace(posterID) == "" {
+		return posting.JournalEntry{}, posting.ErrAdjustingEntryMetadataRequired
+	}
+	return l.depreciateAssetAtomic(ctx, engine, assetID, journalID, asOf, posterID, &approval)
+}
+
+func (l *FixedAssetLedger) depreciateAssetAtomic(
+	ctx context.Context,
+	engine *posting.Engine,
+	assetID, journalID uuid.UUID,
+	asOf time.Time,
+	posterID string,
+	approval *FixedAssetAdjustmentApproval,
+) (posting.JournalEntry, error) {
 	if journalID == uuid.Nil {
 		return posting.JournalEntry{}, ErrInvalidAsset
 	}
@@ -442,12 +481,24 @@ func (l *FixedAssetLedger) DepreciateAssetAtomic(
 		DocumentReference: depreciationReference(asset.ID, asOf),
 		Lines:             lines,
 	}
+	if approval != nil {
+		approvedAt := approval.ApprovedAt.UTC()
+		entry.Classification = posting.EntryClassAdjusting
+		entry.AdjustingEntryType = posting.AdjustingEntryProvisionEstimate
+		entry.AdjustmentReason = strings.TrimSpace(approval.Reason)
+		entry.AdjustmentApprovalReference = strings.TrimSpace(approval.ApprovalReference)
+		entry.AdjustmentAuthorized = true
+		entry.ApprovedBy = strings.TrimSpace(approval.ApprovedBy)
+		entry.ApprovedAt = &approvedAt
+		entry.CreatedBy = posterID
+		entry.TargetPeriodNumber = approval.TargetPeriodNumber
+	}
 	if err := engine.CreateDraftContext(ctx, entry); err != nil {
 		return posting.JournalEntry{}, err
 	}
 
 	attachment := &DepreciationAttachment{
-		AssetID: assetID, CompanyID: l.companyID,
+		AssetID: assetID, CompanyID: asset.CompanyID, EntryID: entry.ID,
 		Amount: expense, AsOf: asOf, expectedAsset: cloneFixedAsset(asset), UpdatedAsset: updated,
 	}
 

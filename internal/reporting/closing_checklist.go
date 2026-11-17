@@ -36,6 +36,7 @@ const (
 	CheckCodeMonthlyPeriodsClosed       ChecklistItemCode = "MONTHLY_PERIODS_CLOSED"
 	CheckCodeAdjustmentPeriodAvailable  ChecklistItemCode = "PERIOD_ADJUSTMENT_AVAILABLE"
 	CheckCodeUnrealizedFXValuation      ChecklistItemCode = "UNREALIZED_FX_VALUATION"
+	CheckCodeFiscalYearOpen             ChecklistItemCode = "FISCAL_YEAR_OPEN"
 )
 
 type ChecklistItem struct {
@@ -88,12 +89,32 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 		FiscalYearID: year.ID,
 		AsOfDate:     year.EndDate,
 		EvaluatedAt:  time.Now().UTC(),
-		Items:        make([]ChecklistItem, 0, 6),
+		Items:        make([]ChecklistItem, 0, 8),
 	}
 
 	repo, err := newCompanyReportingRepository(ctx, repository, year.CompanyID, year.EndDate)
 	if err != nil {
 		return report, err
+	}
+
+	if year.State != masterdata.FiscalYearOpen {
+		report.Items = append(report.Items, ChecklistItem{
+			Code:        CheckCodeFiscalYearOpen,
+			Name:        "Fiscal Year Open",
+			Description: "Annual closing can only be initiated for an open fiscal year.",
+			Severity:    SeverityBlocker,
+			Status:      ChecklistFailed,
+			Details:     fmt.Sprintf("Fiscal year state is %s, not open", year.State),
+		})
+	} else {
+		report.Items = append(report.Items, ChecklistItem{
+			Code:        CheckCodeFiscalYearOpen,
+			Name:        "Fiscal Year Open",
+			Description: "Annual closing can only be initiated for an open fiscal year.",
+			Severity:    SeverityBlocker,
+			Status:      ChecklistPass,
+			Details:     "Fiscal year is open",
+		})
 	}
 
 	// 1. Check Draft Entries Pending (Blocker)
@@ -118,15 +139,16 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 		}
 	} else {
 		entries, err := repo.ListEntriesForCompanyContext(ctx, year.CompanyID, year.StartDate, year.EndDate)
-		if err == nil {
-			for _, e := range entries {
-				if e.Status == posting.EntryDraft {
-					ref := e.Reference
-					if ref == "" {
-						ref = e.ID.String()
-					}
-					draftEvidence = append(draftEvidence, fmt.Sprintf("Draft Entry %s (Date: %s)", ref, e.EntryDate.Format("2006-01-02")))
+		if err != nil {
+			return report, err
+		}
+		for _, e := range entries {
+			if e.Status == posting.EntryDraft {
+				ref := e.Reference
+				if ref == "" {
+					ref = e.ID.String()
 				}
+				draftEvidence = append(draftEvidence, fmt.Sprintf("Draft Entry %s (Date: %s)", ref, e.EntryDate.Format("2006-01-02")))
 			}
 		}
 	}
@@ -154,25 +176,25 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 	// 2. Check Monthly Periods Closed (Blocker)
 	var openPeriodsEvidence []string
 	for _, p := range year.Periods {
-		if p.Type == masterdata.FiscalPeriodTypeNormal && p.State == masterdata.PeriodOpen {
-			openPeriodsEvidence = append(openPeriodsEvidence, fmt.Sprintf("Period %d (%s) is still OPEN", p.Number, p.Name))
+		if p.Number >= 1 && p.Number <= 12 && p.State != masterdata.PeriodHardClosed {
+			openPeriodsEvidence = append(openPeriodsEvidence, fmt.Sprintf("Period %d (%s) is %s, not hard closed", p.Number, p.Name, p.State))
 		}
 	}
 	if len(openPeriodsEvidence) > 0 {
 		report.Items = append(report.Items, ChecklistItem{
 			Code:        CheckCodeMonthlyPeriodsClosed,
 			Name:        "Monthly Fiscal Periods Closure",
-			Description: "All regular monthly periods 1-12 must be closed (soft or hard) before closing the fiscal year.",
+			Description: "All regular monthly periods 1-12 must be hard closed before closing the fiscal year.",
 			Severity:    SeverityBlocker,
 			Status:      ChecklistFailed,
-			Details:     fmt.Sprintf("%d monthly periods are still open", len(openPeriodsEvidence)),
+			Details:     fmt.Sprintf("%d monthly periods are not hard closed", len(openPeriodsEvidence)),
 			Evidence:    openPeriodsEvidence,
 		})
 	} else {
 		report.Items = append(report.Items, ChecklistItem{
 			Code:        CheckCodeMonthlyPeriodsClosed,
 			Name:        "Monthly Fiscal Periods Closure",
-			Description: "All regular monthly periods 1-12 must be closed (soft or hard) before closing the fiscal year.",
+			Description: "All regular monthly periods 1-12 must be hard closed before closing the fiscal year.",
 			Severity:    SeverityBlocker,
 			Status:      ChecklistPass,
 			Details:     "All monthly periods 1-12 are closed",
@@ -183,7 +205,7 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 	var period13Found bool
 	for _, p := range year.Periods {
 		if p.Number == 13 {
-			period13Found = true
+			period13Found = p.State == masterdata.PeriodOpen && p.Type == masterdata.FiscalPeriodTypeYearEndAdjustment
 			break
 		}
 	}
@@ -194,7 +216,7 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 			Description: "Period 13 is required as the procedural destination for year-end closing entries.",
 			Severity:    SeverityBlocker,
 			Status:      ChecklistFailed,
-			Details:     "Adjustment Period 13 is missing in this fiscal year",
+			Details:     "Adjustment Period 13 is missing or is not open for posting",
 		})
 	} else {
 		report.Items = append(report.Items, ChecklistItem{
@@ -214,7 +236,7 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 	}
 	balances, err := accountBalances(repo, year.StartDate, year.EndDate, "")
 	if err != nil {
-		balances = make(map[uuid.UUID]accountSide)
+		return report, err
 	}
 
 	var suspenseEvidence []string
@@ -254,34 +276,35 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 	// 5. Check Subledger Reconciliation Exceptions (Blocker / Warning)
 	if exRepo, ok := repository.(subledgers.ReconciliationExceptionRepository); ok {
 		exceptions, err := exRepo.ListReconciliationExceptions(ctx, year.CompanyID)
-		if err == nil {
-			var unresolvedEvidence []string
-			for _, ex := range exceptions {
-				if ex.Status == subledgers.ReconciliationExceptionUnmatched || ex.Status == subledgers.ReconciliationExceptionDisputed {
-					unresolvedEvidence = append(unresolvedEvidence, fmt.Sprintf("Exception %s in %s (Variance: %s %s, Status: %s)",
-						ex.ID.String()[:8], ex.Domain, ex.Difference.String(), ex.FunctionalCurr, ex.Status))
-				}
+		if err != nil {
+			return report, err
+		}
+		var unresolvedEvidence []string
+		for _, ex := range exceptions {
+			if ex.Status == subledgers.ReconciliationExceptionUnmatched || ex.Status == subledgers.ReconciliationExceptionDisputed {
+				unresolvedEvidence = append(unresolvedEvidence, fmt.Sprintf("Exception %s in %s (Variance: %s %s, Status: %s)",
+					ex.ID.String()[:8], ex.Domain, ex.Difference.String(), ex.FunctionalCurr, ex.Status))
 			}
-			if len(unresolvedEvidence) > 0 {
-				report.Items = append(report.Items, ChecklistItem{
-					Code:        CheckCodeSubledgerExceptionsPending,
-					Name:        "Subledger Reconciliation Exceptions",
-					Description: "All subledger variances (AR/AP/Bank/Fixed Assets) must be resolved or matched before year-end close.",
-					Severity:    SeverityBlocker,
-					Status:      ChecklistFailed,
-					Details:     fmt.Sprintf("%d unresolved subledger exceptions exist", len(unresolvedEvidence)),
-					Evidence:    unresolvedEvidence,
-				})
-			} else {
-				report.Items = append(report.Items, ChecklistItem{
-					Code:        CheckCodeSubledgerExceptionsPending,
-					Name:        "Subledger Reconciliation Exceptions",
-					Description: "All subledger variances must be resolved or matched before year-end close.",
-					Severity:    SeverityBlocker,
-					Status:      ChecklistPass,
-					Details:     "All subledger reconciliation exceptions are resolved",
-				})
-			}
+		}
+		if len(unresolvedEvidence) > 0 {
+			report.Items = append(report.Items, ChecklistItem{
+				Code:        CheckCodeSubledgerExceptionsPending,
+				Name:        "Subledger Reconciliation Exceptions",
+				Description: "All subledger variances (AR/AP/Bank/Fixed Assets) must be resolved or matched before year-end close.",
+				Severity:    SeverityBlocker,
+				Status:      ChecklistFailed,
+				Details:     fmt.Sprintf("%d unresolved subledger exceptions exist", len(unresolvedEvidence)),
+				Evidence:    unresolvedEvidence,
+			})
+		} else {
+			report.Items = append(report.Items, ChecklistItem{
+				Code:        CheckCodeSubledgerExceptionsPending,
+				Name:        "Subledger Reconciliation Exceptions",
+				Description: "All subledger variances must be resolved or matched before year-end close.",
+				Severity:    SeverityBlocker,
+				Status:      ChecklistPass,
+				Details:     "All subledger reconciliation exceptions are resolved",
+			})
 		}
 	} else {
 		report.Items = append(report.Items, ChecklistItem{
@@ -301,7 +324,7 @@ func EvaluateFiscalYearChecklist(ctx context.Context, repository Repository, yea
 		Description: "Monetary items in foreign currencies should be revalued at reporting date closing rate under IAS 21.",
 		Severity:    SeverityInfo,
 		Status:      ChecklistPass,
-		Details:     "Foreign exchange revaluation check evaluated",
+		Details:     "This checklist does not verify remeasurement; the closing process preserves ledger values and does not book an FX plug. Run the IAS 21 valuation procedure separately.",
 	})
 
 	// Tally counts

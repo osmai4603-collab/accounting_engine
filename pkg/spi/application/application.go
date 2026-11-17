@@ -26,13 +26,14 @@ type Principal struct {
 type Action string
 
 const (
-	ActionRead     Action = "ledger.read"
-	ActionCreate   Action = "ledger.create"
-	ActionValidate Action = "ledger.validate"
-	ActionPost     Action = "ledger.post"
-	ActionReverse  Action = "ledger.reverse"
-	ActionClose    Action = "period.close"
-	ActionReopen   Action = "period.reopen"
+	ActionRead             Action = "ledger.read"
+	ActionCreate           Action = "ledger.create"
+	ActionValidate         Action = "ledger.validate"
+	ActionPost             Action = "ledger.post"
+	ActionReverse          Action = "ledger.reverse"
+	ActionCreateAdjustment Action = "ledger.adjustment.create"
+	ActionClose            Action = "period.close"
+	ActionReopen           Action = "period.reopen"
 )
 
 // AuthorizationRequest is passed to an optional host-provided Authorizer.
@@ -43,6 +44,8 @@ type AuthorizationRequest struct {
 	// JournalID and EntryID are set when the action is scoped to one resource.
 	JournalID *types.JournalID
 	EntryID   *types.JournalEntryID
+	// ApprovalReference lets the host verify the cited adjustment delegation.
+	ApprovalReference string
 }
 
 // Authorizer is an optional host capability. When absent, the engine still
@@ -92,18 +95,38 @@ func RequestMetadataFromContext(ctx context.Context) (RequestMetadata, bool) {
 // double-entry invariants.
 type CreateDraftCommand struct {
 	Context
-	CompanyID           types.CompanyID
-	JournalID           types.JournalID
-	FiscalPeriodID      types.FiscalPeriodID
-	EffectiveDate       time.Time
-	PostingDate         time.Time
-	Description         string
-	SourceModule        string
-	ReferenceID         string
-	TransactionCurrency string
-	ExchangeRate        string
-	Classification      ledger.EntryClassification
-	Lines               []ledger.EntryLine
+	CompanyID                   types.CompanyID
+	JournalID                   types.JournalID
+	FiscalPeriodID              types.FiscalPeriodID
+	EffectiveDate               time.Time
+	PostingDate                 time.Time
+	Description                 string
+	SourceModule                string
+	ReferenceID                 string
+	TransactionCurrency         string
+	ExchangeRate                string
+	Classification              ledger.EntryClassification
+	TargetPeriodNumber          int
+	AdjustingEntryType          ledger.AdjustingEntryType
+	AdjustmentReason            string
+	AdjustmentApprovalReference string
+	Lines                       []ledger.EntryLine
+}
+
+// CreateAdjustingEntryCommand submits an adjusting entry together with the
+// host-authorized adjustment delegation and its audit evidence.
+type CreateAdjustingEntryCommand struct {
+	Draft             CreateDraftCommand
+	Type              ledger.AdjustingEntryType
+	Reason            string
+	ApprovalReference string
+}
+
+// AdjustingEntryService is an optional application capability for creating
+// adjusting entries. The host Authorizer remains responsible for confirming
+// that the principal may exercise the cited adjustment approval.
+type AdjustingEntryService interface {
+	CreateAdjustingEntry(context.Context, CreateAdjustingEntryCommand) (EntryResult, error)
 }
 
 // ValidateEntryCommand re-runs all validation rules for an existing draft.
@@ -132,6 +155,49 @@ type ReverseEntryCommand struct {
 	IdempotencyKey string
 }
 
+// YearEndClosingPolicy selects the destination used to close nominal
+// accounts. The income-summary policy creates a second transfer entry.
+type YearEndClosingPolicy string
+
+const (
+	YearEndClosingDirectToRetainedEarnings YearEndClosingPolicy = "direct_to_retained_earnings"
+	YearEndClosingThroughIncomeSummary     YearEndClosingPolicy = "income_summary"
+)
+
+// ExecuteYearEndClosingCommand requests an audited annual close. Opening
+// balances are generated only when NextFiscalYearID is supplied.
+type ExecuteYearEndClosingCommand struct {
+	Context
+	CompanyID                 types.CompanyID
+	FiscalYearID              types.FiscalYearID
+	NextFiscalYearID          types.FiscalYearID
+	JournalID                 types.JournalID
+	RetainedEarningsAccountID types.AccountID
+	IncomeSummaryAccountID    types.AccountID
+	Policy                    YearEndClosingPolicy
+	Currency                  string
+	Reason                    string
+}
+
+type YearEndClosingResult struct {
+	ClosingEntryIDs []types.JournalEntryID
+	OpeningEntryID  types.JournalEntryID
+	NetIncome       string
+}
+
+type ReopenYearEndClosingCommand struct {
+	Context
+	CompanyID         types.CompanyID
+	FiscalYearID      types.FiscalYearID
+	NextFiscalYearID  types.FiscalYearID
+	ApprovalReference string
+	Reason            string
+}
+
+type ReopenYearEndClosingResult struct {
+	ReversalEntryIDs []types.JournalEntryID
+}
+
 // GetEntryQuery reads one company-scoped entry.
 type GetEntryQuery struct {
 	Context
@@ -154,6 +220,14 @@ type Service interface {
 	Post(ctx context.Context, command PostEntryCommand) (EntryResult, error)
 	Reverse(ctx context.Context, command ReverseEntryCommand) (EntryResult, error)
 	GetEntry(ctx context.Context, query GetEntryQuery) (ledger.JournalEntry, error)
+}
+
+// YearEndClosingService is an optional application capability. It is
+// separate from Service so hosts without a transactional close adapter do not
+// accidentally advertise a non-atomic implementation.
+type YearEndClosingService interface {
+	ExecuteYearEndClosing(ctx context.Context, command ExecuteYearEndClosingCommand) (YearEndClosingResult, error)
+	ReopenYearEndClosing(ctx context.Context, command ReopenYearEndClosingCommand) (ReopenYearEndClosingResult, error)
 }
 
 // Capabilities describes which optional capabilities a built engine exposes.

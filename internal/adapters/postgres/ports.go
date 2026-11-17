@@ -13,5 +13,8 @@ func (d *Driver) Ports() storage.Ports {
 	ports.TxRunner = d
 	ports.UOWRunner = d
 	ports.Events = publicevents.Stores{Idempotency: d, Mappings: d}
+	ports.Private = storage.PrivateExtensions{
+		storage.PostingLockerExtensionKey: d,
+	}
 	return ports
 }

@@ -339,6 +339,32 @@ func TestPublicEventIngestionRejectsTerminalFailureRetry(t *testing.T) {
 	fixture.assertNoPosting(t)
 }
 
+type flakyUnitOfWork struct {
+	storage.UnitOfWork
+	posting storage.PostingWriter
+}
+
+func (u *flakyUnitOfWork) Posting() storage.PostingWriter { return u.posting }
+
+type flakyUnitOfWorkRunner struct {
+	storage.UnitOfWorkRunner
+	posting *flakyPostingPort
+}
+
+func (r *flakyUnitOfWorkRunner) Execute(ctx context.Context, fn func(context.Context, storage.UnitOfWork) error) error {
+	return r.UnitOfWorkRunner.Execute(ctx, func(txCtx context.Context, uow storage.UnitOfWork) error {
+		r.posting.PostingWriter = uow.Posting()
+		return fn(txCtx, &flakyUnitOfWork{UnitOfWork: uow, posting: r.posting})
+	})
+}
+
+func (r *flakyUnitOfWorkRunner) ExecuteWithOptions(ctx context.Context, opts storage.TxOptions, fn func(context.Context, storage.UnitOfWork) error) error {
+	return r.UnitOfWorkRunner.ExecuteWithOptions(ctx, opts, func(txCtx context.Context, uow storage.UnitOfWork) error {
+		r.posting.PostingWriter = uow.Posting()
+		return fn(txCtx, &flakyUnitOfWork{UnitOfWork: uow, posting: r.posting})
+	})
+}
+
 type flakyPostingPort struct {
 	storage.PostingWriter
 	mu       sync.Mutex
@@ -361,11 +387,12 @@ func (p *flakyPostingPort) CommitPosting(ctx context.Context, commit storage.Pos
 func TestPublicEventIngestionRecoversFailureBeforeCommit(t *testing.T) {
 	fixture := newPublicEventFixture(t)
 	ports := fixture.driver.Ports()
-	ports.Posting = &flakyPostingPort{
+	flake := &flakyPostingPort{
 		PostingWriter: ports.Posting,
 		failures:      1,
 		err:           storage.ErrSerializationFailure,
 	}
+	ports.UOWRunner = &flakyUnitOfWorkRunner{UnitOfWorkRunner: ports.UOWRunner, posting: flake}
 	engine := buildEventEngine(t, ports)
 
 	_, err := engine.Events().ProcessEvent(context.Background(), fixture.event("transient-key"))

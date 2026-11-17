@@ -26,6 +26,15 @@ type PostingConfig struct {
 // to pass already-constructed, engine-specific posting controls.
 const PostingCapabilitiesExtension = "accounting_engine.posting_capabilities"
 
+// HasPrivatePostingPolicy reports whether the adapter supplied a policy unit
+// through the engine-specific posting capabilities extension. The SDK
+// bootstrap uses this to verify a required posting-policy capability without
+// importing the posting package itself.
+func HasPrivatePostingPolicy(ports storage.Ports) bool {
+	supplied, ok := ports.Private[PostingCapabilitiesExtension].(posting.Capabilities)
+	return ok && supplied.PolicyUnit != nil
+}
+
 func createPostingEngine(
 	repository posting.Repository,
 	masterData *masterdata.Service,
@@ -76,6 +85,9 @@ func capabilitiesFromPublic(public storage.PostingCapabilities) posting.Capabili
 	if !isNilDependency(public.MakerCheckerPolicy) {
 		capabilities.MakerCheckerPolicy = publicMakerCheckerPolicy{policy: public.MakerCheckerPolicy}
 	}
+	if !isNilDependency(public.Locker) {
+		capabilities.PostingLocker = publicPostingLocker{locker: public.Locker}
+	}
 	return capabilities
 }
 
@@ -104,6 +116,9 @@ func mergeCapabilities(primary, additional posting.Capabilities) posting.Capabil
 	}
 	if primary.PolicyUnit == nil {
 		primary.PolicyUnit = additional.PolicyUnit
+	}
+	if primary.PostingLocker == nil {
+		primary.PostingLocker = additional.PostingLocker
 	}
 	return primary
 }
@@ -143,4 +158,17 @@ type publicMakerCheckerPolicy struct {
 
 func (p publicMakerCheckerPolicy) MakerCheckerThreshold(ctx context.Context, companyID uuid.UUID) (decimal.Decimal, bool, error) {
 	return p.policy.MakerCheckerThreshold(ctx, types.CompanyID(companyID))
+}
+
+type publicPostingLocker struct {
+	locker storage.PostingLocker
+}
+
+func (l publicPostingLocker) WithinPostingLock(
+	ctx context.Context,
+	companyID uuid.UUID,
+	journalID uuid.UUID,
+	fn func(ctx context.Context) error,
+) error {
+	return l.locker.WithinPostingLock(ctx, types.CompanyID(companyID), types.JournalID(journalID), fn)
 }

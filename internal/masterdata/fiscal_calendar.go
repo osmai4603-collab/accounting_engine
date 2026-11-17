@@ -9,11 +9,13 @@ import (
 )
 
 var (
-	ErrPeriodOutsideFiscalYear     = errors.New("period dates must be within the fiscal year")
-	ErrInvalidFiscalYearTransition = errors.New("invalid fiscal year transition")
-	ErrInvalidPeriodTransition     = errors.New("invalid fiscal period transition")
-	ErrPeriodTransitionNeedsAudit  = errors.New("fiscal period transition requires an actor and reason")
-	ErrPeriodReopenRequiresAudit   = errors.New("reopening a fiscal period requires an actor and reason")
+	ErrPeriodOutsideFiscalYear      = errors.New("period dates must be within the fiscal year")
+	ErrInvalidFiscalYearTransition  = errors.New("invalid fiscal year transition")
+	ErrInvalidPeriodTransition      = errors.New("invalid fiscal period transition")
+	ErrPeriodTransitionNeedsAudit   = errors.New("fiscal period transition requires an actor and reason")
+	ErrPeriodReopenRequiresAudit    = errors.New("reopening a fiscal period requires an actor and reason")
+	ErrPeriodReopenRequiresApproval = errors.New("reopening a fiscal period requires approval metadata")
+	ErrPeriodCoveredByAnnualClose   = errors.New("fiscal period is covered by an annual close")
 )
 
 type PeriodState string
@@ -46,18 +48,19 @@ type FiscalYear struct {
 }
 
 type FiscalPeriod struct {
-	CompanyID        uuid.UUID
-	ID               uuid.UUID
-	FiscalYearID     uuid.UUID
-	Number           int
-	Name             string
-	StartDate        time.Time
-	EndDate          time.Time
-	State            PeriodState
-	Type             FiscalPeriodType
-	LastStateActorID uuid.UUID
-	LastStateReason  string
-	LastStateAt      time.Time
+	CompanyID           uuid.UUID
+	ID                  uuid.UUID
+	FiscalYearID        uuid.UUID
+	Number              int
+	Name                string
+	StartDate           time.Time
+	EndDate             time.Time
+	State               PeriodState
+	Type                FiscalPeriodType
+	LastStateActorID    uuid.UUID
+	LastStateReason     string
+	LastStateAt         time.Time
+	LastStateApprovalID uuid.UUID
 }
 
 type FiscalPeriodType string
@@ -124,6 +127,16 @@ func ValidatePeriodReopen(from, to PeriodState, actorID uuid.UUID, reason string
 	}
 	if actorID == uuid.Nil || strings.TrimSpace(reason) == "" {
 		return ErrPeriodReopenRequiresAudit
+	}
+	return nil
+}
+
+func ValidatePeriodReopenWithApproval(from, to PeriodState, actorID uuid.UUID, reason string, approvalID uuid.UUID) error {
+	if err := ValidatePeriodReopen(from, to, actorID, reason); err != nil {
+		return err
+	}
+	if approvalID == uuid.Nil {
+		return ErrPeriodReopenRequiresApproval
 	}
 	return nil
 }

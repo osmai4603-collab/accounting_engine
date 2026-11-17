@@ -110,6 +110,31 @@ func (a *Application) ReverseEntryByIDWithMetadata(
 	effectiveDate time.Time,
 	idempotencyKey, reference, sourceSystem string,
 ) (ledger.JournalEntry, bool, error) {
+	return a.reverseEntryByIDWithMetadata(ctx, companyID, entryID, actorID, reason, effectiveDate,
+		idempotencyKey, reference, sourceSystem, 0)
+}
+
+func (a *Application) ReverseYearEndCloseEntryByIDWithMetadata(
+	ctx context.Context,
+	companyID types.CompanyID,
+	entryID types.JournalEntryID,
+	actorID, reason string,
+	effectiveDate time.Time,
+	idempotencyKey, reference, sourceSystem string,
+) (ledger.JournalEntry, bool, error) {
+	return a.reverseEntryByIDWithMetadata(ctx, companyID, entryID, actorID, reason, effectiveDate,
+		idempotencyKey, reference, sourceSystem, 13)
+}
+
+func (a *Application) reverseEntryByIDWithMetadata(
+	ctx context.Context,
+	companyID types.CompanyID,
+	entryID types.JournalEntryID,
+	actorID, reason string,
+	effectiveDate time.Time,
+	idempotencyKey, reference, sourceSystem string,
+	targetPeriodNumber int,
+) (ledger.JournalEntry, bool, error) {
 	if companyID == (types.CompanyID{}) {
 		return ledger.JournalEntry{}, false, errors.New("company id is required")
 	}
@@ -135,7 +160,7 @@ func (a *Application) ReverseEntryByIDWithMetadata(
 	internalEntry, replay, err := a.engine.ReverseWithRequestResultContext(ctx, uuid.UUID(companyID), uuid.UUID(entryID), posting.ReversalRequest{
 		ActorID: actorID, Reason: reason, EffectiveDate: effectiveDate,
 		IdempotencyKey: strings.TrimSpace(idempotencyKey), Reference: strings.TrimSpace(reference),
-		SourceSystem: strings.TrimSpace(sourceSystem),
+		SourceSystem: strings.TrimSpace(sourceSystem), TargetPeriodNumber: targetPeriodNumber,
 	}, actorID)
 	if err != nil {
 		return ledger.JournalEntry{}, false, err

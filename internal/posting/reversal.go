@@ -94,6 +94,11 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	if original.Status != EntryPosted {
 		return JournalEntry{}, false, ErrEntryNotPosted
 	}
+	if request.TargetPeriodNumber != 0 &&
+		(request.TargetPeriodNumber != 13 || original.Classification != EntryClassClosing ||
+			original.TargetPeriodNumber != request.TargetPeriodNumber) {
+		return JournalEntry{}, false, ErrInvalidReversal
+	}
 
 	reversalDate := request.EffectiveDate
 	explicitDate := !reversalDate.IsZero()
@@ -125,18 +130,20 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	// attachments and reconciliation state. Those are re-established by the
 	// reversal workflow (approval) or stay with the original document.
 	reversal := JournalEntry{
-		CompanyID:         original.CompanyID,
-		ID:                uuid.New(),
-		JournalID:         original.JournalID,
-		EntryDate:         reversalDate,
-		Date:              reversalDate,
-		Status:            EntryPosted,
-		Classification:    EntryClassReversing,
-		DocumentReference: original.DocumentReference,
-		Reference:         original.Reference,
-		ReversalReference: reference,
-		SourceModule:      sourceModule,
-		ReversalReason:    strings.TrimSpace(request.Reason),
+		CompanyID:            original.CompanyID,
+		ID:                   uuid.New(),
+		JournalID:            original.JournalID,
+		EntryDate:            reversalDate,
+		Date:                 reversalDate,
+		Status:               EntryPosted,
+		Classification:       EntryClassReversing,
+		TargetPeriodNumber:   request.TargetPeriodNumber,
+		AdjustmentAuthorized: request.TargetPeriodNumber == 13,
+		DocumentReference:    original.DocumentReference,
+		Reference:            original.Reference,
+		ReversalReference:    reference,
+		SourceModule:         sourceModule,
+		ReversalReason:       strings.TrimSpace(request.Reason),
 		// Entry-level currency context mirrors the original so reports can
 		// reproduce the same transaction currency and exchange rate; the
 		// authoritative amounts remain the per-line functional layers.
@@ -194,21 +201,33 @@ func (e *Engine) ReverseWithRequestResultContext(ctx context.Context, companyID,
 	if !ok {
 		return JournalEntry{}, false, ErrAtomicReversalRequired
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	posted, err := repository.CreateAndPostReversalAtomicContext(ctx, original, reversal)
-	if err != nil {
-		if errors.Is(err, ErrEntryAlreadyReversed) && request.IdempotencyKey != "" {
-			if reader, ok := e.repo.(IdempotentReversalReader); ok {
-				if existing, found, checkErr := reader.FindReversalByIdempotencyKeyContext(ctx, companyID, request.IdempotencyKey); checkErr == nil && found {
-					if existing.IdempotencyPayloadHash != payloadHash {
-						return JournalEntry{}, false, ErrIdempotencyConflict
+	var (
+		postedResult JournalEntry
+		wasCreated   bool
+	)
+	err = e.postingLocker().WithinPostingLock(ctx, reversal.CompanyID, reversal.JournalID, func(lockCtx context.Context) error {
+		posted, err := repository.CreateAndPostReversalAtomicContext(lockCtx, original, reversal)
+		if err != nil {
+			if errors.Is(err, ErrEntryAlreadyReversed) && request.IdempotencyKey != "" {
+				if reader, ok := e.repo.(IdempotentReversalReader); ok {
+					if existing, found, checkErr := reader.FindReversalByIdempotencyKeyContext(lockCtx, companyID, request.IdempotencyKey); checkErr == nil && found {
+						if existing.IdempotencyPayloadHash != payloadHash {
+							return ErrIdempotencyConflict
+						}
+						postedResult = existing
+						wasCreated = true
+						return nil
 					}
-					return existing, true, nil
 				}
 			}
+			return err
 		}
+		postedResult = posted
+		wasCreated = posted.ID != reversal.ID
+		return nil
+	})
+	if err != nil {
 		return JournalEntry{}, false, err
 	}
-	return posted, posted.ID != reversal.ID, nil
+	return postedResult, wasCreated, nil
 }

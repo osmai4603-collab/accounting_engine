@@ -43,7 +43,7 @@ func (d *Driver) GetCompanyByIDContext(ctx context.Context, companyID uuid.UUID)
 	if err := ctx.Err(); err != nil {
 		return masterdata.Company{}, err
 	}
-	return d.GetCompanyByID(companyID)
+	return transactionDriver(ctx, d).GetCompanyByID(companyID)
 }
 
 func (d *Driver) CreateJournal(ctx context.Context, journal masterdata.Journal) error {
@@ -136,7 +136,7 @@ func (d *Driver) GetAccountByIDForCompany(ctx context.Context, companyID, accoun
 }
 
 func (d *Driver) GetAccountByIDForCompanyContext(ctx context.Context, companyID, accountID uuid.UUID) (masterdata.Account, error) {
-	return d.GetAccountByIDForCompany(ctx, companyID, accountID)
+	return transactionDriver(ctx, d).GetAccountByIDForCompany(ctx, companyID, accountID)
 }
 
 func (d *Driver) GetAccountByCodeForCompany(ctx context.Context, companyID uuid.UUID, code string) (masterdata.Account, error) {
@@ -198,12 +198,15 @@ func (d *Driver) ListAccountsForCompanyContext(ctx context.Context, companyID uu
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return d.ListAccountsForCompany(companyID)
+	return transactionDriver(ctx, d).ListAccountsForCompany(companyID)
 }
 
 func (d *Driver) ListAccountsForCompanyAsOfContext(ctx context.Context, companyID uuid.UUID, asOf time.Time) ([]masterdata.Account, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ListAccountsForCompanyAsOfContext(ctx, companyID, asOf)
 	}
 	if companyID == uuid.Nil || asOf.IsZero() {
 		return nil, masterdata.ErrCompanyScopeRequired
@@ -444,19 +447,23 @@ func (d *Driver) UpdateFiscalYearStateForCompanyContext(ctx context.Context, com
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	year, err := d.GetFiscalYearForCompany(ctx, companyID, id)
+	driver := transactionDriver(ctx, d)
+	year, err := driver.GetFiscalYearForCompany(ctx, companyID, id)
 	if err != nil {
 		return err
 	}
 	if year.CompanyID != companyID {
 		return masterdata.ErrFiscalYearNotFound
 	}
-	return d.UpdateFiscalYearState(ctx, companyID, id, state)
+	return driver.UpdateFiscalYearState(ctx, companyID, id, state)
 }
 
 func (d *Driver) ReopenFiscalYearForCompanyContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ReopenFiscalYearForCompanyContext(ctx, companyID, id, actorID, reason)
 	}
 	reason = strings.TrimSpace(reason)
 	if actorID == uuid.Nil || reason == "" {
@@ -505,6 +512,9 @@ func (d *Driver) GetPeriodByDate(ctx context.Context, date time.Time) (masterdat
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalPeriod{}, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.GetPeriodByDate(ctx, date)
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var matched []masterdata.FiscalPeriod
@@ -530,6 +540,9 @@ func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.U
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalPeriod{}, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.GetPeriodByDateForCompany(ctx, companyID, date)
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var matched []masterdata.FiscalPeriod
@@ -554,6 +567,9 @@ func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.U
 func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fiscalYearID uuid.UUID, number int) (masterdata.FiscalPeriod, error) {
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalPeriod{}, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.GetPeriodByNumberForCompany(ctx, companyID, fiscalYearID, number)
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -595,22 +611,77 @@ func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID,
 	return nil
 }
 
+func (d *Driver) TransitionPeriodStateContext(
+	ctx context.Context,
+	companyID, id uuid.UUID,
+	state masterdata.PeriodState,
+	actorID uuid.UUID,
+	reason string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	if actorID == uuid.Nil || reason == "" {
+		return masterdata.ErrPeriodTransitionNeedsAudit
+	}
+	if state == masterdata.PeriodOpen {
+		return masterdata.ErrInvalidPeriodTransition
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	period, ok := d.periods[id]
+	if !ok || period.CompanyID != companyID {
+		return masterdata.ErrFiscalPeriodNotFound
+	}
+	if err := masterdata.ValidatePeriodTransition(period.State, state); err != nil {
+		return err
+	}
+	period.State = state
+	period.LastStateActorID = actorID
+	period.LastStateReason = reason
+	period.LastStateAt = time.Now().UTC()
+	period.LastStateApprovalID = uuid.Nil
+	d.periods[id] = period
+	for yearID, year := range d.years {
+		for i := range year.Periods {
+			if year.Periods[i].ID == id {
+				year.Periods[i] = period
+				d.years[yearID] = year
+			}
+		}
+	}
+	return nil
+}
+
 func (d *Driver) UpdatePeriodStateForCompanyContext(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	d.mu.RLock()
-	period, ok := d.periods[id]
-	d.mu.RUnlock()
+	driver := transactionDriver(ctx, d)
+	driver.mu.RLock()
+	period, ok := driver.periods[id]
+	driver.mu.RUnlock()
 	if !ok || period.CompanyID != companyID {
 		return masterdata.ErrFiscalPeriodNotFound
 	}
-	return d.UpdatePeriodState(ctx, companyID, id, state)
+	return driver.UpdatePeriodState(ctx, companyID, id, state)
 }
 
 func (d *Driver) ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
+	return d.ReopenPeriodWithApprovalContext(ctx, companyID, id, actorID, uuid.Nil, reason)
+}
+
+func (d *Driver) ReopenPeriodWithApprovalContext(
+	ctx context.Context,
+	companyID, id, actorID, approvalID uuid.UUID,
+	reason string,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ReopenPeriodWithApprovalContext(ctx, companyID, id, actorID, approvalID, reason)
 	}
 	reason = strings.TrimSpace(reason)
 	if actorID == uuid.Nil || reason == "" {
@@ -622,13 +693,21 @@ func (d *Driver) ReopenPeriodContext(ctx context.Context, companyID, id, actorID
 	if !ok || period.CompanyID != companyID {
 		return masterdata.ErrFiscalPeriodNotFound
 	}
-	if err := masterdata.ValidatePeriodReopen(period.State, masterdata.PeriodOpen, actorID, reason); err != nil {
+	if err := masterdata.ValidatePeriodReopenWithApproval(period.State, masterdata.PeriodOpen, actorID, reason, approvalID); err != nil {
 		return err
+	}
+	year, ok := d.years[period.FiscalYearID]
+	if !ok || year.CompanyID != companyID {
+		return masterdata.ErrFiscalYearNotFound
+	}
+	if year.State == masterdata.FiscalYearHardClosed {
+		return masterdata.ErrPeriodCoveredByAnnualClose
 	}
 	period.State = masterdata.PeriodOpen
 	period.LastStateActorID = actorID
 	period.LastStateReason = reason
 	period.LastStateAt = time.Now().UTC()
+	period.LastStateApprovalID = approvalID
 	d.periods[id] = period
 	for yearID, year := range d.years {
 		for i := range year.Periods {
@@ -659,6 +738,9 @@ func (d *Driver) HasChildrenForCompanyContext(ctx context.Context, companyID, ac
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.HasChildrenForCompanyContext(ctx, companyID, accountID)
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, account := range d.accounts {
@@ -673,7 +755,7 @@ func (d *Driver) GetFiscalYearForCompanyContext(ctx context.Context, companyID, 
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalYear{}, err
 	}
-	return d.GetFiscalYearForCompany(ctx, companyID, fiscalYearID)
+	return transactionDriver(ctx, d).GetFiscalYearForCompany(ctx, companyID, fiscalYearID)
 }
 
 func (d *Driver) IsFirstFiscalYearForCompanyContext(
@@ -682,6 +764,9 @@ func (d *Driver) IsFirstFiscalYearForCompanyContext(
 ) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.IsFirstFiscalYearForCompanyContext(ctx, companyID, fiscalYearID)
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -703,12 +788,12 @@ func (d *Driver) GetPeriodByDateForCompanyContext(ctx context.Context, companyID
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalPeriod{}, err
 	}
-	return d.GetPeriodByDateForCompany(ctx, companyID, date)
+	return transactionDriver(ctx, d).GetPeriodByDateForCompany(ctx, companyID, date)
 }
 
 func (d *Driver) GetPeriodByNumberForCompanyContext(ctx context.Context, companyID, fiscalYearID uuid.UUID, number int) (masterdata.FiscalPeriod, error) {
 	if err := ctx.Err(); err != nil {
 		return masterdata.FiscalPeriod{}, err
 	}
-	return d.GetPeriodByNumberForCompany(ctx, companyID, fiscalYearID, number)
+	return transactionDriver(ctx, d).GetPeriodByNumberForCompany(ctx, companyID, fiscalYearID, number)
 }

@@ -5,33 +5,16 @@ import (
 	"testing"
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
-	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
-	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
+	publicapplication "github.com/osmai4603-collab/accounting_engine/pkg/spi/application"
+	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
-type testCoreLedgerStore struct{}
+type fakeApplication struct{ publicapplication.Service }
+type fakeEntryReader struct{ standards.EntryReader }
+type fakeMasterDataReader struct{ standards.MasterDataReader }
 
-var _ legacy.CoreLedgerStore = testCoreLedgerStore{}
-
-func (testCoreLedgerStore) SaveEntry(context.Context, ledger.JournalEntry) error {
-	return nil
-}
-
-func (testCoreLedgerStore) GetEntry(context.Context, types.CompanyID, types.JournalEntryID) (ledger.JournalEntry, error) {
-	return ledger.JournalEntry{}, nil
-}
-
-func (testCoreLedgerStore) PostEntry(context.Context, ledger.JournalEntry) error {
-	return nil
-}
-
-func (testCoreLedgerStore) GetAccount(context.Context, types.CompanyID, types.AccountID) (ledger.Account, error) {
-	return ledger.Account{}, nil
-}
-
-func (testCoreLedgerStore) GetFiscalPeriod(context.Context, types.CompanyID, types.FiscalPeriodID) (ledger.FiscalPeriod, error) {
-	return ledger.FiscalPeriod{}, nil
+func validPorts() standards.ModulePorts {
+	return standards.NewModulePorts(fakeEntryReader{}, nil, fakeMasterDataReader{}, fakeApplication{})
 }
 
 func TestModuleDependencies(t *testing.T) {
@@ -40,17 +23,17 @@ func TestModuleDependencies(t *testing.T) {
 	if got := module.Dependencies(); len(got) != 0 {
 		t.Fatalf("Dependencies() = %v, want no module dependencies", got)
 	}
-	if err := module.ValidateDependencies(nil); err == nil || err.Error() != "core ledger store cannot be nil for IAS 12" {
-		t.Fatalf("ValidateDependencies(nil) error = %v, want IAS 12 core ledger store error", err)
+	if err := module.ValidateDependencies(nil); err == nil {
+		t.Fatal("ValidateDependencies(nil) returned nil, want module ports error")
 	}
-	if err := module.Initialize(context.Background(), nil); err == nil || err.Error() != "core ledger store cannot be nil for IAS 12" {
-		t.Fatalf("Initialize with nil store error = %v, want IAS 12 core ledger store error", err)
+	if err := module.Initialize(context.Background(), nil); err == nil {
+		t.Fatal("Initialize(nil) returned nil, want module ports error")
 	}
-	if err := module.ValidateDependencies(testCoreLedgerStore{}); err != nil {
-		t.Fatalf("ValidateDependencies with core ledger store: %v", err)
+	if err := module.ValidateDependencies(validPorts()); err != nil {
+		t.Fatalf("ValidateDependencies with complete module ports: %v", err)
 	}
-	if err := module.Initialize(context.Background(), testCoreLedgerStore{}); err != nil {
-		t.Fatalf("Initialize with core ledger store: %v", err)
+	if err := module.Initialize(context.Background(), validPorts()); err != nil {
+		t.Fatalf("Initialize with complete module ports: %v", err)
 	}
 }
 

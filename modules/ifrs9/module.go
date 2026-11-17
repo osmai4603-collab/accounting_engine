@@ -2,10 +2,9 @@ package ifrs9
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
@@ -78,14 +77,14 @@ func (m *Module) Dependencies() []string {
 	return nil
 }
 
-func (m *Module) ValidateDependencies(ports legacy.CoreLedgerStore) error {
-	if ports == nil {
-		return errors.New("core ledger store cannot be nil for IFRS 9")
+func (m *Module) ValidateDependencies(ports standards.ModulePorts) error {
+	if err := standards.ValidateStandardModulePorts(ports); err != nil {
+		return fmt.Errorf("IFRS 9: %w", err)
 	}
 	return nil
 }
 
-func (m *Module) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) error {
+func (m *Module) Initialize(ctx context.Context, ports standards.ModulePorts) error {
 	return m.ValidateDependencies(ports)
 }
 

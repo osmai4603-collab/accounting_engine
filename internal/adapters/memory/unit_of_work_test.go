@@ -4,10 +4,63 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 )
+
+func TestMemoryUnitOfWorkRollsBackFiscalYearAndPeriodTransitions(t *testing.T) {
+	driver := New()
+	companyID := uuid.New()
+	year := masterdata.GenerateFiscalYear(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	year.CompanyID = companyID
+	if err := driver.CreateFiscalYear(context.Background(), year); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("abort annual close")
+
+	err := driver.Execute(context.Background(), func(ctx context.Context, _ storage.UnitOfWork) error {
+		if err := driver.UpdatePeriodStateForCompanyContext(
+			ctx, companyID, year.Periods[12].ID, masterdata.PeriodSoftClosed,
+		); err != nil {
+			return err
+		}
+		if err := driver.UpdatePeriodStateForCompanyContext(
+			ctx, companyID, year.Periods[12].ID, masterdata.PeriodHardClosed,
+		); err != nil {
+			return err
+		}
+		if err := driver.UpdateFiscalYearStateForCompanyContext(
+			ctx, companyID, year.ID, masterdata.FiscalYearSoftClosed,
+		); err != nil {
+			return err
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("Execute error = %v, want callback error", err)
+	}
+	storedYear, err := driver.GetFiscalYearForCompanyContext(context.Background(), companyID, year.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedYear.State != masterdata.FiscalYearOpen ||
+		storedYear.Periods[12].State != masterdata.PeriodOpen {
+		t.Fatalf("state after rollback = (%s, %s), want open/open", storedYear.State, storedYear.Periods[12].State)
+	}
+	storedPeriod, err := driver.GetPeriodByNumberForCompany(
+		context.Background(), companyID, year.ID, 13,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedPeriod.State != masterdata.PeriodOpen {
+		t.Fatalf("period state after rollback = %s, want open", storedPeriod.State)
+	}
+}
 
 func TestMemoryUnitOfWorkRollsBackSequenceAuditAndIdempotency(t *testing.T) {
 	driver := New()

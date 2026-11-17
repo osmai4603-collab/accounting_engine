@@ -322,12 +322,17 @@ func (s *ExternalStore) GetEntry(_ context.Context, companyID types.CompanyID, e
 func (s *ExternalStore) CommitPosting(_ context.Context, commit storage.PostingCommit) (ledger.JournalEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.commitPostingLocked(commit)
+}
 
+// commitPostingLocked is the transaction-bound variant used by unit-of-work
+// ports. The caller already holds the store lock, so it must not re-acquire it.
+func (s *ExternalStore) commitPostingLocked(commit storage.PostingCommit) (ledger.JournalEntry, error) {
 	entry := cloneEntry(commit.Entry)
 	if entry.SequenceNumber <= 0 {
-		key := fmt.Sprintf("%s/%s", entry.CompanyID, entry.JournalID)
-		entry.SequenceNumber = s.sequences[key] + 1
-		s.sequences[key] = entry.SequenceNumber
+		entry.SequenceNumber = s.nextSequenceLocked(entry.CompanyID, entry.JournalID)
+	}
+	if entry.EntryNumber == "" && entry.SequenceNumber > 0 {
 		entry.EntryNumber = fmt.Sprintf("%d", entry.SequenceNumber)
 	}
 
@@ -384,10 +389,16 @@ func (s *ExternalStore) CommitPosting(_ context.Context, commit storage.PostingC
 func (s *ExternalStore) NextSequence(_ context.Context, companyID types.CompanyID, journalID types.JournalID) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.nextSequenceLocked(companyID, journalID), nil
+}
+
+// nextSequenceLocked is the transaction-bound variant used by unit-of-work
+// ports. The caller already holds the store lock.
+func (s *ExternalStore) nextSequenceLocked(companyID types.CompanyID, journalID types.JournalID) int64 {
 	key := fmt.Sprintf("%s/%s", companyID, journalID)
 	seq := s.sequences[key] + 1
 	s.sequences[key] = seq
-	return seq, nil
+	return seq
 }
 
 // ------------------------------------------------------------- Balance & Reporting
@@ -771,10 +782,27 @@ type externalUnitOfWork struct {
 	store *ExternalStore
 }
 
-func (u *externalUnitOfWork) Drafts() storage.DraftStore            { return u.store }
-func (u *externalUnitOfWork) Entries() storage.EntryReader          { return u.store }
-func (u *externalUnitOfWork) Posting() storage.PostingWriter        { return u.store }
-func (u *externalUnitOfWork) Sequences() storage.SequenceAllocator  { return u.store }
+// externalTxPorts exposes posting ports bound to the transaction already held
+// by ExternalStore.ExecuteWithOptions. The store lock is not re-entrant, so
+// these wrappers must never call the public locking methods.
+type externalTxPorts struct {
+	store *ExternalStore
+}
+
+func (p externalTxPorts) NextSequence(_ context.Context, companyID types.CompanyID, journalID types.JournalID) (int64, error) {
+	return p.store.nextSequenceLocked(companyID, journalID), nil
+}
+
+func (p externalTxPorts) CommitPosting(_ context.Context, commit storage.PostingCommit) (ledger.JournalEntry, error) {
+	return p.store.commitPostingLocked(commit)
+}
+
+func (u *externalUnitOfWork) Drafts() storage.DraftStore     { return u.store }
+func (u *externalUnitOfWork) Entries() storage.EntryReader   { return u.store }
+func (u *externalUnitOfWork) Posting() storage.PostingWriter { return externalTxPorts{store: u.store} }
+func (u *externalUnitOfWork) Sequences() storage.SequenceAllocator {
+	return externalTxPorts{store: u.store}
+}
 func (u *externalUnitOfWork) Audit() storage.AuditWriter            { return u.store }
 func (u *externalUnitOfWork) Idempotency() storage.IdempotencyStore { return u.store }
 func (u *externalUnitOfWork) Balance() storage.BalanceReader        { return u.store }

@@ -64,6 +64,29 @@ The root package `accounting_engine` (`github.com/osmai4603-collab/accounting_en
 - **Replacement:** Use `pkg/sdk.NewBuilder` with explicit storage and configuration injection.
 - **Planned Removal:** Removal will occur in `v1.0.0` (as decided in [ADR-0001](../docs/adr/ADR-0001-public-entry-point.md)).
 
+### Standard Module SPI Migration (P8-01)
+
+`pkg/spi/standards.StandardModule` no longer depends on `legacy.CoreLedgerStore`. Its
+`ValidateDependencies` and `Initialize` methods now receive
+`standards.ModulePorts`, a public, implementation-neutral surface that exposes
+`Entries()`, `Balance()`, `MasterData()` and `Application()` only.
+
+- **Status:** **Current** as of the `P8` line. Modules implemented against the
+  old `CoreLedgerStore` signatures no longer compile and must migrate to
+  `ModulePorts`.
+- **Modern path:** `WithStoragePorts(ports)` + `WithStandard(module)` is
+  supported. Missing optional ports are `nil`, and a module that needs one must
+  fail in `ValidateDependencies`.
+- **Legacy path:** `WithCoreStorage(store)` + `WithStandard(module)` keeps
+  working through internal adapters in `pkg/sdk/module_ports.go`. The legacy
+  path is **deprecated** and will be removed in the next MAJOR release together
+  with `WithCoreStorage`; it will not receive new capabilities (for example, it
+  has no `BalanceReader`).
+- **Import boundary:** `pkg/spi/standards/**` must not import `internal/**` or
+  the legacy storage contract. This is enforced by
+  `pkg/spi/standards/imports_test.go` and `scripts/check_public_api_purity.sh`.
+- **Rationale and evidence:** [ARD-P8-01](./ard/ARD-P8-01.md).
+
 ---
 
 ## 4. Storage and Schema Compatibility

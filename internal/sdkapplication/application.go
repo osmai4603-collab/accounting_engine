@@ -101,6 +101,12 @@ func NewApplicationFromPortsWithPostingCapabilities(
 	if supplied, ok := ports.Private[PostingCapabilitiesExtension].(posting.Capabilities); ok {
 		capabilities = supplied
 	}
+	if !isNilDependency(capabilities.PostingLocker) {
+		// Keep an engine-specific locker supplied through the existing private
+		// capability bundle.
+	} else if locker, ok := ports.Private[storage.PostingLockerExtensionKey].(posting.PostingLocker); ok {
+		capabilities.PostingLocker = locker
+	}
 	capabilities = mergeCapabilities(capabilities, capabilitiesFromPublic(publicCapabilities))
 	engine, err := createPostingEngine(&portbridge.Repository{Ports: ports}, portbridge.NewMasterDataService(ports), config, capabilities)
 	if err != nil {

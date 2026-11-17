@@ -12,7 +12,13 @@ const (
 	AccountTypeEquity    AccountType = "equity"
 	AccountTypeIncome    AccountType = "income"
 	AccountTypeExpense   AccountType = "expense"
-	AccountTypeRevenue   AccountType = "income"
+
+	// AccountTypeRevenue is a deprecated alias for AccountTypeIncome. Both
+	// constants carry the same wire value ("income"), so persisted accounts and
+	// reports remain unchanged.
+	//
+	// Deprecated: Use AccountTypeIncome instead.
+	AccountTypeRevenue AccountType = "income"
 )
 
 type NormalBalance string

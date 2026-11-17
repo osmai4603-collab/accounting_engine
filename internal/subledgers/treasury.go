@@ -2,19 +2,32 @@ package subledgers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	apisubledger "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/subledger"
+	publictypes "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	spisubledger "github.com/osmai4603-collab/accounting_engine/pkg/spi/subledger"
 	"github.com/shopspring/decimal"
 )
 
+var ErrBankAdjustmentApprovalRequired = errors.New("explicit approval is required for a bank reconciliation adjustment")
+
 type TreasuryLedger struct {
-	repo      TreasuryRepository
-	companyID uuid.UUID
+	repo         TreasuryRepository
+	companyID    uuid.UUID
+	storeMu      sync.RWMutex
+	banks        map[string]apisubledger.BankAccount
+	transactions map[string]apisubledger.TreasuryTransaction
 }
+
+var _ spisubledger.TreasuryStore = (*TreasuryLedger)(nil)
 
 type TreasuryRepository interface {
 	BankItemRepository
@@ -24,11 +37,315 @@ type TreasuryRepository interface {
 }
 
 func NewTreasuryLedger(repo TreasuryRepository) *TreasuryLedger {
-	return &TreasuryLedger{repo: repo}
+	return &TreasuryLedger{repo: repo, banks: make(map[string]apisubledger.BankAccount), transactions: make(map[string]apisubledger.TreasuryTransaction)}
 }
 
 func NewTreasuryLedgerForCompany(repo TreasuryRepository, companyID uuid.UUID) *TreasuryLedger {
-	return &TreasuryLedger{repo: repo, companyID: companyID}
+	return &TreasuryLedger{repo: repo, companyID: companyID, banks: make(map[string]apisubledger.BankAccount), transactions: make(map[string]apisubledger.TreasuryTransaction)}
+}
+
+// SaveBankAccount stores administrative bank-account metadata only; it never creates a journal entry.
+func (l *TreasuryLedger) SaveBankAccount(ctx context.Context, companyID publictypes.CompanyID, bank apisubledger.BankAccount) error {
+	if ctx == nil {
+		return ErrInvalidBankAccount
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	company := uuid.UUID(companyID)
+	bankCompany := uuid.UUID(bank.CompanyID)
+	accountID, err := uuid.Parse(bank.AccountID)
+	if err != nil || company == uuid.Nil || bankCompany != company ||
+		(l.companyID != uuid.Nil && company != l.companyID) ||
+		strings.TrimSpace(bank.BankName) == "" || strings.TrimSpace(bank.AccountNumber) == "" ||
+		strings.TrimSpace(bank.Currency) == "" || uuid.UUID(bank.GLAccountID) == uuid.Nil {
+		if bankCompany != uuid.Nil && company != bankCompany {
+			return ErrCompanyMismatch
+		}
+		return ErrInvalidBankAccount
+	}
+	if _, ok := financialtypes.LookupCurrency(bank.Currency); !ok {
+		return ErrInvalidBankAccount
+	}
+	bank.AccountID = accountID.String()
+	key := treasuryStoreKey(company, bank.AccountID)
+	l.storeMu.Lock()
+	defer l.storeMu.Unlock()
+	if l.banks == nil {
+		l.banks = make(map[string]apisubledger.BankAccount)
+	}
+	l.banks[key] = bank
+	return nil
+}
+
+func (l *TreasuryLedger) GetBankAccount(ctx context.Context, companyID publictypes.CompanyID, id string) (apisubledger.BankAccount, error) {
+	if ctx == nil {
+		return apisubledger.BankAccount{}, ErrInvalidBankAccount
+	}
+	if err := ctx.Err(); err != nil {
+		return apisubledger.BankAccount{}, err
+	}
+	company := uuid.UUID(companyID)
+	if company == uuid.Nil || (l.companyID != uuid.Nil && company != l.companyID) {
+		return apisubledger.BankAccount{}, ErrCompanyMismatch
+	}
+	accountID, err := uuid.Parse(id)
+	if err != nil {
+		return apisubledger.BankAccount{}, ErrInvalidBankAccount
+	}
+	l.storeMu.RLock()
+	defer l.storeMu.RUnlock()
+	bank, exists := l.banks[treasuryStoreKey(company, accountID.String())]
+	if !exists {
+		return apisubledger.BankAccount{}, ErrNotFound
+	}
+	return bank, nil
+}
+
+// SaveTransaction stores transaction metadata only. Posting is an explicit, separate operation.
+func (l *TreasuryLedger) SaveTransaction(ctx context.Context, companyID publictypes.CompanyID, tx apisubledger.TreasuryTransaction) error {
+	if ctx == nil {
+		return ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	company := uuid.UUID(companyID)
+	txCompany := uuid.UUID(tx.CompanyID)
+	transactionID, transactionErr := uuid.Parse(tx.TransactionID)
+	accountID, accountErr := uuid.Parse(tx.BankAccountID)
+	if company == uuid.Nil || txCompany != company ||
+		(l.companyID != uuid.Nil && company != l.companyID) ||
+		transactionErr != nil || accountErr != nil || tx.Amount.Currency() == "" ||
+		tx.Amount.IsZero() || tx.Amount.IsNegative() || tx.ValueDate.IsZero() ||
+		strings.TrimSpace(tx.TransactionType) == "" {
+		if txCompany != uuid.Nil && company != txCompany {
+			return ErrCompanyMismatch
+		}
+		return ErrInvalidAmount
+	}
+	bank, err := l.GetBankAccount(ctx, companyID, accountID.String())
+	if err != nil {
+		return err
+	}
+	if tx.Amount.Currency() != bank.Currency {
+		return ErrInvalidAmount
+	}
+	tx.TransactionID = transactionID.String()
+	tx.BankAccountID = accountID.String()
+	key := treasuryStoreKey(company, tx.TransactionID)
+	l.storeMu.Lock()
+	defer l.storeMu.Unlock()
+	if l.transactions == nil {
+		l.transactions = make(map[string]apisubledger.TreasuryTransaction)
+	}
+	if _, exists := l.transactions[key]; exists {
+		return ErrAlreadyExists
+	}
+	l.transactions[key] = tx
+	return nil
+}
+
+func treasuryStoreKey(companyID uuid.UUID, id string) string {
+	return companyID.String() + ":" + id
+}
+
+// CreateTransactionDraftContext is the explicit GL path for direct deposits and withdrawals.
+func (l *TreasuryLedger) CreateTransactionDraftContext(
+	ctx context.Context,
+	creator JournalCreator,
+	bank BankAccount,
+	tx apisubledger.TreasuryTransaction,
+	offsetAccountID, journalID uuid.UUID,
+) (posting.JournalEntry, error) {
+	if ctx == nil {
+		return posting.JournalEntry{}, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if creator == nil || offsetAccountID == uuid.Nil || journalID == uuid.Nil ||
+		tx.ValueDate.IsZero() || strings.TrimSpace(tx.TransactionType) == "" ||
+		tx.Amount.Currency() == "" || tx.Amount.IsZero() || tx.Amount.IsNegative() {
+		return posting.JournalEntry{}, ErrInvalidAmount
+	}
+	if _, err := uuid.Parse(tx.TransactionID); err != nil {
+		return posting.JournalEntry{}, ErrInvalidAmount
+	}
+	companyID := uuid.UUID(tx.CompanyID)
+	txBankID, err := uuid.Parse(tx.BankAccountID)
+	if err != nil || txBankID != bank.ID || companyID != bank.CompanyID ||
+		(l.companyID != uuid.Nil && companyID != l.companyID) {
+		return posting.JournalEntry{}, ErrCompanyMismatch
+	}
+	if err := bank.ValidateForCompany(companyID); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if tx.Amount.Currency() != bank.Currency {
+		return posting.JournalEntry{}, ErrInvalidAmount
+	}
+	amount, err := financialtypes.NewMoney(tx.Amount.Amount(), tx.Amount.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	zero, err := financialtypes.Zero(amount.Currency())
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	var lines []posting.JournalEntryLine
+	switch strings.ToLower(strings.TrimSpace(tx.TransactionType)) {
+	case "deposit", "direct_deposit":
+		lines = []posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: bank.GLAccountID, Debit: amount, Credit: zero},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: offsetAccountID, Debit: zero, Credit: amount},
+		}
+	case "withdrawal", "direct_withdrawal":
+		lines = []posting.JournalEntryLine{
+			{CompanyID: companyID, ID: uuid.New(), AccountID: offsetAccountID, Debit: amount, Credit: zero},
+			{CompanyID: companyID, ID: uuid.New(), AccountID: bank.GLAccountID, Debit: zero, Credit: amount},
+		}
+	default:
+		return posting.JournalEntry{}, ErrInvalidBankAccount
+	}
+	reference := tx.Reference
+	if reference == "" {
+		reference = "TREASURY:" + tx.TransactionID
+	}
+	entry := posting.JournalEntry{
+		CompanyID: companyID, ID: uuid.New(), JournalID: journalID,
+		EntryDate: tx.ValueDate, Date: tx.ValueDate, Status: posting.EntryDraft,
+		DocumentReference: reference, Reference: reference, CreatedAt: time.Now().UTC(),
+		Lines: lines,
+	}
+	if err := entry.Validate(); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := creator.CreateDraft(entry); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return entry, nil
+}
+
+// BankAdjustmentApproval records the explicit authorization for a reconciliation-generated adjustment.
+type BankAdjustmentApproval struct {
+	ApprovalID string
+	ApprovedBy string
+	Reason     string
+	ApprovedAt time.Time
+}
+
+func (a BankAdjustmentApproval) valid() bool {
+	return strings.TrimSpace(a.ApprovalID) != "" &&
+		strings.TrimSpace(a.ApprovedBy) != "" &&
+		strings.TrimSpace(a.Reason) != "" &&
+		!a.ApprovedAt.IsZero()
+}
+
+// ImportStatementContext validates and normalizes externally parsed statement lines.
+// The imported data is returned for matching and is never persisted as a GL entry.
+func (l *TreasuryLedger) ImportStatementContext(
+	ctx context.Context,
+	accountID uuid.UUID,
+	lines []BankItem,
+) ([]BankItem, error) {
+	if ctx == nil || accountID == uuid.Nil {
+		return nil, ErrInvalidOpenLine
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(lines) == 0 {
+		return []BankItem{}, nil
+	}
+	imported := make([]BankItem, len(lines))
+	seen := make(map[uuid.UUID]struct{}, len(lines))
+	currency := ""
+	for i, line := range lines {
+		if line.AccountID != uuid.Nil && line.AccountID != accountID {
+			return nil, ErrInvalidBankAccount
+		}
+		if line.Date.IsZero() || line.Amount.Currency() == "" || line.Amount.Amount().IsZero() {
+			return nil, ErrInvalidOpenLine
+		}
+		if l.companyID != uuid.Nil && line.CompanyID != uuid.Nil && line.CompanyID != l.companyID {
+			return nil, ErrCompanyMismatch
+		}
+		if currency == "" {
+			currency = line.Amount.Currency()
+		} else if currency != line.Amount.Currency() {
+			return nil, ErrMixedCurrencyReconciliation
+		}
+		if line.ID == uuid.Nil {
+			line.ID = uuid.New()
+		}
+		if _, exists := seen[line.ID]; exists {
+			return nil, ErrInvalidOpenLine
+		}
+		seen[line.ID] = struct{}{}
+		line.AccountID = accountID
+		if l.companyID != uuid.Nil {
+			line.CompanyID = l.companyID
+		}
+		line.JournalEntryID = uuid.Nil
+		line.Status = BankItemUnrecorded
+		line.MatchedAt = time.Time{}
+		imported[i] = line
+	}
+	return imported, nil
+}
+
+// ReconciliationReportContext matches imported lines and reports book and statement balances.
+// It only updates matching metadata; adjustment entries require explicit approval.
+func (l *TreasuryLedger) ReconciliationReportContext(
+	ctx context.Context,
+	accountID uuid.UUID,
+	statement []BankItem,
+	toleranceDays int,
+) (apisubledger.ReconciliationReport, []BankItem, []BankItem, error) {
+	if ctx == nil || accountID == uuid.Nil {
+		return apisubledger.ReconciliationReport{}, nil, nil, ErrInvalidOpenLine
+	}
+	if l.companyID == uuid.Nil {
+		return apisubledger.ReconciliationReport{}, nil, nil, ErrCompanyScopeRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return apisubledger.ReconciliationReport{}, nil, nil, err
+	}
+	_, pending, unrecorded, err := l.ReconcileWithToleranceContext(ctx, accountID, statement, toleranceDays)
+	if err != nil {
+		return apisubledger.ReconciliationReport{}, nil, nil, err
+	}
+	currency := ""
+	for _, line := range statement {
+		if currency == "" {
+			currency = line.Amount.Currency()
+		} else if currency != line.Amount.Currency() {
+			return apisubledger.ReconciliationReport{}, nil, nil, ErrMixedCurrencyReconciliation
+		}
+	}
+	statementBalance, bookBalance := decimal.Zero, decimal.Zero
+	for _, item := range unrecorded {
+		if currency == "" {
+			currency = item.Amount.Currency()
+		} else if currency != item.Amount.Currency() {
+			return apisubledger.ReconciliationReport{}, nil, nil, ErrMixedCurrencyReconciliation
+		}
+		statementBalance = statementBalance.Add(item.Amount.Amount())
+	}
+	for _, item := range pending {
+		if currency == "" {
+			currency = item.Amount.Currency()
+		} else if currency != item.Amount.Currency() {
+			return apisubledger.ReconciliationReport{}, nil, nil, ErrMixedCurrencyReconciliation
+		}
+		bookBalance = bookBalance.Add(item.Amount.Amount())
+	}
+	unmatched := len(pending) + len(unrecorded)
+	return apisubledger.ReconciliationReport{
+		ReportID: uuid.NewString(), CompanyID: publictypes.CompanyID(l.companyID),
+		BankAccountID: accountID.String(), StatementBalance: statementBalance,
+		BookBalance: bookBalance, UnmatchedItems: unmatched, Reconciled: unmatched == 0,
+	}, pending, unrecorded, nil
 }
 
 func (l *TreasuryLedger) InitiateInterbankTransferContext(
@@ -40,6 +357,9 @@ func (l *TreasuryLedger) InitiateInterbankTransferContext(
 	date time.Time,
 	reference string,
 ) (InterbankTransfer, posting.JournalEntry, error) {
+	if ctx == nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, ErrInvalidOpenLine
+	}
 	if err := ctx.Err(); err != nil {
 		return InterbankTransfer{}, posting.JournalEntry{}, err
 	}
@@ -92,6 +412,9 @@ func (l *TreasuryLedger) SettleInterbankTransferContext(
 	journalID uuid.UUID,
 	date time.Time,
 ) (InterbankTransfer, posting.JournalEntry, error) {
+	if ctx == nil {
+		return InterbankTransfer{}, posting.JournalEntry{}, ErrInvalidOpenLine
+	}
 	if err := ctx.Err(); err != nil {
 		return InterbankTransfer{}, posting.JournalEntry{}, err
 	}
@@ -180,8 +503,11 @@ func (l *TreasuryLedger) recordItem(ctx context.Context, companyID, accountID, j
 	if err := ctx.Err(); err != nil {
 		return BankItem{}, err
 	}
-	if accountID == uuid.Nil || amount.Currency() == "" || status == "" {
+	if accountID == uuid.Nil || amount.Currency() == "" || status == "" || date.IsZero() {
 		return BankItem{}, ErrInvalidAmount
+	}
+	if l.repo == nil {
+		return BankItem{}, ErrInvalidBankAccount
 	}
 	item := BankItem{
 		CompanyID: companyID, ID: uuid.New(), AccountID: accountID, JournalEntryID: journalEntryID,
@@ -193,7 +519,8 @@ func (l *TreasuryLedger) recordItem(ctx context.Context, companyID, accountID, j
 	return item, nil
 }
 
-// Deprecated: use ReconcileMultiLineContext.
+// Deprecated: use ReconcileMultiLineContext. Fee differences require the
+// approval-bearing ReconcileMultiLineApprovedContext operation.
 func (l *TreasuryLedger) ReconcileMultiLine(
 	accountID uuid.UUID,
 	statement []BankItem,
@@ -210,6 +537,33 @@ func (l *TreasuryLedger) ReconcileMultiLineContext(
 	toleranceDays int,
 	feeParams BankFeeParams,
 ) (BankReconciliationMatch, *posting.JournalEntry, error) {
+	return l.reconcileMultiLineContext(ctx, accountID, statement, toleranceDays, feeParams, nil)
+}
+
+// ReconcileMultiLineApprovedContext permits an adjustment draft only when the caller
+// supplies a complete approval record. Exact matching remains non-posting.
+func (l *TreasuryLedger) ReconcileMultiLineApprovedContext(
+	ctx context.Context,
+	accountID uuid.UUID,
+	statement []BankItem,
+	toleranceDays int,
+	feeParams BankFeeParams,
+	approval BankAdjustmentApproval,
+) (BankReconciliationMatch, *posting.JournalEntry, error) {
+	if !approval.valid() {
+		return BankReconciliationMatch{}, nil, ErrBankAdjustmentApprovalRequired
+	}
+	return l.reconcileMultiLineContext(ctx, accountID, statement, toleranceDays, feeParams, &approval)
+}
+
+func (l *TreasuryLedger) reconcileMultiLineContext(
+	ctx context.Context,
+	accountID uuid.UUID,
+	statement []BankItem,
+	toleranceDays int,
+	feeParams BankFeeParams,
+	approval *BankAdjustmentApproval,
+) (BankReconciliationMatch, *posting.JournalEntry, error) {
 	if ctx == nil {
 		return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
 	}
@@ -218,6 +572,9 @@ func (l *TreasuryLedger) ReconcileMultiLineContext(
 	}
 	if accountID == uuid.Nil || len(statement) == 0 || toleranceDays < 0 || toleranceDays > 5 {
 		return BankReconciliationMatch{}, nil, ErrInvalidOpenLine
+	}
+	if l.repo == nil {
+		return BankReconciliationMatch{}, nil, ErrInvalidBankAccount
 	}
 	ledgerItems, err := l.listBankItems(ctx, accountID.String())
 	if err != nil {
@@ -282,9 +639,13 @@ func (l *TreasuryLedger) ReconcileMultiLineContext(
 		return BankReconciliationMatch{}, nil, ErrUnmatchedLine
 	}
 	difference := ledgerTotal.Sub(statementTotal)
-	if difference.IsPositive() &&
-		(feeParams.JournalID == uuid.Nil || feeParams.FeeAccountID == uuid.Nil || feeParams.BankAccountID != accountID) {
-		return BankReconciliationMatch{}, nil, ErrUnmatchedLine
+	if difference.IsPositive() {
+		if approval == nil || !approval.valid() {
+			return BankReconciliationMatch{}, nil, ErrBankAdjustmentApprovalRequired
+		}
+		if feeParams.JournalID == uuid.Nil || feeParams.FeeAccountID == uuid.Nil || feeParams.BankAccountID != accountID {
+			return BankReconciliationMatch{}, nil, ErrUnmatchedLine
+		}
 	}
 	selected := make([]BankItem, 0, len(indices))
 	for _, index := range indices {
@@ -319,6 +680,9 @@ func (l *TreasuryLedger) ReconcileMultiLineContext(
 		BankFeesAmount: zero, Difference: difference,
 	}
 	if !fee.Amount().IsZero() {
+		if approval == nil || !approval.valid() {
+			return BankReconciliationMatch{}, nil, ErrBankAdjustmentApprovalRequired
+		}
 		if l.companyID == uuid.Nil {
 			return BankReconciliationMatch{}, nil, ErrCompanyScopedBankItemsRequired
 		}
@@ -338,9 +702,13 @@ func (l *TreasuryLedger) ReconcileMultiLineContext(
 		draft := posting.JournalEntry{
 			CompanyID: l.companyID, ID: uuid.New(), JournalID: feeParams.JournalID,
 			EntryDate: feeDate, Date: feeDate, Status: posting.EntryDraft,
-			DocumentReference: reference, Reference: reference, CreatedAt: time.Now().UTC(),
-			Lines: feeLines,
+			DocumentReference: reference, Reference: approval.ApprovalID + ": " + approval.Reason,
+			ApprovedBy: approval.ApprovedBy,
+			CreatedAt:  time.Now().UTC(),
+			Lines:      feeLines,
 		}
+		approvedAt := approval.ApprovedAt.UTC()
+		draft.ApprovedAt = &approvedAt
 		if err := draft.Validate(); err != nil {
 			return BankReconciliationMatch{}, nil, err
 		}
@@ -451,6 +819,9 @@ func (l *TreasuryLedger) ReconcileWithToleranceContext(ctx context.Context, acco
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, err
 	}
+	if accountID == uuid.Nil || toleranceDays < 0 || toleranceDays > 5 || l.repo == nil {
+		return nil, nil, nil, ErrInvalidOpenLine
+	}
 	if l.companyID != uuid.Nil {
 		for _, item := range statement {
 			if item.CompanyID != uuid.Nil && item.CompanyID != l.companyID {
@@ -461,6 +832,24 @@ func (l *TreasuryLedger) ReconcileWithToleranceContext(ctx context.Context, acco
 	ledger, err := l.listBankItems(ctx, accountID.String())
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	statementIDs := make(map[uuid.UUID]struct{}, len(statement))
+	statementCurrency := ""
+	for _, item := range statement {
+		if item.ID == uuid.Nil || item.AccountID != accountID || item.Amount.Currency() == "" ||
+			item.Amount.Amount().IsZero() || item.Date.IsZero() ||
+			(l.companyID != uuid.Nil && item.CompanyID != uuid.Nil && item.CompanyID != l.companyID) {
+			return nil, nil, nil, ErrInvalidOpenLine
+		}
+		if _, exists := statementIDs[item.ID]; exists {
+			return nil, nil, nil, ErrInvalidOpenLine
+		}
+		statementIDs[item.ID] = struct{}{}
+		if statementCurrency == "" {
+			statementCurrency = item.Amount.Currency()
+		} else if statementCurrency != item.Amount.Currency() {
+			return nil, nil, nil, ErrMixedCurrencyReconciliation
+		}
 	}
 	statementMatched := make([]bool, len(statement))
 	expectedMatched := make([]BankItem, 0)
@@ -501,6 +890,12 @@ func (l *TreasuryLedger) ReconcileWithToleranceContext(ctx context.Context, acco
 }
 
 func (l *TreasuryLedger) listBankItems(ctx context.Context, accountID string) ([]BankItem, error) {
+	if ctx == nil {
+		return nil, ErrInvalidOpenLine
+	}
+	if l.repo == nil {
+		return nil, ErrInvalidBankAccount
+	}
 	if l.companyID == uuid.Nil {
 		return l.repo.ListBankItems(ctx, accountID)
 	}
@@ -526,20 +921,42 @@ func withinValueDateTolerance(a, b time.Time, days int) bool {
 	return delta <= time.Duration(days)*24*time.Hour
 }
 
-// Deprecated: use ProcessBankFeeAtomicContext.
+// Deprecated: use ProcessBankFeeApprovedAtomicContext.
 func (l *TreasuryLedger) ProcessBankFeeAtomic(item BankItem, params BankFeeParams) (BankItem, posting.JournalEntry, error) {
 	return l.ProcessBankFeeAtomicContext(context.Background(), item, params)
 }
 
 func (l *TreasuryLedger) ProcessBankFeeAtomicContext(ctx context.Context, item BankItem, params BankFeeParams) (BankItem, posting.JournalEntry, error) {
+	return l.processBankFeeAtomic(ctx, item, params, BankAdjustmentApproval{})
+}
+
+func (l *TreasuryLedger) ProcessBankFeeApprovedAtomicContext(
+	ctx context.Context,
+	item BankItem,
+	params BankFeeParams,
+	approval BankAdjustmentApproval,
+) (BankItem, posting.JournalEntry, error) {
+	return l.processBankFeeAtomic(ctx, item, params, approval)
+}
+
+func (l *TreasuryLedger) processBankFeeAtomic(
+	ctx context.Context,
+	item BankItem,
+	params BankFeeParams,
+	approval BankAdjustmentApproval,
+) (BankItem, posting.JournalEntry, error) {
 	if ctx == nil {
 		return BankItem{}, posting.JournalEntry{}, ErrInvalidOpenLine
 	}
 	if err := ctx.Err(); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}
+	if !approval.valid() {
+		return BankItem{}, posting.JournalEntry{}, ErrBankAdjustmentApprovalRequired
+	}
 	if item.ID == uuid.Nil || item.CompanyID == uuid.Nil || item.Amount.Currency() == "" ||
-		item.Amount.IsNegative() || item.Amount.Amount().IsZero() {
+		item.Amount.IsNegative() || item.Amount.Amount().IsZero() ||
+		item.Status == BankItemMatched || item.AccountID != params.BankAccountID {
 		return BankItem{}, posting.JournalEntry{}, ErrInvalidAmount
 	}
 	if params.JournalID == uuid.Nil || params.FeeAccountID == uuid.Nil || params.BankAccountID == uuid.Nil {
@@ -573,11 +990,14 @@ func (l *TreasuryLedger) ProcessBankFeeAtomicContext(ctx context.Context, item B
 		Date:              date,
 		Status:            posting.EntryDraft,
 		DocumentReference: ref,
-		Reference:         ref,
+		Reference:         approval.ApprovalID + ": " + approval.Reason,
+		ApprovedBy:        approval.ApprovedBy,
 		CreatedAt:         time.Now().UTC(),
 		UpdatedAt:         time.Now().UTC(),
 		Lines:             lines,
 	}
+	approvedAt := approval.ApprovedAt.UTC()
+	draft.ApprovedAt = &approvedAt
 	if err := draft.Validate(); err != nil {
 		return BankItem{}, posting.JournalEntry{}, err
 	}

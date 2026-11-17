@@ -153,6 +153,111 @@ func TestPostingPolicyRejectsHardClosedPeriod(t *testing.T) {
 	}
 }
 
+func TestAdjustingEntryDelegationAndHardClosedPeriod(t *testing.T) {
+	engine, driver, companyID, journalID, debitAccount, creditAccount := setupTestEngine(t)
+	installPolicies(t, engine, driver, companyID, 365)
+	date := time.Now().UTC()
+	entry := policyEntry(t, companyID, journalID, debitAccount, creditAccount, date)
+	entry.Classification = posting.EntryClassAdjusting
+	entry.AdjustingEntryType = posting.AdjustingEntryAccrual
+	entry.AdjustmentReason = "Accrued services received"
+	entry.AdjustmentApprovalReference = "APP-2026-03"
+	entry.AdjustmentAuthorized = true
+	approvedAt := date
+	entry.ApprovedBy = "finance-approver"
+	entry.ApprovedAt = &approvedAt
+
+	period, err := driver.GetPeriodByDateForCompany(context.Background(), companyID, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.CreateDraftContext(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.UpdatePeriodState(context.Background(), companyID, period.ID, masterdata.PeriodSoftClosed); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.UpdatePeriodState(context.Background(), companyID, period.ID, masterdata.PeriodHardClosed); err != nil {
+		t.Fatal(err)
+	}
+	err = engine.PostEntryContext(context.Background(), &entry, "poster")
+	if !errors.Is(err, policy.ErrHardClosedPeriod) {
+		t.Fatalf("post error = %v, want hard-closed denial", err)
+	}
+}
+
+func TestAdjustingEntryPostsToAuthorizedAdjustmentPeriod(t *testing.T) {
+	engine, driver, companyID, journalID, debitAccount, creditAccount := setupTestEngine(t)
+	date := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	entry := policyEntry(t, companyID, journalID, debitAccount, creditAccount, date)
+	entry.Classification = posting.EntryClassAdjusting
+	entry.TargetPeriodNumber = 13
+	entry.AdjustingEntryType = posting.AdjustingEntryAccrual
+	entry.AdjustmentReason = "Accrued services received"
+	entry.AdjustmentApprovalReference = "APP-2026-03"
+	entry.AdjustmentAuthorized = true
+	approvedAt := date
+	entry.ApprovedBy = "finance-approver"
+	entry.ApprovedAt = &approvedAt
+
+	if err := engine.CreateDraftContext(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.PostEntryContext(context.Background(), &entry, "poster"); err != nil {
+		t.Fatalf("post authorized adjustment: %v", err)
+	}
+	if entry.Status != posting.EntryPosted {
+		t.Fatalf("adjusting entry status = %s, want posted", entry.Status)
+	}
+	period, err := driver.GetPeriodByDateForCompany(context.Background(), companyID, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjustment, err := driver.GetPeriodByNumberForCompany(context.Background(), companyID, period.FiscalYearID, 13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.PeriodID != adjustment.ID {
+		t.Fatalf("entry period = %s, want adjustment period %s", entry.PeriodID, adjustment.ID)
+	}
+}
+
+func TestAdjustingEntryRequiresDelegationAndAuditMetadata(t *testing.T) {
+	engine, driver, companyID, journalID, debitAccount, creditAccount := setupTestEngine(t)
+	installPolicies(t, engine, driver, companyID, 365)
+	date := time.Now().UTC()
+	entry := policyEntry(t, companyID, journalID, debitAccount, creditAccount, date)
+	entry.Classification = posting.EntryClassAdjusting
+	if err := engine.CreateDraftContext(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.PostEntryContext(context.Background(), &entry, "poster"); !errors.Is(err, posting.ErrAdjustmentDelegationRequired) {
+		t.Fatalf("post without delegation error = %v", err)
+	}
+
+	entry.AdjustmentAuthorized = true
+	err := engine.PostEntryContext(context.Background(), &entry, "poster")
+	if !errors.Is(err, posting.ErrAdjustingEntryMetadataRequired) {
+		t.Fatalf("post without audit metadata error = %v", err)
+	}
+}
+
+func TestAdjustingEntryPreCloseSummaryReportsDraftsAndAuditGaps(t *testing.T) {
+	draft := posting.JournalEntry{
+		ID: uuid.New(), Status: posting.EntryDraft, Classification: posting.EntryClassAdjusting,
+		DocumentReference: "ACC-17",
+	}
+	posted := posting.JournalEntry{
+		ID: uuid.New(), Status: posting.EntryPosted, Classification: posting.EntryClassAdjusting,
+		DocumentReference: "DEF-03", AdjustingEntryType: posting.AdjustingEntryDeferral,
+	}
+	summary := posting.SummarizeAdjustingEntriesForPreClose([]posting.JournalEntry{draft, posted})
+	if summary.TotalAdjustingEntries != 2 || summary.PendingDrafts != 1 ||
+		summary.MissingAuditMetadata != 2 || summary.Ready() || len(summary.Evidence) != 3 {
+		t.Fatalf("pre-close summary = %+v", summary)
+	}
+}
+
 func TestPostingPolicyRequiresManagerForSoftClosedPeriod(t *testing.T) {
 	engine, driver, companyID, journalID, debitAccount, creditAccount := setupTestEngine(t)
 	unit := policy.NewUnit(driver)

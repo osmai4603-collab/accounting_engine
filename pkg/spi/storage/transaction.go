@@ -25,6 +25,12 @@ var (
 	// ErrTransactionAborted indicates that the transaction was aborted due to context cancellation
 	// or unrecoverable adapter failure.
 	ErrTransactionAborted = errors.New("storage: transaction aborted")
+
+	// ErrNestedUnitOfWork indicates that Execute was called while a unit of
+	// work is already active in the context. Callers that intentionally nest
+	// (for example an adapter-provided posting lock) must reuse the active
+	// transaction instead of opening a second one.
+	ErrNestedUnitOfWork = errors.New("storage: nested unit of work is not supported")
 )
 
 // TxOptions specifies transaction configuration such as isolation level and read-only mode.

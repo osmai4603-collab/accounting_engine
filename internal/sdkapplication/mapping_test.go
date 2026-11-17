@@ -41,30 +41,35 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 	}
 
 	entry := ledger.JournalEntry{
-		ID:                  entryID,
-		CompanyID:           companyID,
-		JournalID:           journalID,
-		FiscalPeriodID:      periodID,
-		EntryNumber:         "JE-42",
-		Status:              ledger.EntryPosted,
-		Classification:      ledger.EntryClassAdjusting,
-		EffectiveDate:       now,
-		PostingDate:         now.Add(time.Hour),
-		Description:         "adjustment",
-		SourceModule:        "payroll",
-		ReferenceID:         uuid.NewString(),
-		TransactionCurrency: "USD",
-		ExchangeRate:        decimal.NewFromInt(1),
-		CreatedBy:           "creator",
-		CreatedAt:           createdAt,
-		UpdatedAt:           updatedAt,
-		ApprovedBy:          "approver",
-		ApprovedAt:          &approvedAt,
-		PostedBy:            "poster",
-		PostedAt:            &postedAt,
-		ApprovalFingerprint: "approval-hash",
-		ReversalOfID:        &reversalID,
-		ReversalReason:      "duplicate invoice",
+		ID:                          entryID,
+		CompanyID:                   companyID,
+		JournalID:                   journalID,
+		FiscalPeriodID:              periodID,
+		EntryNumber:                 "JE-42",
+		Status:                      ledger.EntryPosted,
+		Classification:              ledger.EntryClassAdjusting,
+		AdjustingEntryType:          ledger.AdjustingEntryAccrual,
+		AdjustmentReason:            "Accrued services received",
+		AdjustmentApprovalReference: "APP-2026-03",
+		AdjustmentAuthorized:        true,
+		TargetPeriodNumber:          13,
+		EffectiveDate:               now,
+		PostingDate:                 now.Add(time.Hour),
+		Description:                 "adjustment",
+		SourceModule:                "payroll",
+		ReferenceID:                 uuid.NewString(),
+		TransactionCurrency:         "USD",
+		ExchangeRate:                decimal.NewFromInt(1),
+		CreatedBy:                   "creator",
+		CreatedAt:                   createdAt,
+		UpdatedAt:                   updatedAt,
+		ApprovedBy:                  "approver",
+		ApprovedAt:                  &approvedAt,
+		PostedBy:                    "poster",
+		PostedAt:                    &postedAt,
+		ApprovalFingerprint:         "approval-hash",
+		ReversalOfID:                &reversalID,
+		ReversalReason:              "duplicate invoice",
 		Lines: []ledger.EntryLine{{
 			ID:                  lineID,
 			AccountID:           accountID,
@@ -103,6 +108,13 @@ func TestJournalEntryMappingRoundTrip(t *testing.T) {
 		!got.EffectiveDate.Equal(entry.EffectiveDate) || !got.PostingDate.Equal(entry.PostingDate) ||
 		got.Description != entry.Description || got.ReferenceID != entry.ReferenceID {
 		t.Fatalf("entry fields changed during mapping: got %+v", got)
+	}
+	if got.AdjustingEntryType != entry.AdjustingEntryType ||
+		got.AdjustmentReason != entry.AdjustmentReason ||
+		got.AdjustmentApprovalReference != entry.AdjustmentApprovalReference ||
+		got.AdjustmentAuthorized != entry.AdjustmentAuthorized ||
+		got.TargetPeriodNumber != entry.TargetPeriodNumber {
+		t.Fatalf("adjusting-entry metadata changed during mapping: got %+v", got)
 	}
 	if got.TransactionCurrency != entry.TransactionCurrency || !got.ExchangeRate.Equal(entry.ExchangeRate) ||
 		got.CreatedBy != entry.CreatedBy || got.ApprovedBy != entry.ApprovedBy ||

@@ -18,5 +18,8 @@ func (d *Driver) Ports() storage.Ports {
 	ports.Audit = memoryAuditWriter{driver: d}
 	ports.Balance = memoryBalanceReader{driver: d}
 	ports.Events = publicevents.Stores{Idempotency: d, Mappings: d}
+	ports.Private = storage.PrivateExtensions{
+		storage.PostingLockerExtensionKey: d,
+	}
 	return ports
 }

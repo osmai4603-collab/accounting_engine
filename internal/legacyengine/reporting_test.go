@@ -83,12 +83,20 @@ func TestReportFacadeWithCompanyContext(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	account := masterdata.Account{
+	accountA := masterdata.Account{
 		CompanyID: companyA, ID: uuid.New(), Code: "1000", Name: "Company A Cash",
 		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
-		CashFlowActivity: masterdata.CashFlowOperating, IsActive: true,
+		CashFlowActivity: masterdata.CashFlowCashEquivalent, IsActive: true,
 	}
-	if err := driver.CreateAccount(ctx, account); err != nil {
+	accountB := masterdata.Account{
+		CompanyID: companyB, ID: uuid.New(), Code: "1000", Name: "Company B Cash",
+		AccountType: masterdata.AccountTypeAsset, NormalBalance: masterdata.NormalBalanceDebit,
+		CashFlowActivity: masterdata.CashFlowCashEquivalent, IsActive: true,
+	}
+	if err := driver.CreateAccount(ctx, accountA); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CreateAccount(ctx, accountB); err != nil {
 		t.Fatal(err)
 	}
 	engine, err := New(driver, DefaultConfig())
@@ -96,14 +104,14 @@ func TestReportFacadeWithCompanyContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := engine.GeneralLedger(ctx, companyA, account.ID, time.Time{}, time.Time{}, "USD")
+	report, err := engine.GeneralLedger(ctx, companyA, accountA.ID, time.Time{}, time.Time{}, "USD")
 	if err != nil {
 		t.Fatalf("generate scoped general ledger: %v", err)
 	}
-	if report.Name != account.Name {
-		t.Fatalf("general ledger name = %q, want %q", report.Name, account.Name)
+	if report.Name != accountA.Name {
+		t.Fatalf("general ledger name = %q, want %q", report.Name, accountA.Name)
 	}
-	if _, err := engine.GeneralLedger(ctx, companyB, account.ID, time.Time{}, time.Time{}, "USD"); err == nil {
+	if _, err := engine.GeneralLedger(ctx, companyB, accountA.ID, time.Time{}, time.Time{}, "USD"); err == nil {
 		t.Fatal("expected account from another company to be unavailable")
 	}
 
@@ -115,7 +123,8 @@ func TestReportFacadeWithCompanyContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate company B statement bundle: %v", err)
 	}
-	if len(bundleA.TrialBalance.Lines) != 1 || len(bundleB.TrialBalance.Lines) != 0 {
+	if len(bundleA.TrialBalance.Lines) != 1 || bundleA.TrialBalance.Lines[0].AccountID != accountA.ID ||
+		len(bundleB.TrialBalance.Lines) != 1 || bundleB.TrialBalance.Lines[0].AccountID != accountB.ID {
 		t.Fatalf("trial balance lines crossed company scope: A=%d B=%d",
 			len(bundleA.TrialBalance.Lines), len(bundleB.TrialBalance.Lines))
 	}

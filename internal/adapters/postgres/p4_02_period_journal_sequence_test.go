@@ -145,35 +145,45 @@ func TestP402PeriodReopenRequiresAndPersistsAudit(t *testing.T) {
 	if err := service.ReopenPeriodContext(ctx, env.CompanyID, env.PeriodID, actorID, " "); !errors.Is(err, masterdata.ErrPeriodReopenRequiresAudit) {
 		t.Fatalf("reopen without reason error = %v", err)
 	}
-	if err := service.ReopenPeriodContext(ctx, env.CompanyID, env.PeriodID, actorID, "approved correction"); err != nil {
+	if err := service.ReopenPeriodContext(ctx, env.CompanyID, env.PeriodID, actorID, "approved correction"); !errors.Is(err, masterdata.ErrPeriodReopenRequiresApproval) {
+		t.Fatalf("reopen without approval metadata error = %v", err)
+	}
+	if err := service.ReopenPeriodWithApprovalContext(ctx, env.CompanyID, env.PeriodID, actorID, uuid.Nil, "approved correction"); !errors.Is(err, masterdata.ErrPeriodReopenRequiresApproval) {
+		t.Fatalf("reopen with nil approval id error = %v", err)
+	}
+	approvalID := uuid.New()
+	if err := service.ReopenPeriodWithApprovalContext(ctx, env.CompanyID, env.PeriodID, actorID, approvalID, "approved correction"); err != nil {
 		t.Fatal(err)
 	}
 	var state masterdata.PeriodState
 	var storedActor uuid.UUID
+	var storedApproval uuid.UUID
 	var reason string
 	var changedAt time.Time
 	if err := env.Driver.WithCompanyTx(ctx, env.CompanyID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT state,last_state_actor_id,last_state_reason,last_state_at
+		return tx.QueryRow(ctx, `SELECT state,last_state_actor_id,last_state_reason,last_state_at,last_state_approval_id
 			FROM fiscal_periods WHERE company_id=$1 AND id=$2`, env.CompanyID, env.PeriodID).
-			Scan(&state, &storedActor, &reason, &changedAt)
+			Scan(&state, &storedActor, &reason, &changedAt, &storedApproval)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if state != masterdata.PeriodOpen || storedActor != actorID || reason != "approved correction" || changedAt.IsZero() {
-		t.Fatalf("reopen metadata = state:%s actor:%s reason:%q at:%s", state, storedActor, reason, changedAt)
+	if state != masterdata.PeriodOpen || storedActor != actorID || reason != "approved correction" || changedAt.IsZero() || storedApproval != approvalID {
+		t.Fatalf("reopen metadata = state:%s actor:%s reason:%q at:%s approval:%s", state, storedActor, reason, changedAt, storedApproval)
 	}
 	var auditActor uuid.UUID
 	var auditReason string
+	var auditApproval string
 	if err := env.Driver.WithCompanyTx(ctx, env.CompanyID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT actor_id,convert_from(payload_after,'UTF8')::jsonb->>'reason' FROM financial_audit_logs
+		return tx.QueryRow(ctx, `SELECT actor_id,convert_from(payload_after,'UTF8')::jsonb->>'reason',
+			convert_from(payload_after,'UTF8')::jsonb->>'approval_id' FROM financial_audit_logs
 			WHERE company_id=$1 AND entity_type='fiscal_period' AND entity_id=$2
 			  AND action='FISCAL_PERIOD_REOPENED' ORDER BY id DESC LIMIT 1`,
-			env.CompanyID, env.PeriodID).Scan(&auditActor, &auditReason)
+			env.CompanyID, env.PeriodID).Scan(&auditActor, &auditReason, &auditApproval)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if auditActor != actorID || auditReason != "approved correction" {
-		t.Fatalf("reopen audit actor=%s reason=%q", auditActor, auditReason)
+	if auditActor != actorID || auditReason != "approved correction" || auditApproval != approvalID.String() {
+		t.Fatalf("reopen audit actor=%s reason=%q approval=%q", auditActor, auditReason, auditApproval)
 	}
 }
 

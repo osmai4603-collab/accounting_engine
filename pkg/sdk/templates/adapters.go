@@ -10,7 +10,6 @@ import (
 
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
@@ -110,13 +109,29 @@ func (a *RetailAdapter) Dependencies() []string      { return nil }
 func (a *AgricultureAdapter) Dependencies() []string { return nil }
 func (a *SaaSAdapter) Dependencies() []string        { return nil }
 
-func (a *RetailAdapter) ValidateDependencies(legacy.CoreLedgerStore) error      { return nil }
-func (a *AgricultureAdapter) ValidateDependencies(legacy.CoreLedgerStore) error { return nil }
-func (a *SaaSAdapter) ValidateDependencies(legacy.CoreLedgerStore) error        { return nil }
+func (a *RetailAdapter) ValidateDependencies(ports standards.ModulePorts) error {
+	return standards.ValidateStandardModulePorts(ports)
+}
 
-func (a *RetailAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error      { return nil }
-func (a *AgricultureAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error { return nil }
-func (a *SaaSAdapter) Initialize(context.Context, legacy.CoreLedgerStore) error        { return nil }
+func (a *AgricultureAdapter) ValidateDependencies(ports standards.ModulePorts) error {
+	return standards.ValidateStandardModulePorts(ports)
+}
+
+func (a *SaaSAdapter) ValidateDependencies(ports standards.ModulePorts) error {
+	return standards.ValidateStandardModulePorts(ports)
+}
+
+func (a *RetailAdapter) Initialize(ctx context.Context, ports standards.ModulePorts) error {
+	return a.ValidateDependencies(ports)
+}
+
+func (a *AgricultureAdapter) Initialize(ctx context.Context, ports standards.ModulePorts) error {
+	return a.ValidateDependencies(ports)
+}
+
+func (a *SaaSAdapter) Initialize(ctx context.Context, ports standards.ModulePorts) error {
+	return a.ValidateDependencies(ports)
+}
 
 func (a *RetailAdapter) RegisterRules(registrar events.RuleRegistrar) error {
 	return a.base.registerRules(registrar)

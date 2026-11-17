@@ -1,12 +1,270 @@
 package subledgers
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	financialtypes "github.com/osmai4603-collab/accounting_engine/internal/types"
+	apisubledger "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/subledger"
+	apitypes "github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
+	spisubledger "github.com/osmai4603-collab/accounting_engine/pkg/spi/subledger"
 	"github.com/shopspring/decimal"
 )
+
+var _ spisubledger.DepreciationCalculator = (*FixedAssetLedger)(nil)
+var _ spisubledger.FixedAssetStore = (*FixedAssetLedger)(nil)
+
+func (l *FixedAssetLedger) SaveAsset(
+	ctx context.Context,
+	companyID apitypes.CompanyID,
+	public apisubledger.FixedAsset,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	companyUUID := uuid.UUID(companyID)
+	publicCompanyUUID := uuid.UUID(public.CompanyID)
+	if companyUUID == uuid.Nil || publicCompanyUUID != companyUUID {
+		return ErrCompanyMismatch
+	}
+	if l.companyID != uuid.Nil && l.companyID != companyUUID {
+		return ErrCompanyMismatch
+	}
+	if strings.TrimSpace(public.ID) == "" || public.AcquisitionDate.IsZero() {
+		return ErrInvalidAsset
+	}
+	assetID, err := uuid.Parse(public.ID)
+	if err != nil || assetID == uuid.Nil {
+		return ErrInvalidAsset
+	}
+	cost, err := internalAssetMoney(public.AcquisitionCost)
+	if err != nil {
+		return err
+	}
+	salvage, err := internalAssetMoney(public.SalvageValue)
+	if err != nil {
+		return err
+	}
+	accumulated, err := internalAssetMoney(public.AccumulatedDep)
+	if err != nil {
+		return err
+	}
+	if accumulated.Currency() == "" {
+		accumulated, err = financialtypes.Zero(cost.Currency())
+		if err != nil {
+			return err
+		}
+	}
+	netBookValue, err := internalAssetMoney(public.NetBookValue)
+	if err != nil {
+		return err
+	}
+	bookBeforeAdjustment, err := cost.Subtract(accumulated)
+	if err != nil {
+		return err
+	}
+	revaluationAdjustment, err := financialtypes.Zero(cost.Currency())
+	if err != nil {
+		return err
+	}
+	if netBookValue.Currency() != "" {
+		revaluationAdjustment, err = netBookValue.Subtract(bookBeforeAdjustment)
+		if err != nil {
+			return err
+		}
+	} else {
+		netBookValue = bookBeforeAdjustment
+	}
+	method := DepreciationMethod(public.DepreciationMethod)
+	if method != StraightLine && method != DecliningBalance {
+		return ErrInvalidAsset
+	}
+	switch strings.ToLower(strings.TrimSpace(public.Status)) {
+	case "", "active":
+	case "cwip":
+		return fmt.Errorf("%w: public fixed-asset contract has no CWIP account mapping", ErrInvalidAsset)
+	default:
+		return ErrInvalidAsset
+	}
+	if _, err := l.repo.GetFixedAsset(ctx, companyUUID, assetID); err == nil {
+		return ErrAlreadyExists
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	asset := FixedAsset{
+		CompanyID: companyUUID, ID: assetID, HistoricalCost: cost, SalvageValue: salvage,
+		UsefulLifeMonths: public.UsefulLifeMonths, Method: method, InServiceDate: public.AcquisitionDate,
+		AccumulatedDepreciation: accumulated, CurrentBookValue: netBookValue,
+		RevaluationAdjustment: revaluationAdjustment,
+	}
+	if err := l.RegisterAssetContext(ctx, asset); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (l *FixedAssetLedger) GetAsset(
+	ctx context.Context,
+	companyID apitypes.CompanyID,
+	id string,
+) (apisubledger.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	if uuid.UUID(companyID) == uuid.Nil ||
+		(l.companyID != uuid.Nil && l.companyID != uuid.UUID(companyID)) {
+		return apisubledger.FixedAsset{}, ErrCompanyMismatch
+	}
+	assetID, err := uuid.Parse(id)
+	if err != nil || assetID == uuid.Nil {
+		return apisubledger.FixedAsset{}, ErrInvalidAsset
+	}
+	asset, err := l.repo.GetFixedAsset(ctx, uuid.UUID(companyID), assetID)
+	if err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	return publicFixedAsset(asset)
+}
+
+func (l *FixedAssetLedger) ListAssets(
+	ctx context.Context,
+	companyID apitypes.CompanyID,
+) ([]apisubledger.FixedAsset, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if uuid.UUID(companyID) == uuid.Nil ||
+		(l.companyID != uuid.Nil && l.companyID != uuid.UUID(companyID)) {
+		return nil, ErrCompanyMismatch
+	}
+	assets, err := l.repo.ListFixedAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	companyUUID := uuid.UUID(companyID)
+	result := make([]apisubledger.FixedAsset, 0)
+	for _, asset := range assets {
+		if asset.CompanyID != companyUUID {
+			continue
+		}
+		public, err := publicFixedAsset(asset)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, public)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+func internalAssetMoney(value apitypes.Money) (financialtypes.Money, error) {
+	if value.Currency() == "" {
+		return financialtypes.Money{}, nil
+	}
+	return financialtypes.NewMoney(value.Amount(), value.Currency())
+}
+
+func publicAssetMoney(value financialtypes.Money) (apitypes.Money, error) {
+	if value.Currency() == "" {
+		return apitypes.Money{}, nil
+	}
+	return apitypes.NewMoney(value.Amount(), value.Currency())
+}
+
+func publicFixedAsset(asset FixedAsset) (apisubledger.FixedAsset, error) {
+	cost, err := publicAssetMoney(asset.HistoricalCost)
+	if err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	salvage, err := publicAssetMoney(asset.SalvageValue)
+	if err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	accumulated, err := publicAssetMoney(asset.AccumulatedDepreciation)
+	if err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	netBookValue, err := publicAssetMoney(asset.CurrentBookValue)
+	if err != nil {
+		return apisubledger.FixedAsset{}, err
+	}
+	status := "active"
+	if asset.DisposedAt != nil {
+		status = "disposed"
+	} else if asset.IsCWIP {
+		status = "cwip"
+	}
+	return apisubledger.FixedAsset{
+		ID: asset.ID.String(), CompanyID: apitypes.CompanyID(asset.CompanyID),
+		AcquisitionDate: asset.InServiceDate, AcquisitionCost: cost,
+		UsefulLifeMonths: asset.UsefulLifeMonths, SalvageValue: salvage,
+		DepreciationMethod: string(asset.Method), AccumulatedDep: accumulated,
+		NetBookValue: netBookValue, Status: status,
+	}, nil
+}
+
+func (l *FixedAssetLedger) ComputeMonthlyDepreciation(asset apisubledger.FixedAsset) (apitypes.Money, error) {
+	cost := asset.AcquisitionCost
+	salvage := asset.SalvageValue
+	if cost.Currency() == "" || salvage.Currency() != cost.Currency() ||
+		cost.IsNegative() || salvage.IsNegative() || salvage.GreaterThan(cost) ||
+		asset.UsefulLifeMonths <= 0 {
+		return apitypes.Money{}, ErrInvalidAsset
+	}
+	accumulated := asset.AccumulatedDep
+	if accumulated.Currency() == "" {
+		var err error
+		accumulated, err = apitypes.Zero(cost.Currency())
+		if err != nil {
+			return apitypes.Money{}, err
+		}
+	}
+	if accumulated.Currency() != cost.Currency() || accumulated.IsNegative() {
+		return apitypes.Money{}, ErrInvalidAsset
+	}
+	bookValue := asset.NetBookValue
+	if bookValue.Currency() == "" {
+		var err error
+		bookValue, err = cost.Subtract(accumulated)
+		if err != nil {
+			return apitypes.Money{}, err
+		}
+	}
+	if bookValue.Currency() != cost.Currency() || bookValue.IsNegative() || bookValue.LessThan(salvage) {
+		return apitypes.Money{}, ErrInvalidAsset
+	}
+	depreciable, err := bookValue.Subtract(salvage)
+	if err != nil {
+		return apitypes.Money{}, err
+	}
+	amount := decimal.Zero
+	switch asset.DepreciationMethod {
+	case string(StraightLine):
+		originalBasis, err := cost.Subtract(salvage)
+		if err != nil {
+			return apitypes.Money{}, err
+		}
+		amount = originalBasis.Amount().Div(decimal.NewFromInt(int64(asset.UsefulLifeMonths)))
+	case string(DecliningBalance):
+		rate := decimal.NewFromInt(2).Div(decimal.NewFromInt(int64(asset.UsefulLifeMonths)))
+		amount = bookValue.Amount().Mul(rate)
+	default:
+		return apitypes.Money{}, ErrInvalidAsset
+	}
+	if amount.GreaterThan(depreciable.Amount()) {
+		amount = depreciable.Amount()
+	}
+	internalAmount, err := financialtypes.NewMoney(amount, cost.Currency())
+	if err != nil {
+		return apitypes.Money{}, err
+	}
+	return apitypes.NewMoney(internalAmount.RoundForPosting().Amount(), internalAmount.Currency())
+}
 
 type AssetDepreciationScheduleLine struct {
 	AssetID     uuid.UUID

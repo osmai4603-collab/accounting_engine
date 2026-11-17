@@ -18,11 +18,13 @@ import (
 )
 
 type testAuthorizer struct {
-	actions []application.Action
+	actions  []application.Action
+	requests []application.AuthorizationRequest
 }
 
 func (a *testAuthorizer) Authorize(_ context.Context, request application.AuthorizationRequest) error {
 	a.actions = append(a.actions, request.Action)
+	a.requests = append(a.requests, request)
 	return nil
 }
 
@@ -188,6 +190,73 @@ func TestServiceCreateDraftAndPost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero money: %v", err)
 	}
+	adjustingService, ok := service.(application.AdjustingEntryService)
+	if !ok {
+		t.Fatal("application service does not expose adjusting-entry creation")
+	}
+	adjustingCommand := application.CreateAdjustingEntryCommand{
+		Draft: application.CreateDraftCommand{
+			Context: application.Context{Principal: application.Principal{
+				ActorID: "adjuster", CompanyIDs: []types.CompanyID{companyID},
+			}},
+			CompanyID: companyID, JournalID: types.JournalID(journalID),
+			FiscalPeriodID: types.FiscalPeriodID(periodID),
+			EffectiveDate:  start.AddDate(0, 0, 3),
+			PostingDate:    start.AddDate(0, 0, 3),
+			Description:    "Month-end accrual", TransactionCurrency: "USD",
+			ExchangeRate: "1.0",
+			Lines: []ledger.EntryLine{{
+				ID: types.NewJournalEntryLineID(), AccountID: cashAccountID,
+				TransactionAmount: amount, TransactionCurrency: "USD",
+				ExchangeRate: decimal.RequireFromString("1.00"), FunctionalDebit: amount, FunctionalCredit: zero,
+			}, {
+				ID: types.NewJournalEntryLineID(), AccountID: revenueAccountID,
+				TransactionAmount: amount, TransactionCurrency: "USD",
+				ExchangeRate: decimal.RequireFromString("1.00"), FunctionalDebit: zero, FunctionalCredit: amount,
+			}},
+		},
+		Type: ledger.AdjustingEntryAccrual, Reason: "Services received before invoice",
+		ApprovalReference: "APP-2026-03",
+	}
+	adjusting, err := adjustingService.CreateAdjustingEntry(ctx, adjustingCommand)
+	if err != nil {
+		t.Fatalf("create adjusting entry: %v", err)
+	}
+	if adjusting.Entry.Classification != ledger.EntryClassAdjusting ||
+		adjusting.Entry.AdjustingEntryType != ledger.AdjustingEntryAccrual ||
+		adjusting.Entry.AdjustmentReason != adjustingCommand.Reason ||
+		adjusting.Entry.AdjustmentApprovalReference != adjustingCommand.ApprovalReference ||
+		!adjusting.Entry.AdjustmentAuthorized || adjusting.Entry.ApprovedBy != "adjuster" ||
+		adjusting.Entry.ApprovedAt == nil {
+		t.Fatalf("adjusting-entry approval metadata missing: %+v", adjusting.Entry)
+	}
+	if len(authorizer.actions) == 0 || authorizer.actions[len(authorizer.actions)-1] != application.ActionCreateAdjustment {
+		t.Fatalf("adjustment action was not delegated to host authorizer: %v", authorizer.actions)
+	}
+	if authorizer.requests[0].ApprovalReference != adjustingCommand.ApprovalReference {
+		t.Fatalf("host authorizer received approval reference %q, want %q",
+			authorizer.requests[0].ApprovalReference, adjustingCommand.ApprovalReference)
+	}
+	withoutAuthorizer, err := sdk.NewApplicationService(driver.Ports())
+	if err != nil {
+		t.Fatalf("new service without authorizer: %v", err)
+	}
+	withoutHostAuthorization, ok := withoutAuthorizer.(application.AdjustingEntryService)
+	if !ok {
+		t.Fatal("application service does not expose adjusting-entry creation")
+	}
+	if _, err := withoutHostAuthorization.CreateAdjustingEntry(ctx, adjustingCommand); !errors.Is(err, application.ErrForbidden) {
+		t.Fatalf("adjusting entry without host authorizer error = %v, want forbidden", err)
+	}
+	if _, err := service.CreateDraft(ctx, application.CreateDraftCommand{
+		Context: application.Context{Principal: application.Principal{
+			ActorID: "adjuster", CompanyIDs: []types.CompanyID{companyID},
+		}},
+		CompanyID: companyID, Classification: ledger.EntryClassAdjusting,
+	}); !errors.Is(err, application.ErrForbidden) {
+		t.Fatalf("generic adjusting-entry creation error = %v, want forbidden", err)
+	}
+
 	created, err := service.CreateDraft(ctx, application.CreateDraftCommand{
 		Context:             application.Context{Principal: application.Principal{ActorID: "maker", CompanyIDs: []types.CompanyID{companyID}}},
 		CompanyID:           companyID,
@@ -290,6 +359,7 @@ func TestServiceCreateDraftAndPost(t *testing.T) {
 		t.Fatalf("get posted entry: %v", err)
 	}
 	wantActions := []application.Action{
+		application.ActionCreateAdjustment,
 		application.ActionCreate,
 		application.ActionValidate,
 		application.ActionPost,

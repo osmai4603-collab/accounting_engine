@@ -10,7 +10,6 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/adapters/memory"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
-	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 )
 
@@ -25,11 +24,11 @@ type rollbackTrackerModule struct {
 	closedSequence      *[]string
 }
 
-func (m *rollbackTrackerModule) Name() string                                            { return m.name }
-func (m *rollbackTrackerModule) Version() string                                         { return "1.0.0" }
-func (m *rollbackTrackerModule) Dependencies() []string                                  { return m.deps }
-func (m *rollbackTrackerModule) ValidateDependencies(ports legacy.CoreLedgerStore) error { return nil }
-func (m *rollbackTrackerModule) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) error {
+func (m *rollbackTrackerModule) Name() string                                           { return m.name }
+func (m *rollbackTrackerModule) Version() string                                        { return "1.0.0" }
+func (m *rollbackTrackerModule) Dependencies() []string                                 { return m.deps }
+func (m *rollbackTrackerModule) ValidateDependencies(ports standards.ModulePorts) error { return nil }
+func (m *rollbackTrackerModule) Initialize(ctx context.Context, ports standards.ModulePorts) error {
 	if m.initErr != nil {
 		return m.initErr
 	}

@@ -329,7 +329,8 @@ func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		FROM fiscal_periods WHERE company_id=$1 AND id=$2 FOR UPDATE`,
 		entry.CompanyID, entry.PeriodID).Scan(&startDate, &endDate, &state, &periodNumber, &periodType)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return masterdata.ErrFiscalPeriodNotFound
+		return fmt.Errorf("%w: entry %s references missing period %s",
+			masterdata.ErrFiscalPeriodNotFound, entry.ID, entry.PeriodID)
 	}
 	if err != nil {
 		return err
@@ -341,9 +342,11 @@ func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		return masterdata.ErrFiscalPeriodClosed
 	}
 
-	entryDate = entryDate.UTC()
+	entryDate = entryDate.UTC().Truncate(time.Microsecond)
 	if entryDate.Before(startDate.UTC()) || entryDate.After(endDate.UTC()) {
-		return masterdata.ErrFiscalPeriodNotFound
+		return fmt.Errorf("%w: entry %s date %s is outside period %d (%s..%s)",
+			masterdata.ErrFiscalPeriodNotFound, entry.ID, entryDate.Format(time.RFC3339Nano),
+			periodNumber, startDate.Format(time.RFC3339Nano), endDate.Format(time.RFC3339Nano))
 	}
 	if entry.TargetPeriodNumber == 0 {
 		if periodType != masterdata.FiscalPeriodTypeNormal {
@@ -352,16 +355,24 @@ func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.Journ
 		return nil
 	}
 	if periodNumber != entry.TargetPeriodNumber {
-		return masterdata.ErrFiscalPeriodNotFound
+		return fmt.Errorf("%w: entry %s targets period %d but references period %d",
+			masterdata.ErrFiscalPeriodNotFound, entry.ID, entry.TargetPeriodNumber, periodNumber)
 	}
 	switch entry.TargetPeriodNumber {
+	case 1:
+		if periodType != masterdata.FiscalPeriodTypeNormal ||
+			entry.Classification != posting.EntryClassOpening {
+			return masterdata.ErrFiscalPeriodNotFound
+		}
 	case 13:
 		if periodType != masterdata.FiscalPeriodTypeYearEndAdjustment {
-			return masterdata.ErrFiscalPeriodNotFound
+			return fmt.Errorf("%w: period %d has type %q, want year-end adjustment",
+				masterdata.ErrFiscalPeriodNotFound, periodNumber, periodType)
 		}
 	case 14:
 		if periodType != masterdata.FiscalPeriodTypeAuditAdjustment {
-			return masterdata.ErrFiscalPeriodNotFound
+			return fmt.Errorf("%w: period %d has type %q, want audit adjustment",
+				masterdata.ErrFiscalPeriodNotFound, periodNumber, periodType)
 		}
 	default:
 		return masterdata.ErrFiscalPeriodNotFound

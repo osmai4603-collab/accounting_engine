@@ -77,32 +77,35 @@ func (e *Engine) postBulkAtomic(ctx context.Context, repository BulkRepository, 
 		}()
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	originals := make([]JournalEntry, len(entries))
-	copy(originals, entries)
-	restore := func() {
-		copy(entries, originals)
-	}
-
-	now := time.Now().UTC()
+	journalIDs := make([]uuid.UUID, 0, len(entries))
 	for i := range entries {
-		if err := e.prepareForPosting(ctx, &entries[i], posterID, now); err != nil {
-			restore()
-			return &BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
+		journalIDs = append(journalIDs, entries[i].JournalID)
+	}
+	return WithinPostingLocks(ctx, e.postingLocker(), entries[0].CompanyID, journalIDs, func(lockCtx context.Context) error {
+		originals := make([]JournalEntry, len(entries))
+		copy(originals, entries)
+		restore := func() {
+			copy(entries, originals)
 		}
-	}
-	for i := range entries {
-		entries[i].PostingDate = calendarDate(now)
-		entries[i].PostedBy = posterID
-		entries[i].PostedAt = &now
-		entries[i].Status = EntryPosted
-		entries[i].UpdatedAt = now
-	}
-	if err := repository.PostBulk(ctx, entries); err != nil {
-		restore()
-		return err
-	}
-	return nil
+
+		now := time.Now().UTC()
+		for i := range entries {
+			if err := e.prepareForPosting(lockCtx, &entries[i], posterID, now); err != nil {
+				restore()
+				return &BulkPostError{Index: i, EntryID: entries[i].ID, Err: err}
+			}
+		}
+		for i := range entries {
+			entries[i].PostingDate = calendarDate(now)
+			entries[i].PostedBy = posterID
+			entries[i].PostedAt = &now
+			entries[i].Status = EntryPosted
+			entries[i].UpdatedAt = now
+		}
+		if err := repository.PostBulk(lockCtx, entries); err != nil {
+			restore()
+			return err
+		}
+		return nil
+	})
 }

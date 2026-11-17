@@ -230,22 +230,24 @@ func TestClosingChecklist_BlockersPreventFiscalYearClose(t *testing.T) {
 		t.Fatalf("reopen with empty reason must fail with ErrPeriodReopenRequiresAudit, got %v", err)
 	}
 
-	// Valid audited reopen
-	if err := closingEngine.ReopenFiscalYear(ctx, companyID, year.ID, actorID, "Authorized post-audit adjustment"); err != nil {
-		t.Fatalf("ReopenFiscalYear: %v", err)
+	// Annual-close reopening is rejected unless the adapter can atomically
+	// post reversals and reopen the related fiscal year and periods.
+	if err := closingEngine.ReopenFiscalYear(ctx, companyID, year.ID, actorID, "Authorized post-audit adjustment"); !errors.Is(err, reporting.ErrAtomicYearEndReopenRequired) {
+		t.Fatalf("ReopenFiscalYear error = %v, want atomic-reversal capability error", err)
 	}
 
 	reopenedYear, err := driver.GetFiscalYearForCompanyContext(ctx, companyID, year.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopenedYear.State != masterdata.FiscalYearOpen {
-		t.Fatalf("expected FiscalYearOpen after reopen, got %s", reopenedYear.State)
+	if reopenedYear.State != masterdata.FiscalYearHardClosed {
+		t.Fatalf("unsupported reopen changed fiscal-year state to %s", reopenedYear.State)
 	}
-	// Period 13 must also be reopened
+	// Periods 13 and 14 remain closed too; a failed reopen must not partially
+	// mutate the annual-close state.
 	p13Updated, ok := reporting.FindFiscalPeriod(reopenedYear, 13)
-	if !ok || p13Updated.State != masterdata.PeriodOpen {
-		t.Fatalf("expected Period 13 to be Open, got ok=%v, state=%s", ok, p13Updated.State)
+	if !ok || p13Updated.State != masterdata.PeriodHardClosed {
+		t.Fatalf("unsupported reopen changed Period 13: ok=%v, state=%s", ok, p13Updated.State)
 	}
 }
 

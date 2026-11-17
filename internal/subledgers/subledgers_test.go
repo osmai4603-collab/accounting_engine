@@ -882,9 +882,16 @@ func TestTreasuryMultiLineReconciliationPostsBankFeeDraft(t *testing.T) {
 		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "58")},
 		{CompanyID: companyID, ID: uuid.New(), AccountID: accountID, Date: date, Amount: money(t, "40")},
 	}
-	match, draft, err := ledger.ReconcileMultiLine(accountID, statement, 0, BankFeeParams{
-		JournalID: journalID, FeeAccountID: feeAccountID, BankAccountID: accountID, Date: date,
-	})
+	match, draft, err := ledger.ReconcileMultiLineApprovedContext(
+		context.Background(), accountID, statement, 0,
+		BankFeeParams{
+			JournalID: journalID, FeeAccountID: feeAccountID, BankAccountID: accountID, Date: date,
+		},
+		BankAdjustmentApproval{
+			ApprovalID: "APP-2026-11-10", ApprovedBy: "treasury-controller",
+			Reason: "Recognize the bank service fee", ApprovedAt: date,
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1340,12 +1347,29 @@ func TestProcessBankFeeAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updatedItem, draft, err := ledger.ProcessBankFeeAtomic(item, BankFeeParams{
+	params := BankFeeParams{
 		JournalID:     journalID,
 		Date:          time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		FeeAccountID:  feeExpenseAccountID,
 		BankAccountID: bankAccountID,
 		Description:   "Monthly Service Fee",
+	}
+	if _, draft, err := ledger.ProcessBankFeeAtomicContext(context.Background(), item, params); !errors.Is(err, ErrBankAdjustmentApprovalRequired) ||
+		draft.ID != uuid.Nil {
+		t.Fatalf("unapproved ProcessBankFeeAtomicContext() = draft %+v, error %v", draft, err)
+	}
+	repo.mu.Lock()
+	unapprovedDraftCount := len(repo.drafts)
+	repo.mu.Unlock()
+	unapprovedItems, err := repo.ListBankItemsForCompany(context.Background(), companyID, bankAccountID.String())
+	if err != nil || unapprovedDraftCount != 0 || len(unapprovedItems) != 1 ||
+		unapprovedItems[0].ID != item.ID || unapprovedItems[0].Status != BankItemUnrecorded {
+		t.Fatalf("unapproved fee processing changed accounting state: drafts=%d items=%+v err=%v",
+			unapprovedDraftCount, unapprovedItems, err)
+	}
+	updatedItem, draft, err := ledger.ProcessBankFeeApprovedAtomicContext(context.Background(), item, params, BankAdjustmentApproval{
+		ApprovalID: "APP-2026-06-01", ApprovedBy: "treasury-controller",
+		Reason: "Recognize the monthly bank service fee", ApprovedAt: params.Date,
 	})
 	if err != nil {
 		t.Fatalf("ProcessBankFeeAtomic failed: %v", err)

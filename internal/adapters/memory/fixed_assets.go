@@ -183,5 +183,8 @@ func (d *Driver) ListFixedAssetsForCompanyContext(ctx context.Context, companyID
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ListFixedAssetsForCompanyContext(ctx, companyID)
+	}
 	return d.ListFixedAssetsForCompany(ctx, companyID)
 }

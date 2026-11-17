@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
+	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
 	"github.com/shopspring/decimal"
@@ -54,6 +56,9 @@ func (d *Driver) ExecuteWithOptions(ctx context.Context, opts storage.TxOptions,
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: %v", storage.ErrTransactionAborted, err)
 	}
+	if _, nested := ctx.Value(transactionContextKey{}).(memoryTransactionScope); nested {
+		return storage.ErrNestedUnitOfWork
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -75,9 +80,13 @@ func (d *Driver) ExecuteWithOptions(ctx context.Context, opts storage.TxOptions,
 		return fmt.Errorf("%w: %v", storage.ErrTransactionAborted, err)
 	}
 	d.entries = tx.entries
+	d.years = tx.years
+	d.periods = tx.periods
 	d.journalSeq = tx.journalSeq
 	d.balances = tx.balances
 	d.adjustingPeriods = tx.adjustingPeriods
+	d.reconciliationExceptions = tx.reconciliationExceptions
+	d.reconciliationExceptionLog = tx.reconciliationExceptionLog
 	d.auditRecords = tx.auditRecords
 	d.idempotency = tx.idempotency
 	return nil
@@ -95,18 +104,21 @@ func (d *Driver) WithinTransactionWithOptions(ctx context.Context, opts storage.
 
 func (d *Driver) transactionSnapshotLocked(readOnly bool) *Driver {
 	tx := &Driver{
-		readOnly:         readOnly,
-		accounts:         d.accounts,
-		companies:        d.companies,
-		journals:         d.journals,
-		years:            d.years,
-		periods:          d.periods,
-		entries:          make(map[uuid.UUID]posting.JournalEntry, len(d.entries)),
-		journalSeq:       cloneMap(d.journalSeq),
-		balances:         cloneMap(d.balances),
-		adjustingPeriods: cloneMap(d.adjustingPeriods),
-		auditRecords:     cloneAuditRecords(d.auditRecords),
-		idempotency:      cloneIdempotency(d.idempotency),
+		readOnly:                   readOnly,
+		accounts:                   d.accounts,
+		companies:                  d.companies,
+		journals:                   d.journals,
+		years:                      cloneFiscalYears(d.years),
+		periods:                    cloneMap(d.periods),
+		entries:                    make(map[uuid.UUID]posting.JournalEntry, len(d.entries)),
+		journalSeq:                 cloneMap(d.journalSeq),
+		balances:                   cloneMap(d.balances),
+		adjustingPeriods:           cloneMap(d.adjustingPeriods),
+		reconciliationExceptions:   cloneMap(d.reconciliationExceptions),
+		reconciliationExceptionLog: cloneReconciliationExceptionLog(d.reconciliationExceptionLog),
+		auditRecords:               cloneAuditRecords(d.auditRecords),
+		idempotency:                cloneIdempotency(d.idempotency),
+		postingLocks:               d.postingLocks,
 	}
 	for id, entry := range d.entries {
 		tx.entries[id] = cloneEntry(entry)
@@ -114,10 +126,29 @@ func (d *Driver) transactionSnapshotLocked(readOnly bool) *Driver {
 	return tx
 }
 
+func cloneReconciliationExceptionLog(
+	source map[uuid.UUID][]subledgers.ReconciliationExceptionTransition,
+) map[uuid.UUID][]subledgers.ReconciliationExceptionTransition {
+	result := make(map[uuid.UUID][]subledgers.ReconciliationExceptionTransition, len(source))
+	for id, transitions := range source {
+		result[id] = append([]subledgers.ReconciliationExceptionTransition(nil), transitions...)
+	}
+	return result
+}
+
 func cloneMap[K comparable, V any](source map[K]V) map[K]V {
 	result := make(map[K]V, len(source))
 	for key, value := range source {
 		result[key] = value
+	}
+	return result
+}
+
+func cloneFiscalYears(source map[uuid.UUID]masterdata.FiscalYear) map[uuid.UUID]masterdata.FiscalYear {
+	result := make(map[uuid.UUID]masterdata.FiscalYear, len(source))
+	for id, year := range source {
+		year.Periods = append([]masterdata.FiscalPeriod(nil), year.Periods...)
+		result[id] = year
 	}
 	return result
 }

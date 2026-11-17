@@ -39,23 +39,28 @@ type entryHashLine struct {
 }
 
 type entryHashPayload struct {
-	CompanyID            uuid.UUID       `json:"company_id"`
-	ID                   uuid.UUID       `json:"id"`
-	JournalID            uuid.UUID       `json:"journal_id"`
-	PeriodID             uuid.UUID       `json:"period_id"`
-	EntryDate            string          `json:"entry_date"`
-	DocumentReference    string          `json:"document_reference"`
-	Reference            string          `json:"reference"`
-	CreatedBy            string          `json:"created_by"`
-	SourceModule         string          `json:"source_module"`
-	TransactionCurrency  string          `json:"transaction_currency"`
-	ExchangeRate         string          `json:"exchange_rate"`
-	Classification       string          `json:"classification"`
-	TargetPeriodNumber   int             `json:"target_period_number"`
-	AdjustmentAuthorized bool            `json:"adjustment_authorized"`
-	OriginalEntryID      *uuid.UUID      `json:"original_entry_id,omitempty"`
-	SourceEventID        *uuid.UUID      `json:"source_event_id,omitempty"`
-	Lines                []entryHashLine `json:"lines"`
+	CompanyID                   uuid.UUID          `json:"company_id"`
+	ID                          uuid.UUID          `json:"id"`
+	JournalID                   uuid.UUID          `json:"journal_id"`
+	PeriodID                    uuid.UUID          `json:"period_id"`
+	EntryDate                   string             `json:"entry_date"`
+	DocumentReference           string             `json:"document_reference"`
+	Reference                   string             `json:"reference"`
+	CreatedBy                   string             `json:"created_by"`
+	SourceModule                string             `json:"source_module"`
+	TransactionCurrency         string             `json:"transaction_currency"`
+	ExchangeRate                string             `json:"exchange_rate"`
+	Classification              string             `json:"classification"`
+	TargetPeriodNumber          int                `json:"target_period_number"`
+	AdjustmentAuthorized        bool               `json:"adjustment_authorized"`
+	AdjustingEntryType          AdjustingEntryType `json:"adjusting_entry_type,omitempty"`
+	AdjustmentReason            string             `json:"adjustment_reason,omitempty"`
+	AdjustmentApprovalReference string             `json:"adjustment_approval_reference,omitempty"`
+	ApprovedBy                  string             `json:"approved_by,omitempty"`
+	ApprovedAt                  string             `json:"approved_at,omitempty"`
+	OriginalEntryID             *uuid.UUID         `json:"original_entry_id,omitempty"`
+	SourceEventID               *uuid.UUID         `json:"source_event_id,omitempty"`
+	Lines                       []entryHashLine    `json:"lines"`
 }
 
 // EntryContentHash returns a stable SHA-256 fingerprint of the accounting
@@ -75,23 +80,30 @@ func EntryContentHash(entry JournalEntry) (string, error) {
 		classification = EntryClassRegular
 	}
 	payload := entryHashPayload{
-		CompanyID:            entry.CompanyID,
-		ID:                   entry.ID,
-		JournalID:            entry.JournalID,
-		PeriodID:             entry.PeriodID,
-		EntryDate:            entryDate.UTC().Format(time.RFC3339Nano),
-		DocumentReference:    entry.DocumentReference,
-		Reference:            entry.Reference,
-		CreatedBy:            entry.CreatedBy,
-		SourceModule:         entry.SourceModule,
-		TransactionCurrency:  entry.TransactionCurrency,
-		ExchangeRate:         entry.ExchangeRate.String(),
-		Classification:       string(classification),
-		TargetPeriodNumber:   entry.TargetPeriodNumber,
-		AdjustmentAuthorized: entry.AdjustmentAuthorized,
-		OriginalEntryID:      entry.OriginalEntryID,
-		SourceEventID:        entry.SourceEventID,
-		Lines:                make([]entryHashLine, len(entry.Lines)),
+		CompanyID:                   entry.CompanyID,
+		ID:                          entry.ID,
+		JournalID:                   entry.JournalID,
+		PeriodID:                    entry.PeriodID,
+		EntryDate:                   entryDate.UTC().Format(time.RFC3339Nano),
+		DocumentReference:           entry.DocumentReference,
+		Reference:                   entry.Reference,
+		CreatedBy:                   entry.CreatedBy,
+		SourceModule:                entry.SourceModule,
+		TransactionCurrency:         entry.TransactionCurrency,
+		ExchangeRate:                entry.ExchangeRate.String(),
+		Classification:              string(classification),
+		TargetPeriodNumber:          entry.TargetPeriodNumber,
+		AdjustmentAuthorized:        entry.AdjustmentAuthorized,
+		AdjustingEntryType:          entry.AdjustingEntryType,
+		AdjustmentReason:            entry.AdjustmentReason,
+		AdjustmentApprovalReference: entry.AdjustmentApprovalReference,
+		ApprovedBy:                  entry.ApprovedBy,
+		OriginalEntryID:             entry.OriginalEntryID,
+		SourceEventID:               entry.SourceEventID,
+		Lines:                       make([]entryHashLine, len(entry.Lines)),
+	}
+	if entry.ApprovedAt != nil {
+		payload.ApprovedAt = entry.ApprovedAt.UTC().Format(time.RFC3339Nano)
 	}
 	for i, line := range entry.Lines {
 		resolved, err := normalizeLineCurrencies(line)

@@ -11,23 +11,25 @@ import (
 )
 
 type ReversalRequest struct {
-	ActorID        string
-	Reason         string
-	EffectiveDate  time.Time
-	Reference      string
-	SourceSystem   string
-	IdempotencyKey string
+	ActorID            string
+	Reason             string
+	EffectiveDate      time.Time
+	TargetPeriodNumber int
+	Reference          string
+	SourceSystem       string
+	IdempotencyKey     string
 }
 
 type reversalRequestFingerprint struct {
-	CompanyID      uuid.UUID `json:"company_id"`
-	OriginalEntry  uuid.UUID `json:"original_entry_id"`
-	ActorID        string    `json:"actor_id"`
-	Reason         string    `json:"reason"`
-	EffectiveDate  string    `json:"effective_date,omitempty"`
-	Reference      string    `json:"reference"`
-	SourceSystem   string    `json:"source_system"`
-	IdempotencyKey string    `json:"idempotency_key"`
+	CompanyID          uuid.UUID `json:"company_id"`
+	OriginalEntry      uuid.UUID `json:"original_entry_id"`
+	ActorID            string    `json:"actor_id"`
+	Reason             string    `json:"reason"`
+	EffectiveDate      string    `json:"effective_date,omitempty"`
+	TargetPeriodNumber int       `json:"target_period_number,omitempty"`
+	Reference          string    `json:"reference"`
+	SourceSystem       string    `json:"source_system"`
+	IdempotencyKey     string    `json:"idempotency_key"`
 }
 
 func ReversalRequestHash(companyID, originalID uuid.UUID, request ReversalRequest) (string, error) {
@@ -38,7 +40,8 @@ func ReversalRequestHash(companyID, originalID uuid.UUID, request ReversalReques
 	payload, err := json.Marshal(reversalRequestFingerprint{
 		CompanyID: companyID, OriginalEntry: originalID,
 		ActorID: strings.TrimSpace(request.ActorID), Reason: strings.TrimSpace(request.Reason),
-		EffectiveDate: effectiveDate, Reference: strings.TrimSpace(request.Reference),
+		EffectiveDate: effectiveDate, TargetPeriodNumber: request.TargetPeriodNumber,
+		Reference:      strings.TrimSpace(request.Reference),
 		SourceSystem:   strings.TrimSpace(request.SourceSystem),
 		IdempotencyKey: strings.TrimSpace(request.IdempotencyKey),
 	})

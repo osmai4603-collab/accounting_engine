@@ -27,6 +27,9 @@ type Capabilities struct {
 	FinancialDimensions FinancialDimensionPolicy
 	MakerCheckerPolicy  MakerCheckerPolicy
 	PolicyUnit          *policy.Unit
+	// PostingLocker is an optional adapter-provided company+journal lock
+	// strategy. Nil selects the in-process keyed default.
+	PostingLocker PostingLocker
 }
 
 // NewConfiguredEngine is the single constructor for posting engines. Required
@@ -61,6 +64,9 @@ func NewConfiguredEngine(repo Repository, masterData *masterdata.Service, config
 	}
 	if !isNilCapability(capabilities.PolicyUnit) {
 		engine.SetPolicyUnit(capabilities.PolicyUnit)
+	}
+	if !isNilCapability(capabilities.PostingLocker) {
+		engine.SetPostingLocker(capabilities.PostingLocker)
 	}
 	return engine, nil
 }

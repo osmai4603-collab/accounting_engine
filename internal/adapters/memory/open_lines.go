@@ -236,5 +236,8 @@ func (d *Driver) ListOpenLinesForCompanyContext(ctx context.Context, companyID u
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ListOpenLinesForCompanyContext(ctx, companyID, partnerID)
+	}
 	return d.ListOpenLinesForCompany(ctx, companyID, partnerID)
 }

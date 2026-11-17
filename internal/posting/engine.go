@@ -3,9 +3,9 @@ package posting
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,7 +34,7 @@ var (
 type Engine struct {
 	repo       Repository
 	masterdata *masterdata.Service
-	mu         sync.Mutex
+	locker     PostingLocker
 
 	MakerCheckerThreshold decimal.Decimal
 	dimensions            *FinancialDimensionsEngine
@@ -59,6 +59,20 @@ func NewEngine(repo Repository, masterData *masterdata.Service) *Engine {
 
 func (e *Engine) SetFinancialDimensionsEngine(engine *FinancialDimensionsEngine) {
 	e.dimensions = engine
+}
+
+// SetPostingLocker installs the adapter-provided concurrency strategy. A nil
+// locker restores the in-process keyed default.
+func (e *Engine) SetPostingLocker(locker PostingLocker) {
+	e.locker = locker
+}
+
+func (e *Engine) postingLocker() PostingLocker {
+	if e.locker != nil {
+		return e.locker
+	}
+	e.locker = NewKeyedPostingLocker()
+	return e.locker
 }
 
 func (e *Engine) SetApprovalGate(gate ApprovalGate) {
@@ -207,44 +221,44 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		return err
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	now := postingDate
-	entry.PostingDate = calendarDate(now)
-	entry.PostedBy = posterID
-	entry.PostedAt = &now
-	entry.Status = EntryPosted
-	entry.UpdatedAt = now
-	if repository, ok := e.repo.(ContextAtomicPostingRepository); ok {
-		posted, postErr := repository.PostAndSequenceContext(ctx, *entry)
-		if postErr != nil {
+	return e.postingLocker().WithinPostingLock(ctx, entry.CompanyID, entry.JournalID, func(lockCtx context.Context) error {
+		now := postingDate
+		entry.PostingDate = calendarDate(now)
+		entry.PostedBy = posterID
+		entry.PostedAt = &now
+		entry.Status = EntryPosted
+		entry.UpdatedAt = now
+		if repository, ok := e.repo.(ContextAtomicPostingRepository); ok {
+			posted, postErr := repository.PostAndSequenceContext(lockCtx, *entry)
+			if postErr != nil {
+				entry.Status = EntryDraft
+				entry.PostedBy = ""
+				entry.PostedAt = nil
+				entry.PostingDate = time.Time{}
+				return postErr
+			}
+			*entry = posted
+			return nil
+		}
+		sequence, sequenceErr := e.repo.GetNextSequenceForCompanyContext(lockCtx, entry.CompanyID, entry.JournalID)
+		if sequenceErr != nil {
 			entry.Status = EntryDraft
 			entry.PostedBy = ""
 			entry.PostedAt = nil
 			entry.PostingDate = time.Time{}
+			return sequenceErr
+		}
+		entry.SequenceNumber = sequence
+		if postErr := e.repo.PostAtomicContext(lockCtx, *entry); postErr != nil {
+			entry.Status = EntryDraft
+			entry.PostedBy = ""
+			entry.PostedAt = nil
+			entry.SequenceNumber = 0
+			entry.PostingDate = time.Time{}
 			return postErr
 		}
-		*entry = posted
 		return nil
-	}
-	sequence, sequenceErr := e.repo.GetNextSequenceForCompanyContext(ctx, entry.CompanyID, entry.JournalID)
-	if sequenceErr != nil {
-		entry.Status = EntryDraft
-		entry.PostedBy = ""
-		entry.PostedAt = nil
-		entry.PostingDate = time.Time{}
-		return sequenceErr
-	}
-	entry.SequenceNumber = sequence
-	if postErr := e.repo.PostAtomicContext(ctx, *entry); postErr != nil {
-		entry.Status = EntryDraft
-		entry.PostedBy = ""
-		entry.PostedAt = nil
-		entry.SequenceNumber = 0
-		entry.PostingDate = time.Time{}
-		return postErr
-	}
-	return nil
+	})
 }
 
 // recordPosting records the latency and outcome of one posting attempt and
@@ -335,33 +349,32 @@ func (e *Engine) postEntryWithAttachmentContext(
 		return err
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	return e.postingLocker().WithinPostingLock(ctx, entry.CompanyID, entry.JournalID, func(lockCtx context.Context) error {
+		original := *entry
+		entry.PostingDate = calendarDate(now)
+		entry.PostedBy = posterID
+		entry.PostedAt = &now
+		entry.Status = EntryPosted
+		entry.UpdatedAt = now
 
-	original := *entry
-	entry.PostingDate = calendarDate(now)
-	entry.PostedBy = posterID
-	entry.PostedAt = &now
-	entry.Status = EntryPosted
-	entry.UpdatedAt = now
-
-	if repo, ok := e.repo.(ContextAtomicAttachmentRepository); ok {
-		if postErr := repo.PostWithAttachmentsContext(ctx, entry, attachments); postErr != nil {
-			*entry = original
-			return postErr
+		if repo, ok := e.repo.(ContextAtomicAttachmentRepository); ok {
+			if postErr := repo.PostWithAttachmentsContext(lockCtx, entry, attachments); postErr != nil {
+				*entry = original
+				return postErr
+			}
+			return nil
 		}
-		return nil
-	}
-	if repo, ok := e.repo.(AtomicAttachmentRepository); ok {
-		if postErr := repo.PostWithAttachments(ctx, entry, attachments); postErr != nil {
-			*entry = original
-			return postErr
+		if repo, ok := e.repo.(AtomicAttachmentRepository); ok {
+			if postErr := repo.PostWithAttachments(lockCtx, entry, attachments); postErr != nil {
+				*entry = original
+				return postErr
+			}
+			return nil
 		}
-		return nil
-	}
 
-	*entry = original
-	return ErrAtomicPostingOpenLineRequired
+		*entry = original
+		return ErrAtomicPostingOpenLineRequired
+	})
 }
 
 func (e *Engine) PostEntryWithOpenLine(entry *JournalEntry, line OpenLineAttachment, posterID string) error {
@@ -411,26 +424,40 @@ func (e *Engine) PostEntryWithOpenLineContext(ctx context.Context, entry *Journa
 	if err = e.prepareForPosting(ctx, entry, posterID, now); err != nil {
 		return err
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	original := *entry
-	entry.PostingDate = calendarDate(now)
-	entry.PostedBy = posterID
-	entry.PostedAt = &now
-	entry.Status = EntryPosted
-	entry.UpdatedAt = now
-	posted, postErr := repository.PostAndSequenceWithOpenLineContext(ctx, *entry, line)
-	if postErr != nil {
-		*entry = original
-		return postErr
-	}
-	*entry = posted
-	return nil
+	return e.postingLocker().WithinPostingLock(ctx, entry.CompanyID, entry.JournalID, func(lockCtx context.Context) error {
+		original := *entry
+		entry.PostingDate = calendarDate(now)
+		entry.PostedBy = posterID
+		entry.PostedAt = &now
+		entry.Status = EntryPosted
+		entry.UpdatedAt = now
+		posted, postErr := repository.PostAndSequenceWithOpenLineContext(lockCtx, *entry, line)
+		if postErr != nil {
+			*entry = original
+			return postErr
+		}
+		*entry = posted
+		return nil
+	})
 }
 
 func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, posterID string, postingDate time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if entry.Classification == EntryClassAdjusting {
+		if !entry.AdjustmentAuthorized {
+			return ErrAdjustmentDelegationRequired
+		}
+		if !validAdjustingEntryType(entry.AdjustingEntryType) ||
+			strings.TrimSpace(entry.AdjustmentReason) == "" ||
+			strings.TrimSpace(entry.AdjustmentApprovalReference) == "" ||
+			strings.TrimSpace(entry.ApprovedBy) == "" || entry.ApprovedAt == nil || entry.ApprovedAt.IsZero() {
+			return ErrAdjustingEntryMetadataRequired
+		}
+	} else if entry.AdjustingEntryType != "" || entry.AdjustmentReason != "" ||
+		entry.AdjustmentApprovalReference != "" {
+		return ErrInvalidAdjustingEntryMetadata
 	}
 	var currencyPolicy *policy.CurrencyPolicy
 	if e.policyUnit != nil && entry.CompanyID != uuid.Nil {
@@ -512,6 +539,12 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 			}
 		}
 		if entry.TargetPeriodNumber == 13 || entry.TargetPeriodNumber == 14 {
+			authorizedClose := entry.TargetPeriodNumber == 13 &&
+				(entry.Classification == EntryClassClosing ||
+					(entry.Classification == EntryClassReversing && entry.OriginalEntryID != nil))
+			if entry.Classification != EntryClassAdjusting && !authorizedClose {
+				return ErrInvalidAdjustingEntryMetadata
+			}
 			if !entry.AdjustmentAuthorized {
 				return ErrAdjustmentPeriodAuthorizationRequired
 			}
@@ -524,17 +557,23 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 						err = e.validatePolicyPeriod(ctx, entry.CompanyID, period, *postingPolicy, posterID)
 					}
 				} else {
-					period, err = e.masterdata.GetOpenAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+					period, err = e.masterdata.GetAdjustmentPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry), entry.TargetPeriodNumber)
+					if err == nil {
+						err = validateOpenPeriodState(period)
+					}
 				}
 			} else {
 				period, err = e.masterdata.GetOpenAdjustmentPeriodForDateContext(ctx, effectiveDate(entry), entry.TargetPeriodNumber)
 			}
 			if err != nil {
-				return err
+				return fmt.Errorf("resolve adjustment period %d for entry %s: %w",
+					entry.TargetPeriodNumber, entry.ID, err)
 			}
 			entry.PeriodID = period.ID
-		} else if entry.TargetPeriodNumber != 0 {
-			return masterdata.ErrFiscalPeriodNotFound
+		} else if entry.TargetPeriodNumber != 0 &&
+			(entry.TargetPeriodNumber != 1 || entry.Classification != EntryClassOpening) {
+			return fmt.Errorf("%w: target period %d is invalid for classification %s",
+				masterdata.ErrFiscalPeriodNotFound, entry.TargetPeriodNumber, entry.Classification)
 		} else {
 			var period masterdata.FiscalPeriod
 			var err error
@@ -544,12 +583,20 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 					err = e.validatePolicyPeriod(ctx, entry.CompanyID, period, *postingPolicy, posterID)
 				}
 			} else if entry.CompanyID != uuid.Nil {
-				period, err = e.masterdata.GetOpenPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
+				period, err = e.masterdata.GetPeriodForCompanyDateContext(ctx, entry.CompanyID, effectiveDate(entry))
+				if err == nil {
+					err = validateOpenPeriodState(period)
+				}
 			} else {
 				period, err = e.masterdata.GetOpenPeriodForDateContext(ctx, effectiveDate(entry))
 			}
 			if err != nil {
-				return err
+				return fmt.Errorf("resolve regular period for entry %s dated %s: %w",
+					entry.ID, effectiveDate(entry).Format(time.RFC3339Nano), err)
+			}
+			if entry.TargetPeriodNumber == 1 && period.Number != 1 {
+				return fmt.Errorf("%w: opening entry %s resolved to period %d",
+					masterdata.ErrFiscalPeriodNotFound, entry.ID, period.Number)
 			}
 			entry.PeriodID = period.ID
 		}
@@ -587,6 +634,29 @@ func (e *Engine) prepareForPosting(ctx context.Context, entry *JournalEntry, pos
 	return nil
 }
 
+func validateOpenPeriodState(period masterdata.FiscalPeriod) error {
+	switch period.State {
+	case masterdata.PeriodOpen:
+		return nil
+	case masterdata.PeriodHardClosed:
+		return hardClosedPeriodError()
+	case masterdata.PeriodSoftClosed:
+		return policy.ErrSoftClosedPeriod
+	default:
+		return masterdata.ErrFiscalPeriodClosed
+	}
+}
+
+func validAdjustingEntryType(entryType AdjustingEntryType) bool {
+	switch entryType {
+	case AdjustingEntryAccrual, AdjustingEntryDeferral,
+		AdjustingEntryProvisionEstimate, AdjustingEntryReclassification:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) validatePolicyPeriod(
 	ctx context.Context,
 	companyID uuid.UUID,
@@ -596,7 +666,7 @@ func (e *Engine) validatePolicyPeriod(
 ) error {
 	switch period.State {
 	case masterdata.PeriodHardClosed:
-		return policy.ErrHardClosedPeriod
+		return hardClosedPeriodError()
 	case masterdata.PeriodSoftClosed:
 		if !postingPolicy.AllowSoftClosedPosting {
 			return policy.ErrSoftClosedPeriod
@@ -610,6 +680,10 @@ func (e *Engine) validatePolicyPeriod(
 	default:
 		return masterdata.ErrFiscalPeriodClosed
 	}
+}
+
+func hardClosedPeriodError() error {
+	return fmt.Errorf("%w: %w", policy.ErrHardClosedPeriod, masterdata.ErrFiscalPeriodClosed)
 }
 
 func validateCurrencyPolicyAmounts(entry JournalEntry, currencyPolicy policy.CurrencyPolicy) error {

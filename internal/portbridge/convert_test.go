@@ -68,6 +68,33 @@ func TestToInternalEntryRejectsMissingIdentityWithoutGeneration(t *testing.T) {
 	}
 }
 
+func TestAdjustingEntryMetadataRoundTrips(t *testing.T) {
+	entry := publicEntryFixture(t)
+	entry.Classification = ledger.EntryClassAdjusting
+	entry.AdjustingEntryType = ledger.AdjustingEntryAccrual
+	entry.AdjustmentReason = "Accrued services received"
+	entry.AdjustmentApprovalReference = "APP-2026-03"
+	entry.AdjustmentAuthorized = true
+	entry.TargetPeriodNumber = 13
+
+	internal, err := ToInternalEntry(entry, EntryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := ToPublicEntry(internal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.AdjustingEntryType != entry.AdjustingEntryType ||
+		public.AdjustmentReason != entry.AdjustmentReason ||
+		public.AdjustmentApprovalReference != entry.AdjustmentApprovalReference ||
+		public.AdjustmentAuthorized != entry.AdjustmentAuthorized ||
+		public.TargetPeriodNumber != entry.TargetPeriodNumber ||
+		public.ApprovedBy != entry.ApprovedBy || public.ApprovedAt == nil {
+		t.Fatalf("adjustment audit metadata did not round-trip: %+v", public)
+	}
+}
+
 func TestToInternalEntryGeneratesIdentityOnlyWhenExplicitlyRequested(t *testing.T) {
 	entry := publicEntryFixture(t)
 	entry.ID = types.JournalEntryID{}

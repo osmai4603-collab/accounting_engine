@@ -2,6 +2,7 @@ package valuation_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,15 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/valuation"
 	"github.com/shopspring/decimal"
 )
+
+func ias21Money(t *testing.T, value, currency string) financialtypes.Money {
+	t.Helper()
+	money, err := financialtypes.NewMoneyFromString(value, currency)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return money
+}
 
 func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	ctx := context.Background()
@@ -57,6 +67,27 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	invoiceRecognition, err := valuation.NewConversionEngine(registry).Convert(
+		ctx, ias21Money(t, foreignAmt.String(), "USD"), "SAR", t0,
+	)
+	if err != nil {
+		t.Fatalf("initial spot recognition: %v", err)
+	}
+	if !invoiceRecognition.Equal(initialCarrying) {
+		t.Fatalf("invoice recognized at %s; want spot amount %s", invoiceRecognition, initialCarrying)
+	}
+	originalRateRecord, originalInverted, _, err := registry.GetRateRecord(
+		ctx, valuation.SpotRate, "USD", "SAR", t0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlementRateRecord, settlementInverted, _, err := registry.GetRateRecord(
+		ctx, valuation.SpotRate, "USD", "SAR", t2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// 1. Period-end revaluation at t1 (IAS 21.23(a))
 	revalEngine := valuation.NewRevaluationEngine(registry)
@@ -82,6 +113,10 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	if !res.Difference.Amount().Equal(decimal.RequireFromString("500.00")) {
 		t.Fatalf("expected diff 500.00, got %s", res.Difference.Amount())
 	}
+	if !res.RateReferenceAvailable || res.RateReference.Source != "SAMA_CENTRAL_BANK" ||
+		!res.RateReference.EffectiveDate.Equal(t1) || res.RateInverted {
+		t.Fatalf("closing rate provenance was not preserved: %+v inverted=%t", res.RateReference, res.RateInverted)
+	}
 
 	// Generate unrealized revaluation entry
 	revalEntry, err := valuation.GenerateRevaluationEntry(res, valuation.FXJournalAccounts{
@@ -97,6 +132,10 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	if err := revalEntry.Validate(); err != nil {
 		t.Fatalf("revalEntry validate: %v", err)
 	}
+	if !strings.Contains(revalEntry.DocumentReference, "source=SAMA_CENTRAL_BANK") ||
+		!strings.Contains(revalEntry.DocumentReference, "effective=2026-03-31") {
+		t.Fatalf("revaluation entry is missing rate audit reference: %q", revalEntry.DocumentReference)
+	}
 	if len(revalEntry.Lines) != 2 {
 		t.Fatalf("expected 2 lines in reval entry, got %d", len(revalEntry.Lines))
 	}
@@ -111,19 +150,24 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	// 2. Settlement at t2 (IAS 21.28)
 	settleRate := decimal.RequireFromString("3.82")
 	settleMove := valuation.RealizedFXSettlementMove{
-		CompanyID:             companyID,
-		JournalID:             journalID,
-		MonetaryAccountID:     apAccountID,
-		SettlementAccountID:   bankAccountID,
-		RealizedGainAccountID: realizedGainID,
-		RealizedLossAccountID: realizedLossID,
-		ForeignAmount:         foreignAmt,
-		TransactionCurrency:   "USD",
-		FunctionalCurrency:    "SAR",
-		OriginalRate:          origRate,
-		SettlementRate:        settleRate,
-		SettlementDate:        t2,
-		IsReceivable:          false, // AP settlement
+		CompanyID:              companyID,
+		JournalID:              journalID,
+		MonetaryAccountID:      apAccountID,
+		SettlementAccountID:    bankAccountID,
+		RealizedGainAccountID:  realizedGainID,
+		RealizedLossAccountID:  realizedLossID,
+		ForeignAmount:          foreignAmt,
+		TransactionCurrency:    "USD",
+		FunctionalCurrency:     "SAR",
+		OriginalRate:           origRate,
+		SettlementRate:         settleRate,
+		OriginalRateRecord:     originalRateRecord,
+		SettlementRateRecord:   settlementRateRecord,
+		OriginalRateInverted:   originalInverted,
+		SettlementRateInverted: settlementInverted,
+		CarryingAmount:         ias21Money(t, "38000.00", "SAR"),
+		SettlementDate:         t2,
+		IsReceivable:           false, // AP settlement
 	}
 
 	settleEntry, realizedDiff, err := valuation.GenerateRealizedFXSettlementEntry(settleMove)
@@ -133,13 +177,18 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 	if err := settleEntry.Validate(); err != nil {
 		t.Fatalf("settleEntry validate: %v", err)
 	}
-
-	// Realized difference = 10,000 * (3.82 - 3.75) = 700 SAR loss
-	if !realizedDiff.Amount().Equal(decimal.RequireFromString("700.00")) {
-		t.Fatalf("expected realized diff 700.00, got %s", realizedDiff.Amount())
+	if !strings.Contains(settleEntry.DocumentReference, "original-rate=USD/SAR applied=3.75 type=SPOT effective=2026-01-15 source=SAMA_CENTRAL_BANK") ||
+		!strings.Contains(settleEntry.DocumentReference, "settlement-rate=USD/SAR applied=3.82 type=SPOT effective=2026-04-20 source=SAMA_CENTRAL_BANK") {
+		t.Fatalf("settlement entry is missing rate audit references: %q", settleEntry.DocumentReference)
 	}
 
-	// AP debited 37,500, Bank credited 38,200, Realized loss debited 700
+	// The close already recognized 500 SAR loss. Settlement realizes only the
+	// additional 200 SAR loss against the revalued SAR 38,000 carrying amount.
+	if !realizedDiff.Amount().Equal(decimal.RequireFromString("200.00")) {
+		t.Fatalf("expected realized diff 200.00 after prior revaluation, got %s", realizedDiff.Amount())
+	}
+
+	// AP debited 38,000, Bank credited 38,200, Realized loss debited 200
 	var apDebited, bankCredited, lossDebited decimal.Decimal
 	for _, l := range settleEntry.Lines {
 		if l.AccountID == apAccountID {
@@ -152,14 +201,14 @@ func TestIAS21_MonetaryPayableLifecycleRevaluationAndSettlement(t *testing.T) {
 			lossDebited = l.Debit.Amount()
 		}
 	}
-	if !apDebited.Equal(decimal.RequireFromString("37500.00")) {
-		t.Errorf("expected AP debit 37500, got %s", apDebited)
+	if !apDebited.Equal(decimal.RequireFromString("38000.00")) {
+		t.Errorf("expected AP debit 38000, got %s", apDebited)
 	}
 	if !bankCredited.Equal(decimal.RequireFromString("38200.00")) {
 		t.Errorf("expected bank credit 38200, got %s", bankCredited)
 	}
-	if !lossDebited.Equal(decimal.RequireFromString("700.00")) {
-		t.Errorf("expected realized loss debit 700, got %s", lossDebited)
+	if !lossDebited.Equal(decimal.RequireFromString("200.00")) {
+		t.Errorf("expected realized loss debit 200, got %s", lossDebited)
 	}
 }
 
@@ -187,6 +236,7 @@ func TestIAS21_MonetaryReceivableSettlementRealizedGain(t *testing.T) {
 		FunctionalCurrency:    "SAR",
 		OriginalRate:          origRate,
 		SettlementRate:        settleRate,
+		CarryingAmount:        ias21Money(t, "82000.00", "SAR"),
 		SettlementDate:        time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
 		IsReceivable:          true, // AR settlement
 	}
@@ -225,6 +275,81 @@ func TestIAS21_MonetaryReceivableSettlementRealizedGain(t *testing.T) {
 	}
 	if !gainCredited.Equal(decimal.RequireFromString("3000.00")) {
 		t.Errorf("expected realized gain credit 3000, got %s", gainCredited)
+	}
+}
+
+func TestIAS21_PayableSettlementRealizesGainWhenCarryingAmountExceedsCashPaid(t *testing.T) {
+	companyID, apAccountID, bankAccountID := uuid.New(), uuid.New(), uuid.New()
+	gainID, lossID := uuid.New(), uuid.New()
+	entry, difference, err := valuation.GenerateRealizedFXSettlementEntry(valuation.RealizedFXSettlementMove{
+		CompanyID: companyID, JournalID: uuid.New(), MonetaryAccountID: apAccountID,
+		SettlementAccountID: bankAccountID, RealizedGainAccountID: gainID, RealizedLossAccountID: lossID,
+		ForeignAmount: decimal.NewFromInt(100), TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+		OriginalRate: decimal.RequireFromString("3.75"), SettlementRate: decimal.RequireFromString("3.70"),
+		CarryingAmount: ias21Money(t, "380.00", "SAR"), IsReceivable: false,
+		SettlementDate: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("settlement entry validation: %v", err)
+	}
+	if !difference.Amount().Equal(decimal.NewFromInt(-10)) {
+		t.Fatalf("payable gain difference = %s; want -10 SAR", difference)
+	}
+	var apDebit, bankCredit, gainCredit decimal.Decimal
+	for _, line := range entry.Lines {
+		switch line.AccountID {
+		case apAccountID:
+			apDebit = line.Debit.Amount()
+		case bankAccountID:
+			bankCredit = line.Credit.Amount()
+		case gainID:
+			gainCredit = line.Credit.Amount()
+		}
+	}
+	if !apDebit.Equal(decimal.NewFromInt(380)) ||
+		!bankCredit.Equal(decimal.NewFromInt(370)) ||
+		!gainCredit.Equal(decimal.NewFromInt(10)) {
+		t.Fatalf("wrong payable gain posting: AP debit %s, bank credit %s, gain credit %s", apDebit, bankCredit, gainCredit)
+	}
+}
+
+func TestIAS21_ReceivableSettlementRealizesLoss(t *testing.T) {
+	companyID, arAccountID, bankAccountID := uuid.New(), uuid.New(), uuid.New()
+	gainID, lossID := uuid.New(), uuid.New()
+	entry, difference, err := valuation.GenerateRealizedFXSettlementEntry(valuation.RealizedFXSettlementMove{
+		CompanyID: companyID, JournalID: uuid.New(), MonetaryAccountID: arAccountID,
+		SettlementAccountID: bankAccountID, RealizedGainAccountID: gainID, RealizedLossAccountID: lossID,
+		ForeignAmount: decimal.NewFromInt(100), TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+		OriginalRate: decimal.RequireFromString("3.75"), SettlementRate: decimal.RequireFromString("3.70"),
+		SettlementDate: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC), IsReceivable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("settlement entry validation: %v", err)
+	}
+	if !difference.Amount().Equal(decimal.NewFromInt(-5)) {
+		t.Fatalf("receivable loss difference = %s; want -5 SAR", difference)
+	}
+	var bankDebit, arCredit, lossDebit decimal.Decimal
+	for _, line := range entry.Lines {
+		switch line.AccountID {
+		case bankAccountID:
+			bankDebit = line.Debit.Amount()
+		case arAccountID:
+			arCredit = line.Credit.Amount()
+		case lossID:
+			lossDebit = line.Debit.Amount()
+		}
+	}
+	if !bankDebit.Equal(decimal.NewFromInt(370)) ||
+		!arCredit.Equal(decimal.NewFromInt(375)) ||
+		!lossDebit.Equal(decimal.NewFromInt(5)) {
+		t.Fatalf("wrong receivable loss posting: bank debit %s, AR credit %s, loss debit %s", bankDebit, arCredit, lossDebit)
 	}
 }
 

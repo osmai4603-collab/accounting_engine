@@ -28,6 +28,8 @@ under `pkg/api/v1` and `pkg/spi` when implementing integrations. Do not import
 | --- | --- |
 | [Accounting architecture](./financial_accounting_system_architecture.md) | High-level engine and adapter architecture |
 | [Subledgers architecture](./architecture/subledgers_architecture.md) | Sub-ledgers (AR, AP, FA, Treasury) contracts and GL integration |
+| [Unit of work and transactions](./architecture/unit_of_work_and_transactions.md) | Atomic posting boundaries, isolation, and retry semantics |
+| [Bootstrap capability matrix](./architecture/bootstrap_capability_matrix.md) | Required dependencies and fail-fast rules for `WithRequiredCapabilities` |
 | [Entry validation invariants](./accounting/entry_validation_invariants.md) | Journal-entry validation rules |
 | [Reversal specification](./accounting/reversal_specification.md) | Reversal behavior and constraints |
 | [Closing and reopening policy](./accounting/closing_and_reopening_policy.md) | Fiscal-period close/reopen policy |

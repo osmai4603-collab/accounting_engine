@@ -116,6 +116,9 @@ func (d *Driver) ListReconciliationExceptions(
 	if companyID == uuid.Nil {
 		return nil, subledgers.ErrInvalidOpenLine
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ListReconciliationExceptions(ctx, companyID)
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	exceptions := make([]subledgers.ReconciliationException, 0)

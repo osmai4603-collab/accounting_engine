@@ -257,6 +257,12 @@ func (serviceTestReporting) GetIncomeStatement(context.Context, types.CompanyID,
 func (serviceTestReporting) GetGeneralLedger(context.Context, types.CompanyID, types.AccountID, time.Time, time.Time) (reporting.GeneralLedgerReport, error) {
 	return reporting.GeneralLedgerReport{}, nil
 }
+func (serviceTestReporting) GetCashFlow(context.Context, reporting.CashFlowRequest) (reporting.CashFlowStatementReport, error) {
+	return reporting.CashFlowStatementReport{}, nil
+}
+func (serviceTestReporting) GetDisclosures(context.Context, reporting.DisclosureQuery) ([]reporting.StructuredDisclosure, error) {
+	return nil, nil
+}
 
 type serviceTestGovernance struct{}
 
@@ -300,6 +306,12 @@ func (*recordingTrialBalanceService) GetIncomeStatement(context.Context, types.C
 }
 func (*recordingTrialBalanceService) GetGeneralLedger(context.Context, types.CompanyID, types.AccountID, time.Time, time.Time) (reporting.GeneralLedgerReport, error) {
 	return reporting.GeneralLedgerReport{}, nil
+}
+func (*recordingTrialBalanceService) GetCashFlow(context.Context, reporting.CashFlowRequest) (reporting.CashFlowStatementReport, error) {
+	return reporting.CashFlowStatementReport{}, nil
+}
+func (*recordingTrialBalanceService) GetDisclosures(context.Context, reporting.DisclosureQuery) ([]reporting.StructuredDisclosure, error) {
+	return nil, nil
 }
 
 type contextAwareLedger struct {

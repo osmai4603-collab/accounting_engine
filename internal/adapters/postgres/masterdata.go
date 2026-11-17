@@ -422,7 +422,8 @@ func (d *Driver) GetFiscalYearForCompany(ctx context.Context, companyID, fiscalY
 		year.CompanyID, year.State = companyID, state
 		rows, err := tx.Query(ctx, `SELECT id,company_id,year_id,COALESCE(period_number,0),COALESCE(name,''),
 			start_date,end_date,state,period_type,COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
-			COALESCE(last_state_reason,''),last_state_at FROM fiscal_periods
+			COALESCE(last_state_reason,''),last_state_at,
+			COALESCE(last_state_approval_id,'00000000-0000-0000-0000-000000000000'::uuid) FROM fiscal_periods
 			WHERE company_id=$1 AND year_id=$2 ORDER BY period_number`, companyID, fiscalYearID)
 		if err != nil {
 			return err
@@ -433,7 +434,8 @@ func (d *Driver) GetFiscalYearForCompany(ctx context.Context, companyID, fiscalY
 			var period masterdata.FiscalPeriod
 			if err := rows.Scan(&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number,
 				&period.Name, &period.StartDate, &period.EndDate, &period.State, &period.Type,
-				&period.LastStateActorID, &period.LastStateReason, &period.LastStateAt); err != nil {
+				&period.LastStateActorID, &period.LastStateReason, &period.LastStateAt,
+				&period.LastStateApprovalID); err != nil {
 				return err
 			}
 			periods = append(periods, period)
@@ -501,8 +503,16 @@ func (d *Driver) ReopenFiscalYearForCompanyContext(ctx context.Context, companyI
 		if err := masterdata.ValidateFiscalYearReopen(current, masterdata.FiscalYearOpen, actorID, reason); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE fiscal_years SET state=$1 WHERE company_id=$2 AND id=$3`, masterdata.FiscalYearOpen, companyID, id)
-		return err
+		if _, err := tx.Exec(ctx, `UPDATE fiscal_years
+			SET state=$1,is_closed=FALSE,
+			    year_data=jsonb_set(year_data,'{State}',to_jsonb($1::varchar),TRUE)
+			WHERE company_id=$2 AND id=$3`, masterdata.FiscalYearOpen, companyID, id); err != nil {
+			return err
+		}
+		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_year", id, "FISCAL_YEAR_REOPENED", actorID,
+			map[string]any{"state": current}, map[string]any{
+				"state": masterdata.FiscalYearOpen, "actor_id": actorID, "reason": reason,
+			})
 	})
 }
 
@@ -512,11 +522,13 @@ func (d *Driver) GetPeriodByDate(ctx context.Context, date time.Time) (masterdat
 
 func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.UUID, date time.Time) (masterdata.FiscalPeriod, error) {
 	var period masterdata.FiscalPeriod
+	date = date.UTC().Truncate(time.Microsecond)
 	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx,
 			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type,
 			 COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
-			 COALESCE(last_state_reason,''),last_state_at
+			 COALESCE(last_state_reason,''),last_state_at,
+			 COALESCE(last_state_approval_id,'00000000-0000-0000-0000-000000000000'::uuid)
 		 FROM fiscal_periods
 		 WHERE company_id=$1 AND start_date <= $2 AND end_date >= $2
 		   AND period_type = $3
@@ -524,7 +536,7 @@ func (d *Driver) GetPeriodByDateForCompany(ctx context.Context, companyID uuid.U
 			companyID, date, masterdata.FiscalPeriodTypeNormal).Scan(
 			&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number, &period.Name,
 			&period.StartDate, &period.EndDate, &period.State, &period.Type, &period.LastStateActorID,
-			&period.LastStateReason, &period.LastStateAt,
+			&period.LastStateReason, &period.LastStateAt, &period.LastStateApprovalID,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.ErrFiscalPeriodNotFound
@@ -540,12 +552,13 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 		err := tx.QueryRow(ctx,
 			`SELECT id, company_id, year_id, period_number, name, start_date, end_date, state, period_type,
 			 COALESCE(last_state_actor_id,'00000000-0000-0000-0000-000000000000'::uuid),
-			 COALESCE(last_state_reason,''),last_state_at
+			 COALESCE(last_state_reason,''),last_state_at,
+			 COALESCE(last_state_approval_id,'00000000-0000-0000-0000-000000000000'::uuid)
 		 FROM fiscal_periods WHERE company_id=$1 AND year_id=$2 AND period_number=$3`,
 			companyID, fiscalYearID, number).Scan(
 			&period.ID, &period.CompanyID, &period.FiscalYearID, &period.Number, &period.Name,
 			&period.StartDate, &period.EndDate, &period.State, &period.Type, &period.LastStateActorID,
-			&period.LastStateReason, &period.LastStateAt,
+			&period.LastStateReason, &period.LastStateAt, &period.LastStateApprovalID,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return masterdata.ErrFiscalPeriodNotFound
@@ -556,7 +569,7 @@ func (d *Driver) GetPeriodByNumberForCompany(ctx context.Context, companyID, fis
 }
 
 func (d *Driver) UpdatePeriodState(ctx context.Context, companyID, id uuid.UUID, state masterdata.PeriodState) error {
-	return d.transitionPeriodState(ctx, companyID, id, state, uuid.Nil, "", false, false)
+	return d.transitionPeriodState(ctx, companyID, id, state, uuid.Nil, uuid.Nil, "", false, false)
 }
 
 func (d *Driver) TransitionPeriodStateContext(
@@ -566,7 +579,7 @@ func (d *Driver) TransitionPeriodStateContext(
 	actorID uuid.UUID,
 	reason string,
 ) error {
-	return d.transitionPeriodState(ctx, companyID, id, state, actorID, reason, true, false)
+	return d.transitionPeriodState(ctx, companyID, id, state, actorID, uuid.Nil, reason, true, false)
 }
 
 func (d *Driver) ReopenPeriodContext(
@@ -574,14 +587,22 @@ func (d *Driver) ReopenPeriodContext(
 	companyID, id, actorID uuid.UUID,
 	reason string,
 ) error {
-	return d.transitionPeriodState(ctx, companyID, id, masterdata.PeriodOpen, actorID, reason, true, true)
+	return d.transitionPeriodState(ctx, companyID, id, masterdata.PeriodOpen, actorID, uuid.Nil, reason, true, true)
+}
+
+func (d *Driver) ReopenPeriodWithApprovalContext(
+	ctx context.Context,
+	companyID, id, actorID, approvalID uuid.UUID,
+	reason string,
+) error {
+	return d.transitionPeriodState(ctx, companyID, id, masterdata.PeriodOpen, actorID, approvalID, reason, true, true)
 }
 
 func (d *Driver) transitionPeriodState(
 	ctx context.Context,
 	companyID, id uuid.UUID,
 	state masterdata.PeriodState,
-	actorID uuid.UUID,
+	actorID, approvalID uuid.UUID,
 	reason string,
 	requireAudit, reopening bool,
 ) error {
@@ -599,6 +620,24 @@ func (d *Driver) transitionPeriodState(
 		return masterdata.ErrInvalidPeriodTransition
 	}
 	return d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		var fiscalYearID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT year_id FROM fiscal_periods
+			WHERE company_id=$1 AND id=$2`, companyID, id).Scan(&fiscalYearID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return masterdata.ErrFiscalPeriodNotFound
+			}
+			return err
+		}
+		var fiscalYearState masterdata.FiscalYearState
+		var annualCloseComplete bool
+		if err := tx.QueryRow(ctx, `SELECT state,is_closed FROM fiscal_years
+			WHERE company_id=$1 AND id=$2 FOR UPDATE`, companyID, fiscalYearID).
+			Scan(&fiscalYearState, &annualCloseComplete); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return masterdata.ErrFiscalYearNotFound
+			}
+			return err
+		}
 		var current masterdata.PeriodState
 		err := tx.QueryRow(ctx, `SELECT state FROM fiscal_periods
 			WHERE company_id=$1 AND id=$2 FOR UPDATE`, companyID, id).Scan(&current)
@@ -609,8 +648,11 @@ func (d *Driver) transitionPeriodState(
 			return err
 		}
 		if reopening {
-			if err := masterdata.ValidatePeriodReopen(current, state, actorID, reason); err != nil {
+			if err := masterdata.ValidatePeriodReopenWithApproval(current, state, actorID, reason, approvalID); err != nil {
 				return err
+			}
+			if fiscalYearState == masterdata.FiscalYearHardClosed || annualCloseComplete {
+				return masterdata.ErrPeriodCoveredByAnnualClose
 			}
 		} else if err := masterdata.ValidatePeriodTransition(current, state); err != nil {
 			return err
@@ -622,9 +664,10 @@ func (d *Driver) transitionPeriodState(
 			    closed_by=CASE WHEN $3::varchar='open' THEN closed_by ELSE NULLIF($4::uuid,'00000000-0000-0000-0000-000000000000'::uuid) END,
 			    last_state_actor_id=NULLIF($4::uuid,'00000000-0000-0000-0000-000000000000'::uuid),
 			    last_state_reason=NULLIF($5,''),
-			    last_state_at=NOW()
+			    last_state_at=NOW(),
+			    last_state_approval_id=NULLIF($6::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
 			WHERE company_id=$1 AND id=$2
-			RETURNING last_state_at`, companyID, id, state, actorID, reason).Scan(&changedAt); err != nil {
+			RETURNING last_state_at`, companyID, id, state, actorID, reason, approvalID).Scan(&changedAt); err != nil {
 			return err
 		}
 		action := "FISCAL_PERIOD_STATE_CHANGED"
@@ -637,6 +680,7 @@ func (d *Driver) transitionPeriodState(
 		return appendEntityAuditTx(ctx, tx, companyID, "fiscal_period", id, action, actorID,
 			map[string]any{"state": current}, map[string]any{
 				"state": state, "actor_id": actorID, "reason": reason, "timestamp": changedAt,
+				"approval_id": approvalID,
 			})
 	})
 }

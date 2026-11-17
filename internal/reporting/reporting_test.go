@@ -694,7 +694,9 @@ func TestClosingAndOpeningMoves(t *testing.T) {
 	year := masterdata.GenerateFiscalYear(start)
 	year.EndDate = end
 	for i := range year.Periods {
-		year.Periods[i].State = masterdata.PeriodHardClosed
+		if year.Periods[i].Number <= 12 {
+			year.Periods[i].State = masterdata.PeriodHardClosed
+		}
 	}
 	closing, netIncome, err := reporting.NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
 	if err != nil {
@@ -926,7 +928,9 @@ func TestClosingHandlesContraIncomeAndExpenseAccounts(t *testing.T) {
 	}
 	year := masterdata.GenerateFiscalYear(start)
 	for i := range year.Periods {
-		year.Periods[i].State = masterdata.PeriodHardClosed
+		if year.Periods[i].Number <= 12 {
+			year.Periods[i].State = masterdata.PeriodHardClosed
+		}
 	}
 	closing, netIncome, err := reporting.NewClosingEngine(repository).GenerateClosingMove(year, uuid.New(), retainedID, "USD")
 	if err != nil {

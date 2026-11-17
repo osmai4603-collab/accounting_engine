@@ -491,5 +491,13 @@ func (r *grpcTestReporting) GetGeneralLedger(context.Context, types.CompanyID, t
 	return reporting.GeneralLedgerReport{}, nil
 }
 
+func (r *grpcTestReporting) GetCashFlow(context.Context, reporting.CashFlowRequest) (reporting.CashFlowStatementReport, error) {
+	return reporting.CashFlowStatementReport{}, nil
+}
+
+func (r *grpcTestReporting) GetDisclosures(context.Context, reporting.DisclosureQuery) ([]reporting.StructuredDisclosure, error) {
+	return nil, nil
+}
+
 var _ sdk.LedgerService = (*grpcTestLedger)(nil)
 var _ sdk.ReportingService = (*grpcTestReporting)(nil)

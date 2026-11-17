@@ -20,6 +20,19 @@ type publicService struct {
 	authorizer publicapplication.Authorizer
 }
 
+func validAdjustingEntryRequest(command publicapplication.CreateAdjustingEntryCommand) bool {
+	if strings.TrimSpace(command.Reason) == "" || strings.TrimSpace(command.ApprovalReference) == "" {
+		return false
+	}
+	switch command.Type {
+	case ledger.AdjustingEntryAccrual, ledger.AdjustingEntryDeferral,
+		ledger.AdjustingEntryProvisionEstimate, ledger.AdjustingEntryReclassification:
+		return true
+	default:
+		return false
+	}
+}
+
 func NewPublicService(app *Application, authorizer publicapplication.Authorizer) publicapplication.Service {
 	if app == nil {
 		return nil
@@ -28,6 +41,7 @@ func NewPublicService(app *Application, authorizer publicapplication.Authorizer)
 }
 
 var _ publicapplication.Service = (*publicService)(nil)
+var _ publicapplication.AdjustingEntryService = (*publicService)(nil)
 
 func principalActorID(principal publicapplication.Principal) string {
 	return strings.TrimSpace(principal.ActorID)
@@ -65,6 +79,7 @@ func (s *publicService) authorize(
 	companyID types.CompanyID,
 	action publicapplication.Action,
 	entryID *types.JournalEntryID,
+	approvalReference string,
 ) error {
 	principal := commandContext.Principal
 	if principalActorID(principal) == "" {
@@ -85,10 +100,11 @@ func (s *publicService) authorize(
 	}
 	if s.authorizer != nil {
 		request := publicapplication.AuthorizationRequest{
-			Principal: principal,
-			CompanyID: companyID,
-			Action:    action,
-			EntryID:   entryID,
+			Principal:         principal,
+			CompanyID:         companyID,
+			Action:            action,
+			EntryID:           entryID,
+			ApprovalReference: approvalReference,
 		}
 		if err := s.authorizer.Authorize(ctx, request); err != nil {
 			return publicapplication.NewError(publicapplication.ErrForbidden, "authorization denied", err)
@@ -100,20 +116,24 @@ func (s *publicService) authorize(
 func toEntryFromCreateCommand(command publicapplication.CreateDraftCommand) (ledger.JournalEntry, error) {
 	now := time.Now().UTC()
 	entry := ledger.JournalEntry{
-		CompanyID:           command.CompanyID,
-		JournalID:           command.JournalID,
-		FiscalPeriodID:      command.FiscalPeriodID,
-		EffectiveDate:       command.EffectiveDate,
-		PostingDate:         command.PostingDate,
-		Description:         command.Description,
-		SourceModule:        command.SourceModule,
-		ReferenceID:         command.ReferenceID,
-		TransactionCurrency: command.TransactionCurrency,
-		Classification:      command.Classification,
-		Lines:               command.Lines,
-		CreatedBy:           principalActorID(command.Context.Principal),
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		CompanyID:                   command.CompanyID,
+		JournalID:                   command.JournalID,
+		FiscalPeriodID:              command.FiscalPeriodID,
+		EffectiveDate:               command.EffectiveDate,
+		PostingDate:                 command.PostingDate,
+		Description:                 command.Description,
+		SourceModule:                command.SourceModule,
+		ReferenceID:                 command.ReferenceID,
+		TransactionCurrency:         command.TransactionCurrency,
+		Classification:              command.Classification,
+		TargetPeriodNumber:          command.TargetPeriodNumber,
+		AdjustingEntryType:          ledger.AdjustingEntryType(command.AdjustingEntryType),
+		AdjustmentReason:            command.AdjustmentReason,
+		AdjustmentApprovalReference: command.AdjustmentApprovalReference,
+		Lines:                       command.Lines,
+		CreatedBy:                   principalActorID(command.Context.Principal),
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
 	}
 	if command.EffectiveDate.IsZero() {
 		entry.EffectiveDate = now
@@ -132,7 +152,7 @@ func toEntryFromCreateCommand(command publicapplication.CreateDraftCommand) (led
 }
 
 func (s *publicService) CreateDraft(ctx context.Context, command publicapplication.CreateDraftCommand) (publicapplication.EntryResult, error) {
-	return s.createDraft(ctx, command, types.JournalEntryID{})
+	return s.createDraft(ctx, command, types.JournalEntryID{}, publicapplication.ActionCreate, false, "")
 }
 
 func (s *publicService) CreateDraftWithID(
@@ -140,15 +160,44 @@ func (s *publicService) CreateDraftWithID(
 	command publicapplication.CreateDraftCommand,
 	entryID types.JournalEntryID,
 ) (publicapplication.EntryResult, error) {
-	return s.createDraft(ctx, command, entryID)
+	return s.createDraft(ctx, command, entryID, publicapplication.ActionCreate, false, "")
+}
+
+func (s *publicService) CreateAdjustingEntry(
+	ctx context.Context,
+	command publicapplication.CreateAdjustingEntryCommand,
+) (publicapplication.EntryResult, error) {
+	draft := command.Draft
+	draft.Classification = ledger.EntryClassAdjusting
+	draft.AdjustingEntryType = command.Type
+	draft.AdjustmentReason = strings.TrimSpace(command.Reason)
+	draft.AdjustmentApprovalReference = strings.TrimSpace(command.ApprovalReference)
+	if !validAdjustingEntryRequest(command) {
+		return publicapplication.EntryResult{}, classifyUseCaseError(posting.ErrAdjustingEntryMetadataRequired)
+	}
+	if s.authorizer == nil {
+		return publicapplication.EntryResult{}, publicapplication.NewError(
+			publicapplication.ErrForbidden,
+			"host authorization is required for adjusting entries",
+			nil,
+		)
+	}
+	return s.createDraft(ctx, draft, types.JournalEntryID{}, publicapplication.ActionCreateAdjustment, true,
+		strings.TrimSpace(command.ApprovalReference))
 }
 
 func (s *publicService) createDraft(
 	ctx context.Context,
 	command publicapplication.CreateDraftCommand,
 	entryID types.JournalEntryID,
+	action publicapplication.Action,
+	authorizedAdjustment bool,
+	approvalReference string,
 ) (publicapplication.EntryResult, error) {
-	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionCreate, nil); err != nil {
+	if command.Classification == ledger.EntryClassAdjusting && !authorizedAdjustment {
+		return publicapplication.EntryResult{}, classifyUseCaseError(posting.ErrAdjustmentDelegationRequired)
+	}
+	if err := s.authorize(ctx, command.Context, command.CompanyID, action, nil, approvalReference); err != nil {
 		return publicapplication.EntryResult{}, err
 	}
 	entry, err := toEntryFromCreateCommand(command)
@@ -156,6 +205,12 @@ func (s *publicService) createDraft(
 		return publicapplication.EntryResult{}, err
 	}
 	entry.ID = entryID
+	if authorizedAdjustment {
+		now := time.Now().UTC()
+		entry.AdjustmentAuthorized = true
+		entry.ApprovedBy = principalActorID(command.Context.Principal)
+		entry.ApprovedAt = &now
+	}
 	created, err := s.app.CreateDraftEntry(ctx, entry, principalActorID(command.Context.Principal))
 	if err != nil {
 		return publicapplication.EntryResult{}, classifyUseCaseError(err)
@@ -165,7 +220,7 @@ func (s *publicService) createDraft(
 
 func (s *publicService) Validate(ctx context.Context, command publicapplication.ValidateEntryCommand) error {
 	entryID := command.EntryID
-	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionValidate, &entryID); err != nil {
+	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionValidate, &entryID, ""); err != nil {
 		return err
 	}
 	return classifyUseCaseError(s.app.ValidateEntryByID(ctx, command.CompanyID, command.EntryID))
@@ -173,7 +228,7 @@ func (s *publicService) Validate(ctx context.Context, command publicapplication.
 
 func (s *publicService) Post(ctx context.Context, command publicapplication.PostEntryCommand) (publicapplication.EntryResult, error) {
 	entryID := command.EntryID
-	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionPost, &entryID); err != nil {
+	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionPost, &entryID, ""); err != nil {
 		return publicapplication.EntryResult{}, err
 	}
 	posted, err := s.app.PostEntryByID(ctx, command.CompanyID, command.EntryID, principalActorID(command.Context.Principal))
@@ -185,7 +240,7 @@ func (s *publicService) Post(ctx context.Context, command publicapplication.Post
 
 func (s *publicService) Reverse(ctx context.Context, command publicapplication.ReverseEntryCommand) (publicapplication.EntryResult, error) {
 	entryID := command.EntryID
-	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionReverse, &entryID); err != nil {
+	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionReverse, &entryID, ""); err != nil {
 		return publicapplication.EntryResult{}, err
 	}
 	idempotencyKey := strings.TrimSpace(command.IdempotencyKey)
@@ -205,7 +260,7 @@ func (s *publicService) Reverse(ctx context.Context, command publicapplication.R
 
 func (s *publicService) GetEntry(ctx context.Context, query publicapplication.GetEntryQuery) (ledger.JournalEntry, error) {
 	entryID := query.EntryID
-	if err := s.authorize(ctx, query.Context, query.CompanyID, publicapplication.ActionRead, &entryID); err != nil {
+	if err := s.authorize(ctx, query.Context, query.CompanyID, publicapplication.ActionRead, &entryID, ""); err != nil {
 		return ledger.JournalEntry{}, err
 	}
 	entry, err := s.app.GetEntry(ctx, query.CompanyID, query.EntryID)

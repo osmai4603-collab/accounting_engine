@@ -12,6 +12,7 @@ import (
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
+	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/types"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/legacy"
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
@@ -76,6 +77,19 @@ type mockStandard struct {
 	err             error
 	validateCalls   int
 	initializeCalls int
+	ports           standards.ModulePorts
+}
+
+type disclosureStandard struct {
+	*mockStandard
+	disclosures []reporting.StructuredDisclosure
+}
+
+func (m *disclosureStandard) GetDisclosures(
+	ctx context.Context,
+	query reporting.DisclosureQuery,
+) ([]reporting.StructuredDisclosure, error) {
+	return m.disclosures, nil
 }
 
 func (m *mockStandard) Name() string {
@@ -90,13 +104,15 @@ func (m *mockStandard) Dependencies() []string {
 	return nil
 }
 
-func (m *mockStandard) ValidateDependencies(ports legacy.CoreLedgerStore) error {
+func (m *mockStandard) ValidateDependencies(ports standards.ModulePorts) error {
 	m.validateCalls++
+	m.ports = ports
 	return m.err
 }
 
-func (m *mockStandard) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) error {
+func (m *mockStandard) Initialize(ctx context.Context, ports standards.ModulePorts) error {
 	m.initializeCalls++
+	m.ports = ports
 	return m.err
 }
 
@@ -196,11 +212,11 @@ type dependentStandard struct {
 	deps []string
 }
 
-func (m *dependentStandard) Name() string                                            { return m.name }
-func (m *dependentStandard) Version() string                                         { return "1.0.0" }
-func (m *dependentStandard) Dependencies() []string                                  { return m.deps }
-func (m *dependentStandard) ValidateDependencies(ports legacy.CoreLedgerStore) error { return nil }
-func (m *dependentStandard) Initialize(ctx context.Context, ports legacy.CoreLedgerStore) error {
+func (m *dependentStandard) Name() string                                           { return m.name }
+func (m *dependentStandard) Version() string                                        { return "1.0.0" }
+func (m *dependentStandard) Dependencies() []string                                 { return m.deps }
+func (m *dependentStandard) ValidateDependencies(ports standards.ModulePorts) error { return nil }
+func (m *dependentStandard) Initialize(ctx context.Context, ports standards.ModulePorts) error {
 	return nil
 }
 func (m *dependentStandard) RegisterRules(registrar events.RuleRegistrar) error { return nil }
@@ -374,18 +390,65 @@ func TestBuilder_PreflightRunsBeforeModuleInitialize(t *testing.T) {
 	}
 }
 
-func TestBuilder_PortsModeRejectsStandardsExplicitly(t *testing.T) {
+// P8-01: standard modules are a first-class feature of the ports path. They
+// receive implementation-neutral ModulePorts instead of a legacy store handle.
+func TestBuilder_PortsModeSupportsStandards(t *testing.T) {
 	driver := memory.New()
 	mod := &mockStandard{name: "IFRS15"}
-	_, err := NewBuilder(
+	engine, err := NewBuilder(
 		WithStoragePorts(driver.Ports()),
 		WithStandard(mod),
 	).Build(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "require WithCoreStorage") {
-		t.Fatalf("Build error = %v, want explicit standards/ports conflict", err)
+	if err != nil {
+		t.Fatalf("Build with ports and standard module: %v", err)
 	}
-	if mod.initializeCalls != 0 {
-		t.Fatalf("Initialize called %d times despite preflight failure", mod.initializeCalls)
+	defer func() {
+		if closeErr := engine.Close(); closeErr != nil {
+			t.Fatalf("close engine: %v", closeErr)
+		}
+	}()
+
+	if mod.validateCalls != 1 {
+		t.Fatalf("ValidateDependencies calls = %d, want 1", mod.validateCalls)
+	}
+	if mod.initializeCalls != 1 {
+		t.Fatalf("Initialize calls = %d, want 1", mod.initializeCalls)
+	}
+	if mod.ports == nil {
+		t.Fatal("module received nil ModulePorts")
+	}
+	if mod.ports.Entries() == nil {
+		t.Fatal("module ports have no entry reader")
+	}
+	if mod.ports.MasterData() == nil {
+		t.Fatal("module ports have no master data reader")
+	}
+	if mod.ports.Application() == nil {
+		t.Fatal("module ports have no application service")
+	}
+
+	diag := engine.Standards().Diagnostics()
+	if len(diag.ActiveModules) != 1 || diag.ActiveModules[0].Name != "IFRS15" {
+		t.Fatalf("unexpected standards diagnostics: %+v", diag.ActiveModules)
+	}
+}
+
+// P8-01: the deprecated core-store path must keep exposing the same module
+// ports contract so existing hosts see no behavioral change.
+func TestBuilder_LegacyPathProvidesModulePorts(t *testing.T) {
+	driver := memory.New()
+	mod := &mockStandard{name: "IFRS15"}
+	engine, err := NewBuilder(
+		WithCoreStorage(driver),
+		WithStandard(mod),
+	).Build(context.Background())
+	if err != nil {
+		t.Fatalf("Build with legacy core storage and standard module: %v", err)
+	}
+	defer engine.Close()
+
+	if mod.ports == nil || mod.ports.Entries() == nil || mod.ports.MasterData() == nil || mod.ports.Application() == nil {
+		t.Fatalf("legacy path produced incomplete module ports: %+v", mod.ports)
 	}
 }
 
@@ -400,6 +463,55 @@ func TestBuilder_OptionalCapabilitiesFailExplicitly(t *testing.T) {
 	}
 	if err := engine.Governance().RecordAuditLog(context.Background(), "event", nil); !errors.Is(err, types.ErrCapabilityNotImplemented) {
 		t.Fatalf("Governance error = %v, want %v", err, types.ErrCapabilityNotImplemented)
+	}
+}
+
+func TestBuilder_ReportingServiceAggregatesStructuredDisclosures(t *testing.T) {
+	driver := memory.New()
+	companyID := types.NewCompanyID()
+	module := &disclosureStandard{
+		mockStandard: &mockStandard{name: "disclosure-test"},
+		disclosures: []reporting.StructuredDisclosure{{
+			CompanyID: companyID,
+			Code:      "CASH", Title: "Cash and cash equivalents",
+			StandardReference: "IAS 7.45",
+			Period: reporting.DisclosurePeriod{
+				StartDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+				EndDate:   time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+			},
+			Currency: "USD", Version: "1.0.0",
+			Source: []reporting.DisclosureSource{{Kind: "general_ledger", Reference: "cash-accounts"}},
+			Data:   map[string]any{"cash": "1200.00"},
+		}},
+	}
+	engine, err := NewBuilder(
+		WithStoragePorts(driver.Ports()),
+		WithStandard(module),
+	).Build(context.Background())
+	if err != nil {
+		t.Fatalf("Build with disclosure provider: %v", err)
+	}
+	defer func() {
+		if closeErr := engine.Close(); closeErr != nil {
+			t.Fatalf("close engine: %v", closeErr)
+		}
+	}()
+
+	disclosures, err := engine.Reporting().GetDisclosures(context.Background(), reporting.DisclosureQuery{
+		CompanyID: companyID,
+		Period: reporting.DisclosurePeriod{
+			StartDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			EndDate:   time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetDisclosures: %v", err)
+	}
+	if len(disclosures) != 1 {
+		t.Fatalf("disclosure count = %d, want 1", len(disclosures))
+	}
+	if disclosures[0].ContentHash == "" {
+		t.Fatal("disclosure content hash was not generated")
 	}
 }
 

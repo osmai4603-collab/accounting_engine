@@ -2,6 +2,7 @@ package valuation
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
+
+type rateOnlyProvider struct {
+	rate decimal.Decimal
+}
+
+func (p rateOnlyProvider) GetRate(context.Context, string, string, time.Time) (decimal.Decimal, error) {
+	return p.rate, nil
+}
+
+func (p rateOnlyProvider) GetRateOfType(context.Context, RateType, string, string, time.Time) (decimal.Decimal, error) {
+	return p.rate, nil
+}
 
 func testMoney(t *testing.T, value, currency string) financialtypes.Money {
 	t.Helper()
@@ -69,6 +82,69 @@ func TestConversionAndRevaluationUseTheirRequiredRateTypes(t *testing.T) {
 	average, err := registry.GetRateOfType(context.Background(), AverageRate, "USD", "SAR", date)
 	if err != nil || !average.Equal(decimal.RequireFromString("3.50")) {
 		t.Fatalf("average rate = %s, %v; want 3.50", average, err)
+	}
+}
+
+func TestRevaluationPreservesInverseRateReference(t *testing.T) {
+	registry := NewRateRegistry()
+	date := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)
+	if err := registry.Register(ExchangeRate{
+		FromCurrency: "SAR", ToCurrency: "USD", Rate: decimal.RequireFromString("0.25"),
+		EffectiveDate: date, Type: ClosingRate, Source: "CENTRAL_BANK",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewRevaluationEngine(registry).Calculate(context.Background(), MonetaryPosition{
+		AccountID: uuid.New(), ForeignCurrencyBalance: decimal.NewFromInt(100),
+		TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+		CarryingAmount: testMoney(t, "375", "SAR"), Type: Monetary,
+	}, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.RateInverted || result.RateReference.FromCurrency != "SAR" ||
+		result.RateReference.ToCurrency != "USD" ||
+		!result.ClosingRate.Equal(decimal.NewFromInt(4)) {
+		t.Fatalf("inverse closing-rate provenance was lost: %+v inverted=%t", result.RateReference, result.RateInverted)
+	}
+	entry, err := GenerateRevaluationEntry(result, FXJournalAccounts{
+		JournalID: uuid.New(), UnrealizedGainID: uuid.New(), UnrealizedLossID: uuid.New(),
+	}, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(entry.DocumentReference, "inverted=true") ||
+		!strings.Contains(entry.DocumentReference, "applied=4") {
+		t.Fatalf("entry does not preserve applied inverse-rate reference: %q", entry.DocumentReference)
+	}
+}
+
+func TestRevaluationDoesNotInventUnavailableRateProvenance(t *testing.T) {
+	date := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)
+	result, err := NewRevaluationEngine(rateOnlyProvider{rate: decimal.NewFromInt(4)}).Calculate(
+		context.Background(),
+		MonetaryPosition{
+			AccountID: uuid.New(), ForeignCurrencyBalance: decimal.NewFromInt(100),
+			TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+			CarryingAmount: testMoney(t, "375", "SAR"), Type: Monetary,
+		},
+		date,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RateReferenceAvailable || result.RateReference.Source != "" {
+		t.Fatalf("provider without rate-record support reported provenance: %+v", result.RateReference)
+	}
+	entry, err := GenerateRevaluationEntry(result, FXJournalAccounts{
+		JournalID: uuid.New(), UnrealizedGainID: uuid.New(), UnrealizedLossID: uuid.New(),
+	}, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(entry.DocumentReference, "provider_record=unavailable") ||
+		strings.Contains(entry.DocumentReference, "effective=") {
+		t.Fatalf("draft misrepresented missing provenance: %q", entry.DocumentReference)
 	}
 }
 
@@ -139,6 +215,22 @@ func TestNonMonetaryPositionsAreSkipped(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("non-monetary position was revalued: %+v", results)
+	}
+}
+
+func TestRevaluationRequiresExplicitMonetaryClassification(t *testing.T) {
+	engine := NewRevaluationEngine(NewRateRegistry())
+	position := MonetaryPosition{
+		AccountID: uuid.New(), ForeignCurrencyBalance: decimal.NewFromInt(100),
+		TransactionCurrency: "USD", FunctionalCurrency: "SAR",
+		CarryingAmount: testMoney(t, "375", "SAR"),
+	}
+	if _, err := engine.Calculate(context.Background(), position, time.Now()); err != ErrInvalidPosition {
+		t.Fatalf("unclassified position error = %v; want ErrInvalidPosition", err)
+	}
+	position.Type = PositionType("UNKNOWN")
+	if _, err := engine.Revalue(context.Background(), []MonetaryPosition{position}, time.Now()); err != ErrInvalidPosition {
+		t.Fatalf("unknown position type error = %v; want ErrInvalidPosition", err)
 	}
 }
 

@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 
+	internalreporting "github.com/osmai4603-collab/accounting_engine/internal/reporting"
 	"github.com/osmai4603-collab/accounting_engine/internal/sdkapplication"
+	internalsubledgers "github.com/osmai4603-collab/accounting_engine/internal/subledgers"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/events"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/ledger"
 	"github.com/osmai4603-collab/accounting_engine/pkg/api/v1/reporting"
@@ -22,6 +25,7 @@ import (
 	publicmasterdata "github.com/osmai4603-collab/accounting_engine/pkg/spi/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/standards"
 	"github.com/osmai4603-collab/accounting_engine/pkg/spi/storage"
+	publicsubledger "github.com/osmai4603-collab/accounting_engine/pkg/spi/subledger"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -39,19 +43,25 @@ import (
 //
 // Mixing both sources is rejected during preflight.
 type EngineBuilder struct {
-	coreStore         legacy.CoreLedgerStore
-	ports             storage.Ports
-	portsConfigured   bool
-	reportingStore    storage.ReportingStore
-	governanceStore   storage.GovernanceStore
-	authorizer        publicapplication.Authorizer
-	standards         []standards.StandardModule
-	standardsRegistry *standards.Registry
-	postingConfig     PostingConfig
-	postingCaps       storage.PostingCapabilities
-	eventWaitTimeout  time.Duration
-	eventWaitInterval time.Duration
-	optsErrs          []error
+	coreStore            legacy.CoreLedgerStore
+	ports                storage.Ports
+	portsConfigured      bool
+	reportingStore       storage.ReportingStore
+	governanceStore      storage.GovernanceStore
+	authorizer           publicapplication.Authorizer
+	standards            []standards.StandardModule
+	standardsRegistry    *standards.Registry
+	postingConfig        PostingConfig
+	postingCaps          storage.PostingCapabilities
+	requiredCapabilities []BootstrapCapability
+	eventWaitTimeout     time.Duration
+	eventWaitInterval    time.Duration
+	optsErrs             []error
+
+	// useCases and modulePorts are resolved after the application layer is
+	// built. Standard modules never receive adapter-specific storage handles.
+	useCases    publicapplication.Service
+	modulePorts standards.ModulePorts
 }
 
 const (
@@ -60,6 +70,8 @@ const (
 )
 
 type Option func(*EngineBuilder) error
+
+var builderARAPStores sync.Map // map[*EngineBuilder]publicsubledger.ARAPStores
 
 // WithStoragePorts configures the engine from the stable public storage ports.
 // All required ports are validated before any standard module is initialized.
@@ -109,6 +121,31 @@ func WithGovernance(store storage.GovernanceStore) Option {
 		}
 		b.governanceStore = store
 		return nil
+	}
+}
+
+// WithSubledgerARAP enables the optional receivables and payables capability.
+// Accounting events use the application's regular draft and posting workflow.
+func WithSubledgerARAP(stores publicsubledger.ARAPStores) Option {
+	return func(b *EngineBuilder) error {
+		if isNilDependency(stores.Receivables) || isNilDependency(stores.Payables) || isNilDependency(stores.Balance) {
+			return errors.New("AR/AP requires receivable, payable and balance stores")
+		}
+		builderARAPStores.Store(b, stores)
+		return nil
+	}
+}
+
+func isNilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	ref := reflect.ValueOf(value)
+	switch ref.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return ref.IsNil()
+	default:
+		return false
 	}
 }
 
@@ -184,9 +221,23 @@ func NewBuilder(opts ...Option) *EngineBuilder {
 // Build validates every dependency before mutating module state, then
 // initializes the configured standard modules and returns the engine.
 func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
+	defer builderARAPStores.Delete(b)
+	arapStoresValue, arapEnabled := builderARAPStores.Load(b)
+	arapStores, _ := arapStoresValue.(publicsubledger.ARAPStores)
 	errs := b.preflight()
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
+	}
+
+	disclosureProviders := make([]standards.DisclosureProvider, 0, len(b.standards))
+	for _, module := range b.standards {
+		if provider, ok := module.(standards.DisclosureProvider); ok {
+			disclosureProviders = append(disclosureProviders, provider)
+		}
+	}
+	disclosureRegistry, err := internalreporting.NewDisclosureRegistry(disclosureProviders)
+	if err != nil {
+		return nil, err
 	}
 
 	router := events.NewRouter()
@@ -202,7 +253,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("application layer: %w", err)
 		}
-		useCases = sdkapplication.NewPublicService(app, b.authorizer)
+		useCases = b.newPublicService(app)
 		idempotencyStore = b.ports.Events.Idempotency
 		mappingStore = b.ports.Events.Mappings
 		if store, ok := b.ports.MasterData.(publicmasterdata.Store); ok {
@@ -215,7 +266,7 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("application layer: %w", err)
 		}
-		useCases = sdkapplication.NewPublicService(app, b.authorizer)
+		useCases = b.newPublicService(app)
 		if provider, ok := b.coreStore.(interface {
 			MasterDataStore() publicmasterdata.Store
 		}); ok {
@@ -232,6 +283,14 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	}
 
 	scheduler := standards.NewDefaultScheduler()
+
+	b.useCases = useCases
+	if len(b.standards) > 0 {
+		b.modulePorts = b.buildModulePorts(publicMasterData)
+		if moduleErrs := b.validateStandardModules(); len(moduleErrs) > 0 {
+			return nil, errors.Join(moduleErrs...)
+		}
+	}
 
 	moduleErrs := b.initializeStandards(ctx, router)
 	if len(moduleErrs) > 0 {
@@ -264,7 +323,16 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 		eventService:      &defaultEventService{}, // initialized below
 		publicMasterData:  publicMasterData,
 		useCases:          useCases,
+		yearEndClosing:    optionalYearEndClosingService(useCases),
+		disclosures:       disclosureRegistry,
 		requirePrincipal:  b.authorizer != nil,
+	}
+	if arapEnabled {
+		arapService, err := internalsubledgers.NewPublicARAPService(useCases, arapStores, b.authorizer != nil)
+		if err != nil {
+			return nil, fmt.Errorf("AR/AP capability: %w", err)
+		}
+		inst.arapService = arapService
 	}
 
 	inst.eventService = &defaultEventService{
@@ -282,6 +350,30 @@ func (b *EngineBuilder) Build(ctx context.Context) (Engine, error) {
 	return inst, nil
 }
 
+func (b *EngineBuilder) newPublicService(app *sdkapplication.Application) publicapplication.Service {
+	var repository internalreporting.Repository
+	if candidate, ok := b.reportingStore.(internalreporting.Repository); ok {
+		repository = candidate
+	}
+	if repository == nil {
+		if candidate, ok := b.coreStore.(internalreporting.Repository); ok {
+			repository = candidate
+		}
+	}
+	var runner storage.UnitOfWorkRunner
+	if b.portsConfigured {
+		runner = b.ports.UOWRunner
+	} else if candidate, ok := b.coreStore.(storage.UnitOfWorkRunner); ok {
+		runner = candidate
+	}
+	return sdkapplication.NewPublicServiceWithYearEndClosing(app, b.authorizer, repository, runner)
+}
+
+func optionalYearEndClosingService(service publicapplication.Service) publicapplication.YearEndClosingService {
+	capability, _ := service.(publicapplication.YearEndClosingService)
+	return capability
+}
+
 // preflight collects every missing or conflicting dependency without
 // initializing a module or touching adapter state.
 func (b *EngineBuilder) preflight() []error {
@@ -297,7 +389,6 @@ func (b *EngineBuilder) preflight() []error {
 			errs = append(errs, fmt.Errorf("storage ports: %w", err))
 		}
 	}
-
 	if b.standardsRegistry == nil {
 		b.standardsRegistry = standards.NewRegistry()
 	}
@@ -350,25 +441,36 @@ func (b *EngineBuilder) preflight() []error {
 
 		for _, mod := range b.standards {
 			if mod == nil {
-				continue
-			}
-			name := mod.Name()
-			if b.coreStore == nil {
-				errs = append(errs, fmt.Errorf("standard module %s: standard modules require WithCoreStorage in this release; storage ports do not expose the standards repository", name))
-				continue
-			}
-			if err := mod.ValidateDependencies(b.coreStore); err != nil {
-				errs = append(errs, fmt.Errorf("standard module %s: dependency validation failed: %w", name, err))
+				errs = append(errs, errors.New("standard module is nil"))
 			}
 		}
 	}
 
+	errs = append(errs, b.validateRequiredCapabilities()...)
+
+	return errs
+}
+
+// validateStandardModules runs dependency validation only after the application
+// layer and module ports exist. Nothing has been initialized yet: a failure
+// here still leaves every module untouched.
+func (b *EngineBuilder) validateStandardModules() []error {
+	var errs []error
+	for _, mod := range b.standards {
+		if mod == nil {
+			continue
+		}
+		if err := mod.ValidateDependencies(b.modulePorts); err != nil {
+			errs = append(errs, fmt.Errorf("standard module %s: dependency validation failed: %w", mod.Name(), err))
+		}
+	}
 	return errs
 }
 
 // initializeStandards runs Initialize and RegisterRules only after preflight
-// succeeded. If initialization fails on any module, all previously initialized
-// modules are rolled back in reverse topological order.
+// and dependency validation succeeded. If initialization fails on any module,
+// all previously initialized modules are rolled back in reverse topological
+// order.
 func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.Router) []error {
 	var initializedMods []standards.StandardModule
 
@@ -391,7 +493,7 @@ func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.
 			continue
 		}
 		name := mod.Name()
-		if err := mod.Initialize(ctx, b.coreStore); err != nil {
+		if err := mod.Initialize(ctx, b.modulePorts); err != nil {
 			initErr := fmt.Errorf("standard module %s: initialization failed: %w", name, err)
 			return rollback(initErr)
 		}
@@ -408,6 +510,7 @@ func (b *EngineBuilder) initializeStandards(ctx context.Context, router *events.
 type engineInstance struct {
 	coreStore         legacy.CoreLedgerStore
 	reportingStore    storage.ReportingStore
+	disclosures       *internalreporting.DisclosureRegistry
 	governanceStore   storage.GovernanceStore
 	standards         []standards.StandardModule
 	standardsRegistry *standards.Registry
@@ -416,6 +519,8 @@ type engineInstance struct {
 	eventService      *defaultEventService
 	publicMasterData  publicmasterdata.Store
 	useCases          publicapplication.Service
+	yearEndClosing    publicapplication.YearEndClosingService
+	arapService       publicsubledger.ARAPService
 	requirePrincipal  bool
 
 	closeOnce sync.Once
@@ -429,11 +534,33 @@ func (e *engineInstance) Ledger() LedgerService {
 	}
 }
 
+func (e *engineInstance) YearEndClosing() publicapplication.YearEndClosingService {
+	return e.yearEndClosing
+}
+
+// SubledgerARAP provides the optional AR/AP use-case service when enabled with
+// WithSubledgerARAP.
+func (e *engineInstance) SubledgerARAP() publicsubledger.ARAPService {
+	return e.arapService
+}
+
+// SubledgerARAP retrieves the optional AR/AP use-case service from an engine.
+// It returns ErrCapabilityNotImplemented when the capability was not enabled.
+func SubledgerARAP(engine Engine) (publicsubledger.ARAPService, error) {
+	provider, ok := engine.(interface {
+		SubledgerARAP() publicsubledger.ARAPService
+	})
+	if !ok || provider.SubledgerARAP() == nil {
+		return nil, types.ErrCapabilityNotImplemented
+	}
+	return provider.SubledgerARAP(), nil
+}
+
 func (e *engineInstance) Reporting() ReportingService {
-	if e.reportingStore == nil {
+	if e.reportingStore == nil && (e.disclosures == nil || !e.disclosures.HasProviders()) {
 		return &disabledReportingService{}
 	}
-	return &defaultReportingService{store: e.reportingStore}
+	return &defaultReportingService{store: e.reportingStore, disclosures: e.disclosures}
 }
 
 func (e *engineInstance) Governance() GovernanceService {
@@ -523,6 +650,12 @@ func (d *disabledReportingService) GetIncomeStatement(ctx context.Context, compa
 func (d *disabledReportingService) GetGeneralLedger(ctx context.Context, companyID types.CompanyID, accountID types.AccountID, start, end time.Time) (reporting.GeneralLedgerReport, error) {
 	return reporting.GeneralLedgerReport{}, types.ErrCapabilityNotImplemented
 }
+func (d *disabledReportingService) GetCashFlow(ctx context.Context, request reporting.CashFlowRequest) (reporting.CashFlowStatementReport, error) {
+	return reporting.CashFlowStatementReport{}, types.ErrCapabilityNotImplemented
+}
+func (d *disabledReportingService) GetDisclosures(ctx context.Context, query reporting.DisclosureQuery) ([]reporting.StructuredDisclosure, error) {
+	return nil, types.ErrCapabilityNotImplemented
+}
 
 type disabledGovernanceService struct{}
 
@@ -590,7 +723,15 @@ func (s *defaultLedgerService) ReverseEntry(ctx context.Context, companyID types
 }
 
 type defaultReportingService struct {
-	store storage.ReportingStore
+	store       storage.ReportingStore
+	disclosures *internalreporting.DisclosureRegistry
+}
+
+func (s *defaultReportingService) GetDisclosures(ctx context.Context, query reporting.DisclosureQuery) ([]reporting.StructuredDisclosure, error) {
+	if s.disclosures == nil {
+		return nil, fmt.Errorf("%w: disclosure providers not configured", types.ErrCapabilityNotImplemented)
+	}
+	return s.disclosures.GetDisclosures(ctx, query)
 }
 
 func (s *defaultReportingService) GetTrialBalance(ctx context.Context, companyID types.CompanyID, asOf time.Time, currency string) (reporting.TrialBalance, error) {
@@ -1299,19 +1440,23 @@ func createDraftCommand(entry ledger.JournalEntry, requestContext publicapplicat
 		exchangeRate = entry.ExchangeRate.String()
 	}
 	return publicapplication.CreateDraftCommand{
-		Context:             requestContext,
-		CompanyID:           entry.CompanyID,
-		JournalID:           entry.JournalID,
-		FiscalPeriodID:      entry.FiscalPeriodID,
-		EffectiveDate:       entry.EffectiveDate,
-		PostingDate:         entry.PostingDate,
-		Description:         entry.Description,
-		SourceModule:        entry.SourceModule,
-		ReferenceID:         entry.ReferenceID,
-		TransactionCurrency: entry.TransactionCurrency,
-		ExchangeRate:        exchangeRate,
-		Classification:      entry.Classification,
-		Lines:               entry.Lines,
+		Context:                     requestContext,
+		CompanyID:                   entry.CompanyID,
+		JournalID:                   entry.JournalID,
+		FiscalPeriodID:              entry.FiscalPeriodID,
+		EffectiveDate:               entry.EffectiveDate,
+		PostingDate:                 entry.PostingDate,
+		Description:                 entry.Description,
+		SourceModule:                entry.SourceModule,
+		ReferenceID:                 entry.ReferenceID,
+		TransactionCurrency:         entry.TransactionCurrency,
+		ExchangeRate:                exchangeRate,
+		Classification:              entry.Classification,
+		TargetPeriodNumber:          entry.TargetPeriodNumber,
+		AdjustingEntryType:          entry.AdjustingEntryType,
+		AdjustmentReason:            entry.AdjustmentReason,
+		AdjustmentApprovalReference: entry.AdjustmentApprovalReference,
+		Lines:                       entry.Lines,
 	}
 }
 

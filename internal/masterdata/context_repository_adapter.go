@@ -126,6 +126,18 @@ func (r contextRepositoryAdapter) ReopenPeriodContext(
 	return repository.ReopenPeriodContext(ctx, companyID, periodID, actorID, reason)
 }
 
+func (r contextRepositoryAdapter) ReopenPeriodWithApprovalContext(
+	ctx context.Context,
+	companyID, periodID, actorID, approvalID uuid.UUID,
+	reason string,
+) error {
+	repository, ok := r.repository.(PeriodApprovalLifecycleRepository)
+	if !ok {
+		return ErrCompanyScopeRequired
+	}
+	return repository.ReopenPeriodWithApprovalContext(ctx, companyID, periodID, actorID, approvalID, reason)
+}
+
 func (r contextRepositoryAdapter) GetNextSequenceWithLock(uuid.UUID) (int64, error) {
 	return 0, ErrCompanyScopeRequired
 }

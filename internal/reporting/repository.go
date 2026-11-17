@@ -70,6 +70,18 @@ type PeriodReopenRepository interface {
 	ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error
 }
 
+type PeriodReopenWithApprovalRepository interface {
+	ReopenPeriodWithApprovalContext(ctx context.Context, companyID, id, actorID, approvalID uuid.UUID, reason string) error
+}
+
+// YearEndCloseReopenRepository reverses the annual close and any generated
+// opening entries, reopens the related year and adjustment periods, and
+// appends audit evidence as one atomic operation. Implementations must reject
+// the request without changing state when that transaction is unavailable.
+type YearEndCloseReopenRepository interface {
+	ReopenYearEndCloseForCompanyContext(ctx context.Context, companyID, yearID, actorID uuid.UUID, reason string) error
+}
+
 type FiscalYearHistoryRepository interface {
 	IsFirstFiscalYearForCompanyContext(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 }
@@ -86,7 +98,12 @@ type DraftEntryRepository interface {
 	ListDraftEntriesForCompanyContext(context.Context, uuid.UUID) ([]posting.JournalEntry, error)
 }
 
-var ErrCompanyScopeRequired = errors.New("company-scoped reporting repository is required")
+var (
+	ErrCompanyScopeRequired               = errors.New("company-scoped reporting repository is required")
+	ErrFiscalYearReopenRepositoryRequired = errors.New("fiscal-year reopen repository is required")
+	ErrPeriodReopenRepositoryRequired     = errors.New("period reopen repository is required")
+	ErrPeriodApprovalRepositoryRequired   = errors.New("period reopen approval repository is required")
+)
 
 type CompanyScopedReportingRepository interface {
 	ListAccountsForCompanyContext(context.Context, uuid.UUID) ([]masterdata.Account, error)
@@ -295,7 +312,7 @@ func (r companyReportingRepository) ReopenFiscalYearForCompanyContext(ctx contex
 	if reopenRepo, ok := r.ledger.(FiscalYearReopenRepository); ok {
 		return reopenRepo.ReopenFiscalYearForCompanyContext(r.ctx, companyID, id, actorID, reason)
 	}
-	return nil
+	return ErrFiscalYearReopenRepositoryRequired
 }
 
 func (r companyReportingRepository) ReopenPeriodContext(ctx context.Context, companyID, id, actorID uuid.UUID, reason string) error {
@@ -305,5 +322,19 @@ func (r companyReportingRepository) ReopenPeriodContext(ctx context.Context, com
 	if reopenRepo, ok := r.ledger.(PeriodReopenRepository); ok {
 		return reopenRepo.ReopenPeriodContext(r.ctx, companyID, id, actorID, reason)
 	}
-	return nil
+	return ErrPeriodReopenRepositoryRequired
+}
+
+func (r companyReportingRepository) ReopenPeriodWithApprovalContext(
+	ctx context.Context,
+	companyID, id, actorID, approvalID uuid.UUID,
+	reason string,
+) error {
+	if companyID != r.companyID {
+		return ErrCompanyScopeRequired
+	}
+	if reopenRepo, ok := r.ledger.(PeriodReopenWithApprovalRepository); ok {
+		return reopenRepo.ReopenPeriodWithApprovalContext(r.ctx, companyID, id, actorID, approvalID, reason)
+	}
+	return ErrPeriodApprovalRepositoryRequired
 }

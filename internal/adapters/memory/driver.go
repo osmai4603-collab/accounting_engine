@@ -46,6 +46,7 @@ type Driver struct {
 	auditRecords               []storage.AuditRecord
 	idempotency                map[memoryIdempotencyKey]storage.IdempotencyRecord
 	rates                      *valuation.RateRegistry
+	postingLocks               *posting.KeyedPostingLocker
 }
 
 type journalRecord struct {
@@ -105,5 +106,6 @@ func New() *Driver {
 		policies:                   make(map[string][]policy.VersionedPolicy),
 		idempotency:                make(map[memoryIdempotencyKey]storage.IdempotencyRecord),
 		rates:                      valuation.NewRateRegistry(),
+		postingLocks:               posting.NewKeyedPostingLocker(),
 	}
 }

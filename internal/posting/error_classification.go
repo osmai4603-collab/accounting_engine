@@ -38,7 +38,7 @@ func ClassifyError(err error) (apperrors.Code, apperrors.Category) {
 	case errors.Is(err, financialtypes.ErrFiscalPeriodNotFound),
 		errors.Is(err, masterdata.ErrFiscalPeriodNotFound):
 		return apperrors.CodePeriodNotFound, apperrors.Validation
-	case errors.Is(err, ErrApprovalRequired):
+	case errors.Is(err, ErrApprovalRequired), errors.Is(err, ErrAdjustmentDelegationRequired):
 		return apperrors.CodeApprovalRequired, apperrors.Authorization
 	case errors.Is(err, masterdata.ErrCompanyInactive):
 		return apperrors.CodeValidation, apperrors.Authorization
@@ -68,6 +68,8 @@ func ClassifyError(err error) (apperrors.Code, apperrors.Category) {
 		errors.Is(err, ErrReversalActorRequired),
 		errors.Is(err, ErrEntryHashUnavailable),
 		errors.Is(err, ErrAdjustmentPeriodAuthorizationRequired),
+		errors.Is(err, ErrAdjustingEntryMetadataRequired),
+		errors.Is(err, ErrInvalidAdjustingEntryMetadata),
 		errors.Is(err, ErrFunctionalCurrencyMismatch),
 		errors.Is(err, ErrCostCenterRequired),
 		errors.Is(err, ErrDimensionPolicyUnavailable),

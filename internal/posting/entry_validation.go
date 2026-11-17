@@ -71,6 +71,20 @@ func ValidateEntryWithRounding(e *JournalEntry, round func(financialtypes.Money)
 			return ErrInvalidEntry
 		}
 	}
+	if e.AdjustingEntryType != "" {
+		switch e.AdjustingEntryType {
+		case AdjustingEntryAccrual, AdjustingEntryDeferral, AdjustingEntryProvisionEstimate, AdjustingEntryReclassification:
+			if e.Classification != EntryClassAdjusting {
+				return ErrInvalidAdjustingEntryMetadata
+			}
+		default:
+			return ErrInvalidAdjustingEntryMetadata
+		}
+	}
+	if e.Classification != EntryClassAdjusting &&
+		(e.AdjustmentReason != "" || e.AdjustmentApprovalReference != "") {
+		return ErrInvalidAdjustingEntryMetadata
+	}
 
 	totals := make(map[string]decimal.Decimal)
 	hasDebit, hasCredit, layered := false, false, false

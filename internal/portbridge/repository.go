@@ -44,12 +44,81 @@ func (r *Repository) GetEntryByIDForCompany(ctx context.Context, companyID, entr
 }
 
 func (r *Repository) PostAtomicContext(ctx context.Context, entry posting.JournalEntry) error {
+	commit, err := r.postingCommit(ctx, entry)
+	if err != nil {
+		return err
+	}
+	result, err := r.Ports.Posting.CommitPosting(ctx, commit)
+	if err != nil {
+		return err
+	}
+	return validateCommittedEntry(commit.Entry, result)
+}
+
+// PostAndSequenceContext runs the complete posting boundary in one unit of
+// work: sequence allocation and CommitPosting (header, lines, status, balance
+// effects, audit and idempotency per the storage contract) share a single
+// transaction. When an adapter-provided posting lock already opened that
+// transaction, the active transaction-bound ports are reused instead of
+// nesting a second unit of work.
+func (r *Repository) PostAndSequenceContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, error) {
+	commit, err := r.postingCommit(ctx, entry)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	postCtx := storage.WithCompanyContext(ctx, commit.Entry.CompanyID)
+	if entry.PostedBy != "" {
+		postCtx = storage.WithActorContext(postCtx, entry.PostedBy)
+	}
+
+	if r.Ports.UOWRunner != nil {
+		var committed ledger.JournalEntry
+		err = r.Ports.UOWRunner.Execute(postCtx, func(uowCtx context.Context, uow storage.UnitOfWork) error {
+			withSequence, err := r.allocateSequence(uowCtx, uow.Sequences(), commit)
+			if err != nil {
+				return err
+			}
+			result, err := uow.Posting().CommitPosting(uowCtx, withSequence)
+			if err != nil {
+				return err
+			}
+			if err := validateCommittedEntry(withSequence.Entry, result); err != nil {
+				return err
+			}
+			committed = result
+			return nil
+		})
+		if err == nil {
+			return ToInternalEntry(committed, EntryOptions{})
+		}
+		if !errors.Is(err, storage.ErrNestedUnitOfWork) {
+			return posting.JournalEntry{}, err
+		}
+		// An adapter-provided PostingLocker already owns the transaction.
+		// Reuse its transaction-bound ports below.
+	}
+
+	withSequence, err := r.allocateSequence(postCtx, r.Ports.Sequences, commit)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	result, err := r.Ports.Posting.CommitPosting(postCtx, withSequence)
+	if err != nil {
+		return posting.JournalEntry{}, err
+	}
+	if err := validateCommittedEntry(withSequence.Entry, result); err != nil {
+		return posting.JournalEntry{}, err
+	}
+	return ToInternalEntry(result, EntryOptions{})
+}
+
+func (r *Repository) postingCommit(ctx context.Context, entry posting.JournalEntry) (storage.PostingCommit, error) {
 	if r.Ports.Posting == nil {
-		return errors.New("portbridge: posting writer is not configured")
+		return storage.PostingCommit{}, errors.New("portbridge: posting writer is not configured")
 	}
 	publicEntry, err := ToPublicEntry(entry)
 	if err != nil {
-		return err
+		return storage.PostingCommit{}, err
 	}
 	operation := storage.OperationPost
 	if entry.Classification == posting.EntryClassReversing && entry.OriginalEntryID != nil {
@@ -66,14 +135,30 @@ func (r *Repository) PostAtomicContext(ctx context.Context, entry posting.Journa
 		original := types.JournalEntryID(*entry.OriginalEntryID)
 		commit.OriginalEntryID = &original
 	}
-	result, err := r.Ports.Posting.CommitPosting(ctx, commit)
-	if err != nil {
-		return err
+	return commit, nil
+}
+
+func (r *Repository) allocateSequence(
+	ctx context.Context,
+	allocator storage.SequenceAllocator,
+	commit storage.PostingCommit,
+) (storage.PostingCommit, error) {
+	if allocator == nil {
+		return storage.PostingCommit{}, errors.New("portbridge: sequence allocator is not configured")
 	}
+	sequence, err := allocator.NextSequence(ctx, commit.Entry.CompanyID, commit.Entry.JournalID)
+	if err != nil {
+		return storage.PostingCommit{}, err
+	}
+	commit.Entry.SequenceNumber = sequence
+	return commit, nil
+}
+
+func validateCommittedEntry(requested ledger.JournalEntry, result ledger.JournalEntry) error {
 	if result.ID == (types.JournalEntryID{}) {
 		return errors.New("portbridge: posting writer returned an empty entry")
 	}
-	if result.CompanyID != publicEntry.CompanyID || result.ID != publicEntry.ID {
+	if result.CompanyID != requested.CompanyID || result.ID != requested.ID {
 		return fmt.Errorf("portbridge: posting writer returned a different entry (%s/%s)", result.CompanyID, result.ID)
 	}
 	return nil

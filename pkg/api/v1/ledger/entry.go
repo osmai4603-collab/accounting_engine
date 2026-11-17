@@ -25,6 +25,15 @@ const (
 	EntryClassReversing EntryClassification = "reversing"
 )
 
+type AdjustingEntryType string
+
+const (
+	AdjustingEntryAccrual           AdjustingEntryType = "accrual"
+	AdjustingEntryDeferral          AdjustingEntryType = "deferral"
+	AdjustingEntryProvisionEstimate AdjustingEntryType = "provision_estimate"
+	AdjustingEntryReclassification  AdjustingEntryType = "reclassification"
+)
+
 type EntryLine struct {
 	ID                  types.JournalEntryLineID
 	AccountID           types.AccountID
@@ -43,32 +52,37 @@ type EntryLine struct {
 }
 
 type JournalEntry struct {
-	ID                  types.JournalEntryID
-	CompanyID           types.CompanyID
-	JournalID           types.JournalID
-	FiscalPeriodID      types.FiscalPeriodID
-	EntryNumber         string
-	SequenceNumber      int64
-	LegalNumber         string
-	Status              EntryStatus
-	Classification      EntryClassification
-	EffectiveDate       time.Time
-	PostingDate         time.Time
-	Description         string
-	SourceModule        string
-	ReferenceID         string
-	TransactionCurrency string
-	ExchangeRate        decimal.Decimal
-	Lines               []EntryLine
-	CreatedBy           string
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	PostedBy            string
-	PostedAt            *time.Time
-	ApprovedBy          string
-	ApprovedAt          *time.Time
-	ApprovalFingerprint string
-	ReversalOfID        *types.JournalEntryID
-	ReversedByID        *types.JournalEntryID
-	ReversalReason      string
+	ID                          types.JournalEntryID
+	CompanyID                   types.CompanyID
+	JournalID                   types.JournalID
+	FiscalPeriodID              types.FiscalPeriodID
+	EntryNumber                 string
+	SequenceNumber              int64
+	LegalNumber                 string
+	Status                      EntryStatus
+	Classification              EntryClassification
+	AdjustingEntryType          AdjustingEntryType
+	AdjustmentReason            string
+	AdjustmentApprovalReference string
+	AdjustmentAuthorized        bool
+	TargetPeriodNumber          int
+	EffectiveDate               time.Time
+	PostingDate                 time.Time
+	Description                 string
+	SourceModule                string
+	ReferenceID                 string
+	TransactionCurrency         string
+	ExchangeRate                decimal.Decimal
+	Lines                       []EntryLine
+	CreatedBy                   string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	PostedBy                    string
+	PostedAt                    *time.Time
+	ApprovedBy                  string
+	ApprovedAt                  *time.Time
+	ApprovalFingerprint         string
+	ReversalOfID                *types.JournalEntryID
+	ReversedByID                *types.JournalEntryID
+	ReversalReason              string
 }

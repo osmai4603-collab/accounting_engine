@@ -28,10 +28,30 @@ type MakerCheckerPolicy interface {
 	MakerCheckerThreshold(ctx context.Context, companyID types.CompanyID) (decimal.Decimal, bool, error)
 }
 
+// PostingLocker serializes posting for one company/journal pair. Adapters that
+// can provide a database-level lock should implement this interface and expose
+// it through PostingCapabilities.Locker or Ports.Private using
+// PostingLockerExtensionKey. The engine falls back to an in-process keyed lock
+// when no adapter strategy is supplied.
+type PostingLocker interface {
+	WithinPostingLock(
+		ctx context.Context,
+		companyID types.CompanyID,
+		journalID types.JournalID,
+		fn func(ctx context.Context) error,
+	) error
+}
+
+// PostingLockerExtensionKey is the Ports.Private key adapters may use to expose
+// an engine-specific PostingLocker. The value must satisfy PostingLocker or the
+// engine's internal equivalent.
+const PostingLockerExtensionKey = "accounting_engine.posting_locker"
+
 // PostingCapabilities contains optional posting controls supplied by an SDK
 // composition root. Nil fields mean that the capability is unavailable.
 type PostingCapabilities struct {
 	ApprovalGate        ApprovalGate
 	FinancialDimensions FinancialDimensionPolicy
 	MakerCheckerPolicy  MakerCheckerPolicy
+	Locker              PostingLocker
 }

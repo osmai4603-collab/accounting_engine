@@ -10,27 +10,32 @@ import (
 )
 
 var (
-	ErrInvalidEntry               = errors.New("invalid journal entry")
-	ErrMinimumLines               = errors.New("journal entry must contain at least two lines")
-	ErrLineMustHaveOneSide        = errors.New("journal entry line cannot have debit and credit amounts")
-	ErrEntryNotDraft              = errors.New("journal entry is not a draft")
-	ErrEntryNotPosted             = errors.New("journal entry is not posted")
-	ErrEntryAlreadyReversed       = errors.New("journal entry already reversed")
-	ErrInvalidReversal            = errors.New("invalid reversal entry")
-	ErrReversalDateBeforeOriginal = errors.New("reversal effective date is before the original entry effective date")
-	ErrReversalActorRequired      = errors.New("reversal actor is required")
-	ErrIdempotencyConflict        = errors.New("idempotency key was reused with a different reversal request")
-	ErrMissingTransactionCurrency = errors.New("transaction currency is required")
-	ErrMissingFunctionalCurrency  = errors.New("functional currency is required")
-	ErrInvalidExchangeRate        = errors.New("exchange rate must be strictly positive")
-	ErrFunctionalBalanceMismatch  = errors.New("functional debit and credit totals must balance")
-	ErrAtomicReversalRequired     = errors.New("repository does not support atomic reversal")
-	ErrAtomicBulkPostingRequired  = errors.New("repository does not support atomic bulk posting")
+	ErrInvalidEntry                   = errors.New("invalid journal entry")
+	ErrMinimumLines                   = errors.New("journal entry must contain at least two lines")
+	ErrLineMustHaveOneSide            = errors.New("journal entry line cannot have debit and credit amounts")
+	ErrEntryNotDraft                  = errors.New("journal entry is not a draft")
+	ErrEntryNotPosted                 = errors.New("journal entry is not posted")
+	ErrEntryAlreadyReversed           = errors.New("journal entry already reversed")
+	ErrInvalidReversal                = errors.New("invalid reversal entry")
+	ErrReversalDateBeforeOriginal     = errors.New("reversal effective date is before the original entry effective date")
+	ErrReversalActorRequired          = errors.New("reversal actor is required")
+	ErrIdempotencyConflict            = errors.New("idempotency key was reused with a different reversal request")
+	ErrMissingTransactionCurrency     = errors.New("transaction currency is required")
+	ErrMissingFunctionalCurrency      = errors.New("functional currency is required")
+	ErrInvalidExchangeRate            = errors.New("exchange rate must be strictly positive")
+	ErrFunctionalBalanceMismatch      = errors.New("functional debit and credit totals must balance")
+	ErrAtomicReversalRequired         = errors.New("repository does not support atomic reversal")
+	ErrAtomicBulkPostingRequired      = errors.New("repository does not support atomic bulk posting")
+	ErrInvalidAdjustingEntryMetadata  = errors.New("invalid adjusting entry metadata")
+	ErrAdjustingEntryMetadataRequired = errors.New("adjusting entry metadata is required")
+	ErrAdjustmentDelegationRequired   = errors.New("approved adjustment delegation is required")
 )
 
 type EntryStatus string
 
 type EntryClassification string
+
+type AdjustingEntryType string
 
 const (
 	EntryDraft    EntryStatus = "draft"
@@ -44,6 +49,13 @@ const (
 	EntryClassClosing   EntryClassification = "closing"
 	EntryClassOpening   EntryClassification = "opening"
 	EntryClassReversing EntryClassification = "reversing"
+)
+
+const (
+	AdjustingEntryAccrual           AdjustingEntryType = "accrual"
+	AdjustingEntryDeferral          AdjustingEntryType = "deferral"
+	AdjustingEntryProvisionEstimate AdjustingEntryType = "provision_estimate"
+	AdjustingEntryReclassification  AdjustingEntryType = "reclassification"
 )
 
 const (
@@ -160,40 +172,43 @@ func (l JournalEntryLine) ValidateWithRounding(round func(financialtypes.Money) 
 }
 
 type JournalEntry struct {
-	CompanyID              uuid.UUID
-	ID                     uuid.UUID
-	SequenceNumber         int64
-	LegalNumber            string
-	JournalID              uuid.UUID
-	PeriodID               uuid.UUID
-	EntryDate              time.Time
-	PostingDate            time.Time
-	Date                   time.Time
-	Status                 EntryStatus
-	SourceModule           string
-	DocumentReference      string
-	Reference              string
-	TransactionCurrency    string
-	ExchangeRate           decimal.Decimal
-	ApprovalFingerprint    string
-	CreatedBy              string
-	ApprovedBy             string
-	ApprovedAt             *time.Time
-	PostedBy               string
-	PostedAt               *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
-	ReversedEntryID        *uuid.UUID
-	OriginalEntryID        *uuid.UUID
-	SourceEventID          *uuid.UUID
-	TargetPeriodNumber     int
-	AdjustmentAuthorized   bool
-	Classification         EntryClassification
-	ReversalReason         string
-	ReversalReference      string `json:"reversal_reference,omitempty"`
-	IdempotencyKey         string `json:"idempotency_key,omitempty"`
-	IdempotencyPayloadHash string `json:"idempotency_payload_hash,omitempty"`
-	Lines                  []JournalEntryLine
+	CompanyID                   uuid.UUID
+	ID                          uuid.UUID
+	SequenceNumber              int64
+	LegalNumber                 string
+	JournalID                   uuid.UUID
+	PeriodID                    uuid.UUID
+	EntryDate                   time.Time
+	PostingDate                 time.Time
+	Date                        time.Time
+	Status                      EntryStatus
+	SourceModule                string
+	DocumentReference           string
+	Reference                   string
+	TransactionCurrency         string
+	ExchangeRate                decimal.Decimal
+	ApprovalFingerprint         string
+	CreatedBy                   string
+	ApprovedBy                  string
+	ApprovedAt                  *time.Time
+	PostedBy                    string
+	PostedAt                    *time.Time
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	ReversedEntryID             *uuid.UUID
+	OriginalEntryID             *uuid.UUID
+	SourceEventID               *uuid.UUID
+	TargetPeriodNumber          int
+	AdjustmentAuthorized        bool
+	AdjustingEntryType          AdjustingEntryType
+	AdjustmentReason            string
+	AdjustmentApprovalReference string
+	Classification              EntryClassification
+	ReversalReason              string
+	ReversalReference           string `json:"reversal_reference,omitempty"`
+	IdempotencyKey              string `json:"idempotency_key,omitempty"`
+	IdempotencyPayloadHash      string `json:"idempotency_payload_hash,omitempty"`
+	Lines                       []JournalEntryLine
 }
 
 type AccountPeriodBalance struct {
@@ -473,6 +488,11 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 		!equalUUIDPointer(saved.OriginalEntryID, candidate.OriginalEntryID) ||
 		saved.TargetPeriodNumber != candidate.TargetPeriodNumber ||
 		saved.AdjustmentAuthorized != candidate.AdjustmentAuthorized ||
+		saved.AdjustingEntryType != candidate.AdjustingEntryType ||
+		saved.AdjustmentReason != candidate.AdjustmentReason ||
+		saved.AdjustmentApprovalReference != candidate.AdjustmentApprovalReference ||
+		saved.ApprovedBy != candidate.ApprovedBy ||
+		!equalTimePointer(saved.ApprovedAt, candidate.ApprovedAt) ||
 		normalizedEntryClassification(saved.Classification) != normalizedEntryClassification(candidate.Classification) ||
 		len(saved.Lines) != len(candidate.Lines) {
 		return false
@@ -484,6 +504,13 @@ func DraftContentMatches(saved, candidate JournalEntry) bool {
 		}
 	}
 	return true
+}
+
+func equalTimePointer(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }
 
 func equalUUIDPointer(left, right *uuid.UUID) bool {

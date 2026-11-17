@@ -71,6 +71,52 @@ func (d *Driver) WithinTransaction(ctx context.Context, fn func(context.Context)
 	return d.WithinTransactionWithOptions(ctx, storage.TxOptions{}, fn)
 }
 
+// WithinPostingLock serializes posting for one company+journal with a
+// transaction-scoped PostgreSQL advisory lock. Because the lock is
+// transaction-scoped, commit and rollback both release it automatically and
+// concurrent application instances coordinate through the database.
+func (d *Driver) WithinPostingLock(
+	ctx context.Context,
+	companyID uuid.UUID,
+	journalID uuid.UUID,
+	fn func(context.Context) error,
+) error {
+	if fn == nil {
+		return posting.ErrInvalidEntry
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, active := ctx.Value(transactionContextKey{}).(transactionScope); active {
+		if err := d.acquirePostingAdvisoryLock(ctx, companyID, journalID); err != nil {
+			return err
+		}
+		return fn(ctx)
+	}
+	lockCtx := storage.WithCompanyContext(ctx, types.CompanyID(companyID))
+	return d.ExecuteWithOptions(lockCtx, storage.TxOptions{}, func(txCtx context.Context, _ storage.UnitOfWork) error {
+		if err := d.acquirePostingAdvisoryLock(txCtx, companyID, journalID); err != nil {
+			return err
+		}
+		return fn(txCtx)
+	})
+}
+
+func (d *Driver) acquirePostingAdvisoryLock(ctx context.Context, companyID, journalID uuid.UUID) error {
+	scope, ok := ctx.Value(transactionContextKey{}).(transactionScope)
+	if !ok {
+		return errors.New("postgres: posting lock requires an active transaction")
+	}
+	if scope.companyID != companyID {
+		return errors.New("postgres: transaction company does not match requested company")
+	}
+	key := companyID.String() + ":" + journalID.String()
+	if _, err := scope.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return translateTransactionError(err)
+	}
+	return nil
+}
+
 func (d *Driver) WithinTransactionWithOptions(ctx context.Context, opts storage.TxOptions, fn func(context.Context) error) error {
 	return d.ExecuteWithOptions(ctx, opts, func(txCtx context.Context, _ storage.UnitOfWork) error {
 		return fn(txCtx)
@@ -89,7 +135,7 @@ func (d *Driver) ExecuteWithOptions(ctx context.Context, opts storage.TxOptions,
 		return errors.New("postgres: transaction callback is nil")
 	}
 	if _, nested := ctx.Value(transactionContextKey{}).(transactionScope); nested {
-		return errors.New("postgres: nested unit of work execution is not supported")
+		return storage.ErrNestedUnitOfWork
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: %w", storage.ErrTransactionAborted, err)

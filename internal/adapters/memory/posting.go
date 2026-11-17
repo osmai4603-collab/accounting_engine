@@ -109,6 +109,9 @@ func (d *Driver) GetEntryByIDForCompany(ctx context.Context, companyID, entryID 
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.GetEntryByIDForCompany(ctx, companyID, entryID)
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	entry, ok := d.entries[entryID]
@@ -119,7 +122,7 @@ func (d *Driver) GetEntryByIDForCompany(ctx context.Context, companyID, entryID 
 }
 
 func (d *Driver) GetEntryByIDForCompanyContext(ctx context.Context, companyID, entryID uuid.UUID) (posting.JournalEntry, error) {
-	return d.GetEntryByIDForCompany(ctx, companyID, entryID)
+	return transactionDriver(ctx, d).GetEntryByIDForCompany(ctx, companyID, entryID)
 }
 
 func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
@@ -275,6 +278,9 @@ func (d *Driver) SaveDraftContext(ctx context.Context, entry posting.JournalEntr
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.SaveDraftContext(ctx, entry)
+	}
 	if entry.PeriodID == uuid.Nil && entry.CompanyID != uuid.Nil {
 		entryDate := entry.EntryDate
 		if entryDate.IsZero() {
@@ -296,28 +302,28 @@ func (d *Driver) PostAtomicContext(ctx context.Context, entry posting.JournalEnt
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.PostAtomic(entry)
+	return transactionDriver(ctx, d).PostAtomic(entry)
 }
 
 func (d *Driver) PostAndSequenceContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	return d.PostAndSequence(entry)
+	return transactionDriver(ctx, d).PostAndSequence(entry)
 }
 
 func (d *Driver) PostAndSequenceWithOpenLineContext(ctx context.Context, entry posting.JournalEntry, attachment posting.OpenLineAttachment) (posting.JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	return d.PostAndSequenceWithOpenLine(entry, attachment)
+	return transactionDriver(ctx, d).PostAndSequenceWithOpenLine(entry, attachment)
 }
 
 func (d *Driver) PostReversalAtomicContext(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, err
 	}
-	return d.PostReversalAtomic(original, reversal)
+	return transactionDriver(ctx, d).PostReversalAtomic(original, reversal)
 }
 
 func (d *Driver) FindReversalByIdempotencyKeyContext(
@@ -327,6 +333,9 @@ func (d *Driver) FindReversalByIdempotencyKeyContext(
 ) (posting.JournalEntry, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, false, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.FindReversalByIdempotencyKeyContext(ctx, companyID, key)
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -346,6 +355,9 @@ func (d *Driver) CreateAndPostReversalAtomicContext(
 ) (posting.JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return posting.JournalEntry{}, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.CreateAndPostReversalAtomicContext(ctx, original, reversal)
 	}
 	if original.CompanyID == uuid.Nil || original.CompanyID != reversal.CompanyID ||
 		reversal.OriginalEntryID == nil || *reversal.OriginalEntryID != original.ID {
@@ -631,7 +643,7 @@ func (d *Driver) GetNextSequenceForCompanyContext(ctx context.Context, companyID
 	if companyID == uuid.Nil || journalID == uuid.Nil {
 		return 0, masterdata.ErrCompanyScopeRequired
 	}
-	return d.GetNextSequenceWithLock(ctx, companyID, journalID)
+	return transactionDriver(ctx, d).GetNextSequenceWithLock(ctx, companyID, journalID)
 }
 
 func sequenceKey(companyID, journalID uuid.UUID) string {
@@ -924,12 +936,15 @@ func (d *Driver) ListEntriesForCompanyContext(ctx context.Context, companyID uui
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return d.ListEntriesForCompany(companyID, start, end)
+	return transactionDriver(ctx, d).ListEntriesForCompany(companyID, start, end)
 }
 
 func (d *Driver) ListDraftEntriesForCompanyContext(ctx context.Context, companyID uuid.UUID) ([]posting.JournalEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ListDraftEntriesForCompanyContext(ctx, companyID)
 	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -951,6 +966,11 @@ func (d *Driver) ReadAccountPeriodBalancesForCompanyContext(
 ) (map[uuid.UUID]posting.AccountPeriodBalance, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.ReadAccountPeriodBalancesForCompanyContext(
+			ctx, companyID, start, end, currency, includeAdjusting,
+		)
 	}
 	if companyID == uuid.Nil || end.IsZero() || (!start.IsZero() && end.Before(start)) {
 		return nil, false, nil
