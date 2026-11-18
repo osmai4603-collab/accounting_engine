@@ -3,7 +3,6 @@ package ifrs15
 import (
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -130,11 +129,10 @@ func CalculateFinancingComponent(
 	}
 
 	// Calculate compound periods: whole years plus fractional remainder
-	years := decimal.NewFromInt(int64(days)).Div(decimal.NewFromInt(365))
-	rFloat, _ := annualDiscountRate.Float64()
-	yFloat, _ := years.Float64()
-
-	numPeriods := int(math.Ceil(yFloat))
+	numPeriods := days / 365
+	if days%365 != 0 {
+		numPeriods++
+	}
 	if numPeriods < 1 {
 		numPeriods = 1
 	}
@@ -143,12 +141,13 @@ func CalculateFinancingComponent(
 	var transactionPrice financialtypes.Money
 	var totalInterest financialtypes.Money
 
+	factor := decimalCompoundFactor(annualDiscountRate, days)
+
 	if financingType == CustomerFinancing {
 		// Customer pays in advance:
 		// Advance cash received = NominalAmount.
 		// Future Value (Transaction Price / Revenue at transfer date) = Nominal * (1 + r)^years
-		fvFactor := decimal.NewFromFloat(math.Pow(1.0+rFloat, yFloat))
-		fvAmount := nominalAmount.Amount().Mul(fvFactor).RoundBank(minorUnits)
+		fvAmount := nominalAmount.Amount().Mul(factor).RoundBank(minorUnits)
 		var err error
 		transactionPrice, err = financialtypes.NewMoney(fvAmount, currency)
 		if err != nil {
@@ -206,8 +205,7 @@ func CalculateFinancingComponent(
 		// Entity financing (arrears):
 		// Customer pays nominal at future date.
 		// Present Value (Cash Selling Price / Revenue at transfer date) = Nominal / (1 + r)^years
-		pvFactor := decimal.NewFromFloat(math.Pow(1.0+rFloat, yFloat))
-		pvAmount := nominalAmount.Amount().Div(pvFactor).RoundBank(minorUnits)
+		pvAmount := nominalAmount.Amount().Div(factor).RoundBank(minorUnits)
 		var err error
 		transactionPrice, err = financialtypes.NewMoney(pvAmount, currency)
 		if err != nil {
@@ -311,4 +309,57 @@ func BuildFinancingInterestJournal(
 	}
 
 	return posting.NewJournalEntry(journalID, date, "ifrs15-financing-interest", lines)
+}
+
+// decimalCompoundFactor calculates (1 + r)^y where y = days / 365
+// using pure decimal arithmetic (Taylor series for fractional years, binary exponentiation for whole years).
+// Completely avoids float64 and math.Pow.
+func decimalCompoundFactor(annualDiscountRate decimal.Decimal, days int) decimal.Decimal {
+	one := decimal.NewFromInt(1)
+	onePlusR := one.Add(annualDiscountRate)
+	wholeYears := days / 365
+	remDays := days % 365
+
+	// Whole years via integer exponentiation
+	intFactor := one
+	base := onePlusR
+	exp := int64(wholeYears)
+	for exp > 0 {
+		if exp%2 == 1 {
+			intFactor = intFactor.Mul(base)
+		}
+		base = base.Mul(base)
+		exp /= 2
+	}
+
+	if remDays == 0 {
+		return intFactor
+	}
+
+	// Fractional year: f = remDays / 365
+	f := decimal.NewFromInt(int64(remDays)).Div(decimal.NewFromInt(365))
+
+	// ln(1 + r) using z = r / (r + 2), ln(1+r) = 2 * sum_{k=0}^{25} (z^(2k+1) / (2k+1))
+	z := annualDiscountRate.Div(annualDiscountRate.Add(decimal.NewFromInt(2)))
+	zSq := z.Mul(z)
+	curZ := z
+	lnOnePlusR := decimal.Zero
+	for k := 0; k < 25; k++ {
+		divisor := decimal.NewFromInt(int64(2*k + 1))
+		term := curZ.Div(divisor)
+		lnOnePlusR = lnOnePlusR.Add(term)
+		curZ = curZ.Mul(zSq)
+	}
+	lnOnePlusR = lnOnePlusR.Mul(decimal.NewFromInt(2))
+
+	// exp(u) where u = f * ln(1+r), exp(u) = sum_{m=0}^{25} (u^m / m!)
+	u := f.Mul(lnOnePlusR)
+	fracFactor := one
+	term := one
+	for m := 1; m <= 25; m++ {
+		term = term.Mul(u).Div(decimal.NewFromInt(int64(m)))
+		fracFactor = fracFactor.Add(term)
+	}
+
+	return intFactor.Mul(fracFactor)
 }
