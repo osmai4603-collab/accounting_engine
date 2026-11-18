@@ -372,6 +372,13 @@ type flakyPostingPort struct {
 	err      error
 }
 
+// plainPostingPort forwards CommitPosting while hiding the driver-backed
+// idempotent posting port, forcing the posting flow through the unit-of-work
+// seam that flakyPostingPort wraps.
+type plainPostingPort struct {
+	storage.PostingWriter
+}
+
 func (p *flakyPostingPort) CommitPosting(ctx context.Context, commit storage.PostingCommit) (ledger.JournalEntry, error) {
 	p.mu.Lock()
 	if p.failures > 0 {
@@ -387,6 +394,10 @@ func (p *flakyPostingPort) CommitPosting(ctx context.Context, commit storage.Pos
 func TestPublicEventIngestionRecoversFailureBeforeCommit(t *testing.T) {
 	fixture := newPublicEventFixture(t)
 	ports := fixture.driver.Ports()
+	// The fault is injected at the unit-of-work posting seam. Hide the
+	// driver-backed idempotent posting port so the flow runs through that
+	// seam, exactly like adapters that only implement the public ports.
+	ports.Posting = plainPostingPort{PostingWriter: ports.Posting}
 	flake := &flakyPostingPort{
 		PostingWriter: ports.Posting,
 		failures:      1,

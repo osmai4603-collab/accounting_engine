@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
@@ -87,6 +88,7 @@ func (d *Driver) ExecuteWithOptions(ctx context.Context, opts storage.TxOptions,
 	d.adjustingPeriods = tx.adjustingPeriods
 	d.reconciliationExceptions = tx.reconciliationExceptions
 	d.reconciliationExceptionLog = tx.reconciliationExceptionLog
+	d.audit = tx.audit
 	d.auditRecords = tx.auditRecords
 	d.idempotency = tx.idempotency
 	return nil
@@ -116,6 +118,7 @@ func (d *Driver) transactionSnapshotLocked(readOnly bool) *Driver {
 		adjustingPeriods:           cloneMap(d.adjustingPeriods),
 		reconciliationExceptions:   cloneMap(d.reconciliationExceptions),
 		reconciliationExceptionLog: cloneReconciliationExceptionLog(d.reconciliationExceptionLog),
+		audit:                      cloneAuditLogs(d.audit),
 		auditRecords:               cloneAuditRecords(d.auditRecords),
 		idempotency:                cloneIdempotency(d.idempotency),
 		postingLocks:               d.postingLocks,
@@ -158,6 +161,19 @@ func cloneAuditRecords(records []storage.AuditRecord) []storage.AuditRecord {
 	for i, record := range records {
 		record.Payload = append([]byte(nil), record.Payload...)
 		result[i] = record
+	}
+	return result
+}
+
+// cloneAuditLogs deep-copies the tamper-evident audit chain so a unit-of-work
+// rollback also discards audit records appended inside the transaction.
+func cloneAuditLogs(logs []*governance.FinancialAuditLog) []*governance.FinancialAuditLog {
+	result := make([]*governance.FinancialAuditLog, 0, len(logs))
+	for _, log := range logs {
+		copied := *log
+		copied.PayloadBefore = append([]byte(nil), log.PayloadBefore...)
+		copied.PayloadAfter = append([]byte(nil), log.PayloadAfter...)
+		result = append(result, &copied)
 	}
 	return result
 }

@@ -218,6 +218,66 @@ type atomicReversalPostingPort interface {
 	) (posting.JournalEntry, error)
 }
 
+// idempotentPostingPort is the driver-backed optional interface that exposes
+// idempotent posting through the public PostingWriter port. Like
+// atomicReversalPostingPort, its signature is expressed in internal types, so
+// an external adapter that only implements the public storage ports cannot
+// provide it.
+type idempotentPostingPort interface {
+	PostAndSequenceIdempotentContext(
+		context.Context,
+		posting.JournalEntry,
+	) (posting.JournalEntry, bool, error)
+	FindPostedEntryByIdempotencyKeyContext(
+		context.Context,
+		uuid.UUID,
+		string,
+	) (posting.JournalEntry, bool, error)
+}
+
+func (r *Repository) idempotentPosting() (idempotentPostingPort, bool) {
+	if r.Ports.Posting == nil {
+		return nil, false
+	}
+	port, ok := r.Ports.Posting.(idempotentPostingPort)
+	return port, ok
+}
+
+// PostAndSequenceIdempotentContext posts a caller-keyed entry and reports
+// whether the posting was a replay of an earlier identical commit. Adapters
+// that do not expose the driver-backed idempotent posting port cannot honor
+// the caller's idempotency contract at the posting layer; they keep their
+// previously shipped behavior by falling back to the plain posting flow, and
+// replay detection stays with the caller-level mechanisms (for example the
+// durable event ingestion store).
+func (r *Repository) PostAndSequenceIdempotentContext(
+	ctx context.Context,
+	entry posting.JournalEntry,
+) (posting.JournalEntry, bool, error) {
+	if port, ok := r.idempotentPosting(); ok {
+		return port.PostAndSequenceIdempotentContext(ctx, entry)
+	}
+	posted, err := r.PostAndSequenceContext(ctx, entry)
+	return posted, false, err
+}
+
+// FindPostedEntryByIdempotencyKeyContext returns the entry previously posted
+// under the caller's idempotency key, mirroring
+// FindReversalByIdempotencyKeyContext for regular postings. Adapters without
+// the driver-backed port report "not found" so callers degrade to their
+// pre-idempotency behavior instead of failing.
+func (r *Repository) FindPostedEntryByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	port, ok := r.idempotentPosting()
+	if !ok {
+		return posting.JournalEntry{}, false, nil
+	}
+	return port.FindPostedEntryByIdempotencyKeyContext(ctx, companyID, key)
+}
+
 func (r *Repository) FindReversalByIdempotencyKeyContext(
 	ctx context.Context,
 	companyID uuid.UUID,

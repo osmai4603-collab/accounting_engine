@@ -42,6 +42,9 @@ func NewPublicService(app *Application, authorizer publicapplication.Authorizer)
 
 var _ publicapplication.Service = (*publicService)(nil)
 var _ publicapplication.AdjustingEntryService = (*publicService)(nil)
+var _ publicapplication.TransactionalService = (*publicService)(nil)
+var _ publicapplication.IdempotentPostingLookup = (*publicService)(nil)
+var _ publicapplication.DeterministicDraftCreator = (*publicService)(nil)
 
 func principalActorID(principal publicapplication.Principal) string {
 	return strings.TrimSpace(principal.ActorID)
@@ -231,11 +234,42 @@ func (s *publicService) Post(ctx context.Context, command publicapplication.Post
 	if err := s.authorize(ctx, command.Context, command.CompanyID, publicapplication.ActionPost, &entryID, ""); err != nil {
 		return publicapplication.EntryResult{}, err
 	}
-	posted, err := s.app.PostEntryByID(ctx, command.CompanyID, command.EntryID, principalActorID(command.Context.Principal))
+	posted, replay, err := s.app.PostEntryByIDWithIdempotencyResult(
+		ctx, command.CompanyID, command.EntryID,
+		principalActorID(command.Context.Principal), command.Context.IdempotencyKey,
+	)
 	if err != nil {
 		return publicapplication.EntryResult{}, classifyUseCaseError(err)
 	}
-	return publicapplication.EntryResult{Entry: posted}, nil
+	return publicapplication.EntryResult{Entry: posted, IdempotentReplay: replay}, nil
+}
+
+// WithinTransaction lets hosts run a whole operation — posting, subledger
+// updates, audit — inside the storage adapter's single unit of work. It is a
+// capability: hosts must check for it rather than assume it.
+func (s *publicService) WithinTransaction(
+	ctx context.Context,
+	companyID types.CompanyID,
+	fn func(ctx context.Context) error,
+) error {
+	if s.app == nil {
+		return types.ErrCapabilityNotImplemented
+	}
+	return s.app.WithinTransaction(ctx, companyID, fn)
+}
+
+// FindPostedEntryByIdempotencyKey exposes replay detection so callers can
+// avoid re-applying non-posting side effects (for example subledger balance
+// updates) when a retry of an idempotent operation arrives.
+func (s *publicService) FindPostedEntryByIdempotencyKey(
+	ctx context.Context,
+	companyID types.CompanyID,
+	key string,
+) (ledger.JournalEntry, bool, error) {
+	if s.app == nil {
+		return ledger.JournalEntry{}, false, types.ErrCapabilityNotImplemented
+	}
+	return s.app.FindPostedEntryByIdempotencyKey(ctx, companyID, key)
 }
 
 func (s *publicService) Reverse(ctx context.Context, command publicapplication.ReverseEntryCommand) (publicapplication.EntryResult, error) {

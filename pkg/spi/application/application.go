@@ -222,6 +222,34 @@ type Service interface {
 	GetEntry(ctx context.Context, query GetEntryQuery) (ledger.JournalEntry, error)
 }
 
+// TransactionalService is an optional capability of the accounting use-case
+// surface. When the storage adapter provides a transaction runner, hosts can
+// execute a whole business operation — posting, subledger updates, audit and
+// idempotency bookkeeping — inside one unit of work: every change commits
+// together or every change rolls back together. When the capability is absent
+// the engine keeps posting atomically per entry, and hosts must not assume
+// cross-store atomicity.
+type TransactionalService interface {
+	WithinTransaction(ctx context.Context, companyID types.CompanyID, fn func(ctx context.Context) error) error
+}
+
+// IdempotentPostingLookup is an optional capability that finds the entry a
+// previously completed posting produced for a given caller-supplied
+// idempotency key. It lets callers detect a replay before re-applying
+// non-posting side effects such as subledger balance updates.
+type IdempotentPostingLookup interface {
+	FindPostedEntryByIdempotencyKey(ctx context.Context, companyID types.CompanyID, key string) (ledger.JournalEntry, bool, error)
+}
+
+// DeterministicDraftCreator is an optional capability that lets callers supply
+// the draft entry ID. Combined with caller-supplied line IDs it makes a retry
+// that carries the same idempotency key produce byte-identical accounting
+// content, so the posting layer recognizes the retry as a replay instead of
+// reporting an idempotency conflict.
+type DeterministicDraftCreator interface {
+	CreateDraftWithID(ctx context.Context, command CreateDraftCommand, entryID types.JournalEntryID) (EntryResult, error)
+}
+
 // YearEndClosingService is an optional application capability. It is
 // separate from Service so hosts without a transactional close adapter do not
 // accidentally advertise a non-atomic implementation.

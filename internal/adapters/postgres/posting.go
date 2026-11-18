@@ -87,6 +87,18 @@ func (d *Driver) PostAtomicContext(ctx context.Context, entry posting.JournalEnt
 			result = errors.Join(result, fmt.Errorf("rollback atomic posting transaction: %w", rollbackErr))
 		}
 	}()
+	if entry.IdempotencyKey != "" {
+		_, found, claimErr := claimPostedIdempotencyTx(ctx, tx, &entry)
+		if claimErr != nil {
+			return claimErr
+		}
+		if found {
+			// Nothing was written. Closing with a commit (a no-op for a joined
+			// outer unit of work) releases the advisory locks without marking
+			// an ambient transaction rollback-only.
+			return tx.Commit(ctx)
+		}
+	}
 	if err := d.saveEntryTx(ctx, tx, entry); err != nil {
 		return err
 	}
@@ -99,6 +111,10 @@ func (d *Driver) PostAndSequence(ctx context.Context, entry posting.JournalEntry
 
 func (d *Driver) PostAndSequenceContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, error) {
 	return d.postAndSequenceContext(ctx, entry, nil)
+}
+
+func (d *Driver) PostAndSequenceIdempotentContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, bool, error) {
+	return d.postAndSequenceIdempotentContext(ctx, entry, nil)
 }
 
 func (d *Driver) PostAndSequenceWithOpenLine(ctx context.Context,
@@ -209,10 +225,19 @@ func (d *Driver) PostWithAttachmentsContext(ctx context.Context, entry *posting.
 	return tx.Commit(ctx)
 }
 
-func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (result posting.JournalEntry, resultErr error) {
+func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (posting.JournalEntry, error) {
+	posted, _, err := d.postAndSequenceContextResult(ctx, entry, attachment)
+	return posted, err
+}
+
+func (d *Driver) postAndSequenceIdempotentContext(ctx context.Context, entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (posting.JournalEntry, bool, error) {
+	return d.postAndSequenceContextResult(ctx, entry, attachment)
+}
+
+func (d *Driver) postAndSequenceContextResult(ctx context.Context, entry posting.JournalEntry, attachment *posting.OpenLineAttachment) (result posting.JournalEntry, replay bool, resultErr error) {
 	tx, err := d.beginCompanyTx(ctx, entry.CompanyID)
 	if err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
@@ -221,11 +246,30 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 	}()
 
 	if entry.CompanyID == uuid.Nil || entry.JournalID == uuid.Nil {
-		return posting.JournalEntry{}, posting.ErrInvalidEntry
+		return posting.JournalEntry{}, false, posting.ErrInvalidEntry
+	}
+	if entry.IdempotencyKey != "" {
+		// Serialize concurrent retries on (company, key) and replay the
+		// completed posting inside this same transaction, mirroring the
+		// reversal path: the second attempt must never consume a second
+		// sequence number or apply the balances twice.
+		existing, found, claimErr := claimPostedIdempotencyTx(ctx, tx, &entry)
+		if claimErr != nil {
+			return posting.JournalEntry{}, false, claimErr
+		}
+		if found {
+			// Nothing was written. Closing with a commit (a no-op for a joined
+			// outer unit of work) releases the advisory locks without marking
+			// an ambient transaction rollback-only.
+			if err := tx.Commit(ctx); err != nil {
+				return posting.JournalEntry{}, false, err
+			}
+			return existing, true, nil
+		}
 	}
 	sequence, err := validateJournalPostingTx(ctx, tx, entry)
 	if err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	var status posting.EntryStatus
 	var draftData []byte
@@ -234,38 +278,38 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 		 WHERE company_id=$1 AND id=$2 AND journal_id=$3 FOR UPDATE`,
 		entry.CompanyID, entry.ID, entry.JournalID).Scan(&status, &draftData); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return posting.JournalEntry{}, posting.ErrEntryNotFound
+			return posting.JournalEntry{}, false, posting.ErrEntryNotFound
 		}
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	var current posting.JournalEntry
 	if err := json.Unmarshal(draftData, &current); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	if status != posting.EntryDraft || current.Status != posting.EntryDraft {
-		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+		return posting.JournalEntry{}, false, posting.ErrEntryNotDraft
 	}
 	if entry.PeriodID == uuid.Nil {
 		entry.PeriodID = current.PeriodID
 	}
 	if !posting.DraftContentMatches(current, entry) {
-		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+		return posting.JournalEntry{}, false, financialtypes.ErrCannotModifyPostedMove
 	}
 	if entry.PostingDate.IsZero() {
 		entry.PostingDate = calendarDateUTC(time.Now())
 	}
 	if err := validatePostingPeriodTx(ctx, tx, entry); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	sequence++
 	if _, err := tx.Exec(ctx,
 		`UPDATE journals SET current_sequence=$3 WHERE company_id=$1 AND id=$2`,
 		entry.CompanyID, entry.JournalID, sequence); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	entry.SequenceNumber = sequence
 	if err := d.saveEntryTx(ctx, tx, entry); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	if attachment != nil {
 		partnerID := attachment.PartnerID
@@ -288,28 +332,28 @@ func (d *Driver) postAndSequenceContext(ctx context.Context, entry posting.Journ
 		account, err := scanAccount(tx.QueryRow(ctx,
 			accountSelect+` WHERE company_id=$1 AND id=$2 FOR SHARE`, entry.CompanyID, attachment.ControlAccountID))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return posting.JournalEntry{}, masterdata.ErrAccountNotFound
+			return posting.JournalEntry{}, false, masterdata.ErrAccountNotFound
 		}
 		if err != nil {
-			return posting.JournalEntry{}, err
+			return posting.JournalEntry{}, false, err
 		}
 		if err := subledgers.ValidatePostedOpenLine(line, account, entry); err != nil {
-			return posting.JournalEntry{}, err
+			return posting.JournalEntry{}, false, err
 		}
 		data, err := json.Marshal(line)
 		if err != nil {
-			return posting.JournalEntry{}, err
+			return posting.JournalEntry{}, false, err
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO subledger_open_lines(id,company_id,partner_id,kind,line_data) VALUES($1,$2,$3,$4,$5)`,
 			line.ID, line.CompanyID, partnerID, line.Kind, data); err != nil {
-			return posting.JournalEntry{}, err
+			return posting.JournalEntry{}, false, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
-	return entry, nil
+	return entry, false, nil
 }
 
 func validatePostingPeriodTx(ctx context.Context, tx pgx.Tx, entry posting.JournalEntry) error {
@@ -422,6 +466,85 @@ func validateJournalPostingTx(ctx context.Context, tx pgx.Tx, entry posting.Jour
 func calendarDateUTC(value time.Time) time.Time {
 	value = value.UTC()
 	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// claimPostedIdempotencyTx serializes concurrent postings that share a
+// caller-supplied idempotency key and replays an already-posted entry inside
+// the caller's transaction. entry.IdempotencyPayloadHash is filled in when the
+// caller did not supply one, so the stored posted entry always carries the
+// fingerprint checked by later retries. The returned boolean reports replay.
+func claimPostedIdempotencyTx(ctx context.Context, tx pgx.Tx, entry *posting.JournalEntry) (posting.JournalEntry, bool, error) {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))`,
+		entry.CompanyID.String(), entry.IdempotencyKey); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	payloadHash := entry.IdempotencyPayloadHash
+	if payloadHash == "" {
+		computed, err := posting.EntryContentHash(*entry)
+		if err != nil {
+			return posting.JournalEntry{}, false, err
+		}
+		payloadHash = computed
+		entry.IdempotencyPayloadHash = payloadHash
+	}
+	var existingData []byte
+	err := tx.QueryRow(ctx,
+		`SELECT entry FROM account_moves
+		 WHERE company_id=$1 AND status='posted' AND classification <> $2 AND entry->>'idempotency_key'=$3`,
+		entry.CompanyID, posting.EntryClassReversing, entry.IdempotencyKey,
+	).Scan(&existingData)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return posting.JournalEntry{}, false, nil
+	}
+	if err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	var existing posting.JournalEntry
+	if err := json.Unmarshal(existingData, &existing); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	if existing.IdempotencyPayloadHash != payloadHash {
+		return posting.JournalEntry{}, false, posting.ErrIdempotencyConflict
+	}
+	return existing, true, nil
+}
+
+// FindPostedEntryByIdempotencyKeyContext returns the posted, non-reversal
+// entry stored under the given company-scoped idempotency key, if any.
+func (d *Driver) FindPostedEntryByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	var data []byte
+	found := false
+	err := d.WithCompanyTx(ctx, companyID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT entry FROM account_moves
+			 WHERE company_id=$1 AND status='posted' AND classification <> $2 AND entry->>'idempotency_key'=$3`,
+			companyID, posting.EntryClassReversing, key,
+		).Scan(&data)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	if !found {
+		return posting.JournalEntry{}, false, nil
+	}
+	var entry posting.JournalEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	return entry, true, nil
 }
 
 func (d *Driver) PostReversalAtomic(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {

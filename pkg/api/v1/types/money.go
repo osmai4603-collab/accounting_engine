@@ -50,7 +50,7 @@ func Zero(currency string) (Money, error) {
 
 func newMoney(amount decimal.Decimal, currency string) (Money, error) {
 	if precisionDigits(amount) > maximumPrecision {
-		return Money{}, ErrAmountExceedsPrecision
+		panic(fmt.Sprintf("DEBUG newMoney too precise %v %s coef=%s digits=%d", amount, currency, amount.Coefficient().String(), precisionDigits(amount)))
 	}
 	return Money{amount: amount, currency: currency}, nil
 }

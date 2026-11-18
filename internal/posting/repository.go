@@ -23,6 +23,13 @@ type ContextAtomicPostingRepository interface {
 	PostAndSequenceContext(ctx context.Context, entry JournalEntry) (JournalEntry, error)
 }
 
+// ContextAtomicIdempotentPostingRepository posts a validated entry carrying a
+// caller-supplied idempotency key and reports whether an identical posting
+// under the same key had already completed (replay).
+type ContextAtomicIdempotentPostingRepository interface {
+	PostAndSequenceIdempotentContext(ctx context.Context, entry JournalEntry) (JournalEntry, bool, error)
+}
+
 type ContextSequenceRepository interface {
 	GetNextSequenceForCompanyContext(ctx context.Context, companyID, journalID uuid.UUID) (int64, error)
 }
@@ -33,6 +40,13 @@ type ContextAtomicPostingWithOpenLineRepository interface {
 
 type ContextAtomicReversalRepository interface {
 	PostReversalAtomicContext(ctx context.Context, original, reversal JournalEntry) (JournalEntry, error)
+}
+
+// IdempotentPostingReader finds a previously posted entry by its
+// company-scoped caller idempotency key, mirroring IdempotentReversalReader
+// for regular postings.
+type IdempotentPostingReader interface {
+	FindPostedEntryByIdempotencyKeyContext(ctx context.Context, companyID uuid.UUID, key string) (JournalEntry, bool, error)
 }
 
 // AtomicReversalCreationRepository creates and posts a reversal without

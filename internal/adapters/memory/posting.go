@@ -2,10 +2,12 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sort"
 	"time"
 
+	"github.com/osmai4603-collab/accounting_engine/internal/governance"
 	"github.com/osmai4603-collab/accounting_engine/internal/masterdata"
 	"github.com/osmai4603-collab/accounting_engine/internal/posting"
 	"github.com/osmai4603-collab/accounting_engine/internal/subledgers"
@@ -130,6 +132,18 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 	defer d.mu.Unlock()
 	current, exists := d.entries[entry.ID]
 	if entry.Status == posting.EntryPosted {
+		if entry.IdempotencyKey != "" {
+			// Claim before the draft-status check, mirroring the atomic
+			// idempotent posting path: a completed posting under the same key
+			// replays without touching balances again.
+			_, found, err := d.claimPostedIdempotencyLocked(&entry)
+			if err != nil {
+				return err
+			}
+			if found {
+				return nil
+			}
+		}
 		if !exists {
 			return posting.ErrEntryNotFound
 		}
@@ -145,6 +159,9 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 		if err := d.updateAccountBalancesLocked(entry); err != nil {
 			return err
 		}
+		if err := d.appendPostingAuditLocked(entry, "POST"); err != nil {
+			return err
+		}
 	}
 	if current, ok := d.entries[entry.ID]; ok && current.Status == posting.EntryPosted && !reflect.DeepEqual(current.Lines, entry.Lines) {
 		return financialtypes.ErrCannotModifyPostedMove
@@ -154,29 +171,57 @@ func (d *Driver) PostAtomic(entry posting.JournalEntry) error {
 }
 
 func (d *Driver) PostAndSequence(entry posting.JournalEntry) (posting.JournalEntry, error) {
+	posted, _, err := d.postAndSequenceLocked(entry)
+	return posted, err
+}
+
+func (d *Driver) PostAndSequenceIdempotentContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	return transactionDriver(ctx, d).postAndSequenceLocked(entry)
+}
+
+func (d *Driver) postAndSequenceLocked(entry posting.JournalEntry) (posting.JournalEntry, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if entry.IdempotencyKey != "" {
+		// Claim before the draft-status check, mirroring the PostgreSQL
+		// adapter: a concurrent or retried posting under the same key replays
+		// the completed posting without consuming a second sequence number or
+		// applying the balances twice.
+		existing, found, err := d.claimPostedIdempotencyLocked(&entry)
+		if err != nil {
+			return posting.JournalEntry{}, false, err
+		}
+		if found {
+			return existing, true, nil
+		}
+	}
 	current, ok := d.entries[entry.ID]
 	if !ok {
-		return posting.JournalEntry{}, posting.ErrEntryNotFound
+		return posting.JournalEntry{}, false, posting.ErrEntryNotFound
 	}
 	if current.Status != posting.EntryDraft {
-		return posting.JournalEntry{}, posting.ErrEntryNotDraft
+		return posting.JournalEntry{}, false, posting.ErrEntryNotDraft
 	}
 	if entry.PeriodID == uuid.Nil {
 		entry.PeriodID = current.PeriodID
 	}
 	if !posting.DraftContentMatches(current, entry) {
-		return posting.JournalEntry{}, financialtypes.ErrCannotModifyPostedMove
+		return posting.JournalEntry{}, false, financialtypes.ErrCannotModifyPostedMove
 	}
 	if err := d.updateAccountBalancesLocked(entry); err != nil {
-		return posting.JournalEntry{}, err
+		return posting.JournalEntry{}, false, err
 	}
 	key := sequenceKey(entry.CompanyID, entry.JournalID)
 	d.journalSeq[key]++
 	entry.SequenceNumber = d.journalSeq[key]
+	if err := d.appendPostingAuditLocked(entry, "POST"); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
 	d.entries[entry.ID] = cloneEntry(entry)
-	return cloneEntry(entry), nil
+	return cloneEntry(entry), false, nil
 }
 
 func (d *Driver) PostAndSequenceWithOpenLine(entry posting.JournalEntry, attachment posting.OpenLineAttachment) (posting.JournalEntry, error) {
@@ -265,6 +310,9 @@ func (d *Driver) PostReversalAtomic(original, reversal posting.JournalEntry) (po
 	reversal.SequenceNumber = d.journalSeq[key]
 	reversal = cloneEntry(reversal)
 	reversal.Status = posting.EntryPosted
+	if err := d.appendPostingAuditLocked(reversal, "REVERSE"); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	reversalID := reversal.ID
 	currentOriginal.ReversedEntryID = &reversalID
 	currentOriginal.Status = posting.EntryReversed
@@ -419,6 +467,9 @@ func (d *Driver) CreateAndPostReversalAtomicContext(
 	d.journalSeq[key]++
 	reversal.SequenceNumber = d.journalSeq[key]
 	reversal = cloneEntry(reversal)
+	if err := d.appendPostingAuditLocked(reversal, "REVERSE"); err != nil {
+		return posting.JournalEntry{}, err
+	}
 	reversalID := reversal.ID
 	currentOriginal.ReversedEntryID = &reversalID
 	currentOriginal.Status = posting.EntryReversed
@@ -1131,6 +1182,99 @@ func (d *Driver) GetAccountBalance(ctx context.Context, companyID, accountID uui
 		return financialtypes.Money{}, masterdata.ErrInvalidCompany
 	}
 	return subledgers.ControlAccountBalanceFromEntries(account, entries, company.FunctionalCurrency)
+}
+
+// claimPostedIdempotencyLocked replays an already-posted entry stored under
+// the same company-scoped idempotency key, mirroring the reversal path and the
+// PostgreSQL adapter. entry.IdempotencyPayloadHash is filled in when missing so
+// the stored posted entry always carries the fingerprint checked by retries.
+// The caller must hold d.mu.
+func (d *Driver) claimPostedIdempotencyLocked(entry *posting.JournalEntry) (posting.JournalEntry, bool, error) {
+	if entry.IdempotencyPayloadHash == "" {
+		computed, err := posting.EntryContentHash(*entry)
+		if err != nil {
+			return posting.JournalEntry{}, false, err
+		}
+		entry.IdempotencyPayloadHash = computed
+	}
+	existing, found := d.findPostedByIdempotencyKeyLocked(entry.CompanyID, entry.IdempotencyKey)
+	if !found {
+		return posting.JournalEntry{}, false, nil
+	}
+	if existing.IdempotencyPayloadHash != entry.IdempotencyPayloadHash {
+		return posting.JournalEntry{}, false, posting.ErrIdempotencyConflict
+	}
+	return existing, true, nil
+}
+
+// findPostedByIdempotencyKeyLocked scans the driver state for a posted,
+// non-reversal entry stored under the given idempotency key. The caller must
+// hold at least d.mu.RLock.
+func (d *Driver) findPostedByIdempotencyKeyLocked(companyID uuid.UUID, key string) (posting.JournalEntry, bool) {
+	for _, candidate := range d.entries {
+		if candidate.CompanyID != companyID || candidate.Status != posting.EntryPosted ||
+			candidate.Classification == posting.EntryClassReversing ||
+			candidate.IdempotencyKey != key {
+			continue
+		}
+		return cloneEntry(candidate), true
+	}
+	return posting.JournalEntry{}, false
+}
+
+// FindPostedEntryByIdempotencyKeyContext returns the posted, non-reversal
+// entry stored under the given company-scoped idempotency key, if any.
+func (d *Driver) FindPostedEntryByIdempotencyKeyContext(
+	ctx context.Context,
+	companyID uuid.UUID,
+	key string,
+) (posting.JournalEntry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return posting.JournalEntry{}, false, err
+	}
+	if driver := transactionDriver(ctx, d); driver != d {
+		return driver.FindPostedEntryByIdempotencyKeyContext(ctx, companyID, key)
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if entry, found := d.findPostedByIdempotencyKeyLocked(companyID, key); found {
+		return entry, true, nil
+	}
+	return posting.JournalEntry{}, false, nil
+}
+
+// appendPostingAuditLocked records an entry lifecycle event in the
+// tamper-evident audit chain, keeping the memory adapter at parity with the
+// PostgreSQL adapter where every POST/REVERSE is audited inside the posting
+// transaction. The caller must hold d.mu (write lock).
+func (d *Driver) appendPostingAuditLocked(entry posting.JournalEntry, action string) error {
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	at := time.Now().UTC()
+	if entry.PostedAt != nil && !entry.PostedAt.IsZero() {
+		at = entry.PostedAt.UTC()
+	}
+	log := governance.FinancialAuditLog{
+		CompanyID: entry.CompanyID, EntityType: "journal_entry", EntityID: entry.ID,
+		Action: action, ActorID: auditEntryActorID(entry.PostedBy), PayloadAfter: payload, Timestamp: at,
+	}
+	log.PreviousLogHash = governance.GenesisHash
+	if len(d.audit) > 0 {
+		log.PreviousLogHash = d.audit[len(d.audit)-1].CurrentLogHash
+	}
+	log.CurrentLogHash = governance.CalculateHash(log)
+	log.ID = int64(len(d.audit) + 1)
+	d.audit = append(d.audit, &log)
+	return nil
+}
+
+func auditEntryActorID(posterID string) uuid.UUID {
+	if id, err := uuid.Parse(posterID); err == nil {
+		return id
+	}
+	return uuid.Nil
 }
 
 func (d *Driver) GetAccountBalanceAsOf(ctx context.Context, companyID, accountID uuid.UUID, asOf time.Time) (financialtypes.Money, error) {

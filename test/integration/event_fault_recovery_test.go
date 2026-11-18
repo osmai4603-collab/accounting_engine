@@ -212,6 +212,13 @@ type faultPostingWriter struct {
 	err      error
 }
 
+// plainRecoveryPostingPort forwards CommitPosting while hiding the
+// driver-backed idempotent posting port, forcing the posting flow through the
+// unit-of-work seam that faultPostingWriter wraps.
+type plainRecoveryPostingPort struct {
+	storage.PostingWriter
+}
+
 func (p *faultPostingWriter) CommitPosting(ctx context.Context, commit storage.PostingCommit) (ledger.JournalEntry, error) {
 	p.mu.Lock()
 	if p.failures > 0 {
@@ -227,6 +234,10 @@ func (p *faultPostingWriter) CommitPosting(ctx context.Context, commit storage.P
 func TestEventPostingFailureRemainsRetryableAndRecovers(t *testing.T) {
 	fixture := newEventRecoveryFixture(t)
 	ports := fixture.adapter.Ports()
+	// The fault is injected at the unit-of-work posting seam. Hide the
+	// driver-backed idempotent posting port so the flow runs through that
+	// seam, exactly like adapters that only implement the public ports.
+	ports.Posting = plainRecoveryPostingPort{PostingWriter: ports.Posting}
 	fault := &faultPostingWriter{PostingWriter: ports.Posting, failures: 1, err: storage.ErrSerializationFailure}
 	ports.UOWRunner = &faultUnitOfWorkRunner{UnitOfWorkRunner: ports.UOWRunner, posting: fault}
 	engine := buildRecoveryEngine(t, ports)

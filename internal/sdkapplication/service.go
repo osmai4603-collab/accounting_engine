@@ -69,32 +69,73 @@ func (a *Application) ValidateEntryByID(ctx context.Context, companyID types.Com
 }
 
 func (a *Application) PostEntryByID(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID, actorID string) (ledger.JournalEntry, error) {
+	entry, _, err := a.PostEntryByIDWithIdempotencyResult(ctx, companyID, entryID, actorID, "")
+	return entry, err
+}
+
+// PostEntryByIDWithIdempotencyResult posts a draft under an optional
+// caller-supplied idempotency key. When a key is supplied, an identical
+// completed posting replays without consuming a second sequence number, and a
+// different payload under the same key is rejected as a conflict. The boolean
+// reports that the result is a replay of an earlier request.
+func (a *Application) PostEntryByIDWithIdempotencyResult(
+	ctx context.Context,
+	companyID types.CompanyID,
+	entryID types.JournalEntryID,
+	actorID, idempotencyKey string,
+) (ledger.JournalEntry, bool, error) {
 	if companyID == (types.CompanyID{}) {
-		return ledger.JournalEntry{}, errors.New("company id is required")
+		return ledger.JournalEntry{}, false, errors.New("company id is required")
 	}
 	if uuid.UUID(entryID) == uuid.Nil {
-		return ledger.JournalEntry{}, ErrEntryIDRequired
+		return ledger.JournalEntry{}, false, ErrEntryIDRequired
 	}
 	actorID = strings.TrimSpace(actorID)
 	if actorID == "" {
-		return ledger.JournalEntry{}, ErrActorRequired
+		return ledger.JournalEntry{}, false, ErrActorRequired
 	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	entry, err := a.GetEntry(ctx, companyID, entryID)
 	if err != nil {
-		return ledger.JournalEntry{}, err
+		return ledger.JournalEntry{}, false, err
 	}
 	internalEntry, err := toInternalExistingEntry(entry)
 	if err != nil {
-		return ledger.JournalEntry{}, err
+		return ledger.JournalEntry{}, false, err
 	}
-	if err := a.engine.PostEntryContext(ctx, &internalEntry, actorID); err != nil {
-		return ledger.JournalEntry{}, err
+	internalEntry.IdempotencyKey = idempotencyKey
+	if idempotencyKey != "" {
+		payloadHash, hashErr := posting.EntryContentHash(internalEntry)
+		if hashErr != nil {
+			return ledger.JournalEntry{}, false, hashErr
+		}
+		internalEntry.IdempotencyPayloadHash = payloadHash
+		if existing, found, lookupErr := a.engine.FindPostedEntryByIdempotencyKeyContext(
+			ctx, uuid.UUID(companyID), idempotencyKey,
+		); lookupErr != nil {
+			return ledger.JournalEntry{}, false, lookupErr
+		} else if found {
+			// A stored fingerprint means the claim recorded the request
+			// content: a different payload under the same key is a conflict,
+			// not a replay. Entries posted before fingerprinting existed have
+			// no stored hash and replay by key alone.
+			if existing.IdempotencyPayloadHash != "" && existing.IdempotencyPayloadHash != payloadHash {
+				return ledger.JournalEntry{}, false, classifyUseCaseError(posting.ErrIdempotencyConflict)
+			}
+			posted, err := fromInternalEntry(existing)
+			return posted, true, err
+		}
+	}
+	replay, err := a.engine.PostEntryIdempotentContext(ctx, &internalEntry, actorID)
+	if err != nil {
+		return ledger.JournalEntry{}, false, err
 	}
 	posted, err := a.engine.GetEntry(ctx, uuid.UUID(companyID), uuid.UUID(entryID))
 	if err != nil {
-		return ledger.JournalEntry{}, err
+		return ledger.JournalEntry{}, false, err
 	}
-	return fromInternalEntry(posted)
+	publicEntry, err := fromInternalEntry(posted)
+	return publicEntry, replay, err
 }
 
 func (a *Application) ReverseEntryByID(ctx context.Context, companyID types.CompanyID, entryID types.JournalEntryID, actorID, reason string, effectiveDate time.Time) (ledger.JournalEntry, error) {

@@ -61,6 +61,17 @@ func (d transactionAwareDriver) PostAtomicContext(ctx context.Context, entry pos
 	return transactionDriver(ctx, d.driver).PostAtomicContext(ctx, entry)
 }
 
+func (d transactionAwareDriver) PostAndSequenceIdempotentContext(ctx context.Context, entry posting.JournalEntry) (posting.JournalEntry, bool, error) {
+	if readOnlyDriver(ctx, d.driver) {
+		return posting.JournalEntry{}, false, ErrReadOnlyTransaction
+	}
+	return transactionDriver(ctx, d.driver).PostAndSequenceIdempotentContext(ctx, entry)
+}
+
+func (d transactionAwareDriver) FindPostedEntryByIdempotencyKeyContext(ctx context.Context, companyID uuid.UUID, key string) (posting.JournalEntry, bool, error) {
+	return transactionDriver(ctx, d.driver).FindPostedEntryByIdempotencyKeyContext(ctx, companyID, key)
+}
+
 func (d transactionAwareDriver) PostReversalAtomicContext(ctx context.Context, original, reversal posting.JournalEntry) (posting.JournalEntry, error) {
 	if readOnlyDriver(ctx, d.driver) {
 		return posting.JournalEntry{}, ErrReadOnlyTransaction

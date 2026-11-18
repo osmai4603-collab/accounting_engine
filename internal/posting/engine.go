@@ -191,10 +191,19 @@ func (e *Engine) PostEntry(entry *JournalEntry, posterID string) error {
 }
 
 func (e *Engine) PostEntryContext(ctx context.Context, entry *JournalEntry, posterID string) error {
+	_, err := e.PostEntryIdempotentContext(ctx, entry, posterID)
+	return err
+}
+
+// PostEntryIdempotentContext posts a draft that may carry a caller-supplied
+// idempotency key and reports whether the result replays an earlier identical
+// posting. Repositories without an idempotent atomic-posting capability still
+// deduplicate at the storage layer but cannot report the replay.
+func (e *Engine) PostEntryIdempotentContext(ctx context.Context, entry *JournalEntry, posterID string) (bool, error) {
 	return e.postEntryContext(ctx, entry, posterID, true)
 }
 
-func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, posterID string, observe bool) (err error) {
+func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, posterID string, observe bool) (replay bool, err error) {
 	if entry != nil {
 		ctx = observability.WithCompanyID(ctx, entry.CompanyID)
 		ctx = observability.WithEntryID(ctx, entry.ID)
@@ -208,26 +217,52 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		defer func() { e.recordPosting(ctx, entry, start, err) }()
 	}
 	if err = ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if entry.Status != EntryDraft {
 		if entry.Status == EntryPosted {
-			return financialtypes.ErrMoveAlreadyPosted
+			return false, financialtypes.ErrMoveAlreadyPosted
 		}
-		return ErrEntryNotDraft
+		return false, ErrEntryNotDraft
 	}
 	postingDate := time.Now().UTC()
 	if err = e.prepareForPosting(ctx, entry, posterID, postingDate); err != nil {
-		return err
+		return false, err
 	}
 
-	return e.postingLocker().WithinPostingLock(ctx, entry.CompanyID, entry.JournalID, func(lockCtx context.Context) error {
+	err = e.postingLocker().WithinPostingLock(ctx, entry.CompanyID, entry.JournalID, func(lockCtx context.Context) error {
 		now := postingDate
 		entry.PostingDate = calendarDate(now)
 		entry.PostedBy = posterID
 		entry.PostedAt = &now
 		entry.Status = EntryPosted
 		entry.UpdatedAt = now
+		if entry.IdempotencyKey != "" && entry.IdempotencyPayloadHash == "" {
+			payloadHash, hashErr := EntryContentHash(*entry)
+			if hashErr != nil {
+				entry.Status = EntryDraft
+				entry.PostedBy = ""
+				entry.PostedAt = nil
+				entry.PostingDate = time.Time{}
+				return hashErr
+			}
+			entry.IdempotencyPayloadHash = payloadHash
+		}
+		if entry.IdempotencyKey != "" {
+			if repository, ok := e.repo.(ContextAtomicIdempotentPostingRepository); ok {
+				posted, replayed, postErr := repository.PostAndSequenceIdempotentContext(lockCtx, *entry)
+				if postErr != nil {
+					entry.Status = EntryDraft
+					entry.PostedBy = ""
+					entry.PostedAt = nil
+					entry.PostingDate = time.Time{}
+					return postErr
+				}
+				replay = replayed
+				*entry = posted
+				return nil
+			}
+		}
 		if repository, ok := e.repo.(ContextAtomicPostingRepository); ok {
 			posted, postErr := repository.PostAndSequenceContext(lockCtx, *entry)
 			if postErr != nil {
@@ -259,6 +294,7 @@ func (e *Engine) postEntryContext(ctx context.Context, entry *JournalEntry, post
 		}
 		return nil
 	})
+	return replay, err
 }
 
 // recordPosting records the latency and outcome of one posting attempt and
@@ -778,4 +814,21 @@ func (e *Engine) SetMakerCheckerThreshold(threshold decimal.Decimal) {
 
 func (e *Engine) GetEntry(ctx context.Context, companyID, entryID uuid.UUID) (JournalEntry, error) {
 	return e.repo.GetEntryByIDForCompany(ctx, companyID, entryID)
+}
+
+// FindPostedEntryByIdempotencyKeyContext returns the entry a previously
+// completed posting produced for the given company-scoped idempotency key.
+// Repositories without an idempotent-posting reader report no replay.
+func (e *Engine) FindPostedEntryByIdempotencyKeyContext(
+	ctx context.Context, companyID uuid.UUID, key string,
+) (JournalEntry, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" || companyID == uuid.Nil {
+		return JournalEntry{}, false, nil
+	}
+	reader, ok := e.repo.(IdempotentPostingReader)
+	if !ok {
+		return JournalEntry{}, false, nil
+	}
+	return reader.FindPostedEntryByIdempotencyKeyContext(ctx, companyID, key)
 }

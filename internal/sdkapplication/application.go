@@ -64,9 +64,14 @@ func NewApplicationFromCoreWithPostingCapabilities(
 	if err != nil {
 		return nil, err
 	}
+	var txRunner storage.TransactionRunner
+	if runner, ok := core.(storage.TransactionRunner); ok {
+		txRunner = runner
+	}
 	return &Application{
 		engine:           engine,
 		publicMasterData: publicMasterData,
+		txRunner:         txRunner,
 	}, nil
 }
 
@@ -78,6 +83,7 @@ func NewLegacy(core legacy.CoreLedgerStore) (legacy.LedgerApplication, error) { 
 type Application struct {
 	engine           *posting.Engine
 	publicMasterData publicmasterdata.Store
+	txRunner         storage.TransactionRunner
 }
 
 // NewApplicationFromPorts builds the application from public storage ports.
@@ -112,7 +118,46 @@ func NewApplicationFromPortsWithPostingCapabilities(
 	if err != nil {
 		return nil, err
 	}
-	return &Application{engine: engine}, nil
+	return &Application{engine: engine, txRunner: ports.TxRunner}, nil
+}
+
+// WithinTransaction runs fn inside the storage adapter's unit of work so the
+// posting, subledger writes, audit records and idempotency state performed
+// with the returned context commit or roll back together. It reports
+// ErrCapabilityNotImplemented when the storage adapter does not provide a
+// transaction runner.
+func (a *Application) WithinTransaction(
+	ctx context.Context,
+	companyID types.CompanyID,
+	fn func(ctx context.Context) error,
+) error {
+	if a.txRunner == nil {
+		return types.ErrCapabilityNotImplemented
+	}
+	if uuid.UUID(companyID) == uuid.Nil {
+		return errors.New("company id is required")
+	}
+	return a.txRunner.WithinTransaction(storage.WithCompanyContext(ctx, companyID), fn)
+}
+
+// FindPostedEntryByIdempotencyKey returns the entry a previously completed
+// posting produced under the given company-scoped idempotency key, if any.
+func (a *Application) FindPostedEntryByIdempotencyKey(
+	ctx context.Context,
+	companyID types.CompanyID,
+	key string,
+) (ledger.JournalEntry, bool, error) {
+	entry, found, err := a.engine.FindPostedEntryByIdempotencyKeyContext(
+		ctx, uuid.UUID(companyID), strings.TrimSpace(key),
+	)
+	if err != nil || !found {
+		return ledger.JournalEntry{}, false, err
+	}
+	publicEntry, err := fromInternalEntry(entry)
+	if err != nil {
+		return ledger.JournalEntry{}, false, err
+	}
+	return publicEntry, true, nil
 }
 
 // NewApplicationWithEngine wraps an already configured engine. It is used only
